@@ -15,6 +15,7 @@ use super::config::AppConfig;
 use super::time::FrameTimer;
 use crate::player::PlayerController;
 use crate::renderer::{RenderOutcome, Renderer};
+use crate::world::World;
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -24,6 +25,7 @@ const MAX_CAMERA_DELTA: f32 = 0.05;
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
     config: AppConfig,
+    world: World,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     controller: PlayerController,
@@ -36,6 +38,7 @@ impl App {
     pub fn new(config: AppConfig) -> Self {
         Self {
             config,
+            world: World::flat_demo(),
             window: None,
             renderer: None,
             controller: PlayerController::new(),
@@ -73,7 +76,7 @@ impl App {
                 );
 
                 let window = Arc::new(window);
-                match Renderer::new(window.clone(), window.inner_size()) {
+                match Renderer::new(window.clone(), window.inner_size(), &self.world) {
                     Ok(renderer) => {
                         info!("渲染器已初始化");
                         self.renderer = Some(renderer);
@@ -134,7 +137,7 @@ impl App {
         }
 
         let outcome = match self.renderer.as_mut() {
-            Some(renderer) => renderer.render(delta),
+            Some(renderer) => renderer.render(),
             None => return,
         };
 

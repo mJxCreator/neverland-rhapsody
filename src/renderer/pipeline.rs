@@ -2,16 +2,10 @@
 
 use wgpu::vertex_attr_array;
 
+use crate::mesh::Vertex;
+
 /// 深度附件格式，渲染管线与深度纹理共用。
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-
-/// 带面色的顶点：位置与颜色。
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub position: [f32; 3],
-    pub color: [f32; 3],
-}
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     vertex_attr_array![0 => Float32x3, 1 => Float32x3];
@@ -55,8 +49,8 @@ pub fn create_pipeline(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            // 示例方块暂不做背面剔除，避免面朝向错误导致缺面。
-            cull_mode: None,
+            // 网格提取按外侧逆时针生成顶点，可安全剔除背面。
+            cull_mode: Some(wgpu::Face::Back),
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,

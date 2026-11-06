@@ -1,7 +1,6 @@
-//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制示例场景。
+//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制区块网格。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use glam::{Mat4, Vec3};
@@ -11,7 +10,9 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use super::camera::Camera;
-use super::pipeline::{self, Vertex, DEPTH_FORMAT};
+use super::pipeline::{self, DEPTH_FORMAT};
+use crate::mesh::build_chunk_mesh;
+use crate::world::World;
 
 /// 天空清屏色。
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -20,117 +21,6 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     b: 0.94,
     a: 1.0,
 };
-
-/// 示例方块：每面一个颜色，便于观察 3D 空间关系。
-const CUBE_VERTICES: [Vertex; 24] = [
-    // +X
-    Vertex {
-        position: [0.5, -0.5, -0.5],
-        color: [0.52, 0.41, 0.29],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.5],
-        color: [0.52, 0.41, 0.29],
-    },
-    Vertex {
-        position: [0.5, 0.5, 0.5],
-        color: [0.52, 0.41, 0.29],
-    },
-    Vertex {
-        position: [0.5, 0.5, -0.5],
-        color: [0.52, 0.41, 0.29],
-    },
-    // -X
-    Vertex {
-        position: [-0.5, -0.5, 0.5],
-        color: [0.46, 0.36, 0.26],
-    },
-    Vertex {
-        position: [-0.5, -0.5, -0.5],
-        color: [0.46, 0.36, 0.26],
-    },
-    Vertex {
-        position: [-0.5, 0.5, -0.5],
-        color: [0.46, 0.36, 0.26],
-    },
-    Vertex {
-        position: [-0.5, 0.5, 0.5],
-        color: [0.46, 0.36, 0.26],
-    },
-    // +Y（顶面）
-    Vertex {
-        position: [-0.5, 0.5, 0.5],
-        color: [0.36, 0.62, 0.30],
-    },
-    Vertex {
-        position: [0.5, 0.5, 0.5],
-        color: [0.36, 0.62, 0.30],
-    },
-    Vertex {
-        position: [0.5, 0.5, -0.5],
-        color: [0.36, 0.62, 0.30],
-    },
-    Vertex {
-        position: [-0.5, 0.5, -0.5],
-        color: [0.36, 0.62, 0.30],
-    },
-    // -Y（底面）
-    Vertex {
-        position: [-0.5, -0.5, -0.5],
-        color: [0.32, 0.25, 0.19],
-    },
-    Vertex {
-        position: [0.5, -0.5, -0.5],
-        color: [0.32, 0.25, 0.19],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.5],
-        color: [0.32, 0.25, 0.19],
-    },
-    Vertex {
-        position: [-0.5, -0.5, 0.5],
-        color: [0.32, 0.25, 0.19],
-    },
-    // +Z
-    Vertex {
-        position: [-0.5, -0.5, 0.5],
-        color: [0.55, 0.43, 0.31],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.5],
-        color: [0.55, 0.43, 0.31],
-    },
-    Vertex {
-        position: [0.5, 0.5, 0.5],
-        color: [0.55, 0.43, 0.31],
-    },
-    Vertex {
-        position: [-0.5, 0.5, 0.5],
-        color: [0.55, 0.43, 0.31],
-    },
-    // -Z
-    Vertex {
-        position: [0.5, -0.5, -0.5],
-        color: [0.48, 0.38, 0.27],
-    },
-    Vertex {
-        position: [-0.5, -0.5, -0.5],
-        color: [0.48, 0.38, 0.27],
-    },
-    Vertex {
-        position: [-0.5, 0.5, -0.5],
-        color: [0.48, 0.38, 0.27],
-    },
-    Vertex {
-        position: [0.5, 0.5, -0.5],
-        color: [0.48, 0.38, 0.27],
-    },
-];
-
-const CUBE_INDICES: [u16; 36] = [
-    0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17, 18,
-    16, 18, 19, 20, 21, 22, 20, 22, 23,
-];
 
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
@@ -144,7 +34,14 @@ pub enum RenderOutcome {
     Fatal(anyhow::Error),
 }
 
-/// 持有 GPU 资源并负责绘制。
+/// 一个区块的 GPU 顶点与索引缓冲。
+struct ChunkBuffers {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+}
+
+/// 持有 GPU 资源，并把世界中的区块网格提交绘制。
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -152,17 +49,15 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    chunks: Vec<ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     camera: Camera,
-    elapsed: f32,
 }
 
 impl Renderer {
-    /// 创建 surface/device 与绘制资源；失败时返回错误由上层退出。
-    pub fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> Result<Self> {
+    /// 创建 surface/device 与绘制资源；`world` 提供待渲染的区块。
+    pub fn new(window: Arc<Window>, size: PhysicalSize<u32>, world: &World) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
 
@@ -206,18 +101,7 @@ impl Renderer {
         });
 
         let pipeline = pipeline::create_pipeline(&device, config.format, &bind_group_layout);
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube vertices"),
-            contents: bytemuck::cast_slice(&CUBE_VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube indices"),
-            contents: bytemuck::cast_slice(&CUBE_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let chunks = upload_chunk_meshes(&device, world);
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene uniforms"),
@@ -236,9 +120,9 @@ impl Renderer {
         });
 
         let camera = Camera::new(
-            Vec3::new(0.0, 2.0, 6.0),
+            Vec3::new(16.0, 7.0, 30.0),
             0.0,
-            -0.32,
+            -0.35,
             width as f32 / height as f32,
         );
 
@@ -249,12 +133,10 @@ impl Renderer {
             config,
             depth_view,
             pipeline,
-            vertex_buffer,
-            index_buffer,
+            chunks,
             uniform_buffer,
             bind_group,
             camera,
-            elapsed: 0.0,
         })
     }
 
@@ -282,15 +164,14 @@ impl Renderer {
         &mut self.camera
     }
 
-    /// 绘制一帧。`delta` 用于推进示例方块的旋转。
-    pub fn render(&mut self, delta: Duration) -> RenderOutcome {
-        self.elapsed += delta.as_secs_f32();
-
-        let model =
-            Mat4::from_rotation_y(self.elapsed * 0.6) * Mat4::from_rotation_x(self.elapsed * 0.25);
-        let mvp = (self.camera.view_proj() * model).to_cols_array_2d();
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&mvp));
+    /// 绘制一帧。
+    pub fn render(&mut self) -> RenderOutcome {
+        let view_proj: Mat4 = self.camera.view_proj();
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&view_proj.to_cols_array_2d()),
+        );
 
         let (surface_texture, needs_reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
@@ -342,9 +223,12 @@ impl Renderer {
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..CUBE_INDICES.len() as u32, 0, 0..1);
+            for chunk in &self.chunks {
+                render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -356,6 +240,44 @@ impl Renderer {
 
         RenderOutcome::Presented
     }
+}
+
+/// 把每个非空区块的网格上传为顶点/索引缓冲。
+fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> Vec<ChunkBuffers> {
+    world
+        .chunks()
+        .iter()
+        .filter_map(|chunk| {
+            let mesh = build_chunk_mesh(chunk);
+            if mesh.is_empty() {
+                return None;
+            }
+
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk vertices"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk indices"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
+            info!(
+                chunk = ?chunk.pos(),
+                vertices = mesh.vertices.len(),
+                triangles = mesh.indices.len() / 3,
+                "区块网格已上传"
+            );
+
+            Some(ChunkBuffers {
+                vertex_buffer,
+                index_buffer,
+                index_count: mesh.indices.len() as u32,
+            })
+        })
+        .collect()
 }
 
 fn create_depth_view(
