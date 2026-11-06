@@ -235,7 +235,12 @@ impl Renderer {
             }],
         });
 
-        let camera = Camera::new(Vec3::new(2.2, 1.8, 3.2), width as f32 / height as f32);
+        let camera = Camera::new(
+            Vec3::new(0.0, 2.0, 6.0),
+            0.0,
+            -0.32,
+            width as f32 / height as f32,
+        );
 
         Ok(Self {
             surface,
@@ -270,6 +275,11 @@ impl Renderer {
     /// 按当前配置重新配置 surface。
     pub fn reconfigure(&self) {
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// 供输入控制器逐帧更新摄像机姿态。
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
     }
 
     /// 绘制一帧。`delta` 用于推进示例方块的旋转。

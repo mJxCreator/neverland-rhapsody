@@ -1,8 +1,9 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.2：wgpu 渲染器。
+//! 当前里程碑 v0.3：摄像机与控制。
 
 mod core;
+mod player;
 mod renderer;
 
 use anyhow::Result;

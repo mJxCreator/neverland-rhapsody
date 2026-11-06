@@ -6,23 +6,28 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
+use crate::player::PlayerController;
 use crate::renderer::{RenderOutcome, Renderer};
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+/// 单帧参与摄像机更新的最大时长，避免窗口卡顿后位置跳变。
+const MAX_CAMERA_DELTA: f32 = 0.05;
 
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
     config: AppConfig,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    controller: PlayerController,
+    cursor_grabbed: bool,
     timer: FrameTimer,
     next_frame: Instant,
 }
@@ -33,6 +38,8 @@ impl App {
             config,
             window: None,
             renderer: None,
+            controller: PlayerController::new(),
+            cursor_grabbed: false,
             timer: FrameTimer::new(),
             next_frame: Instant::now(),
         }
@@ -88,7 +95,44 @@ impl App {
         }
     }
 
+    /// 捕获鼠标用于第一人称视角；优先锁定光标，失败时退回窗口内约束。
+    fn grab_cursor(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let result = window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+        match result {
+            Ok(()) => {
+                window.set_cursor_visible(false);
+                self.cursor_grabbed = true;
+                info!("鼠标已捕获，按 Esc 释放");
+            }
+            Err(err) => warn!(error = %err, "鼠标捕获失败"),
+        }
+    }
+
+    /// 释放鼠标并清空输入状态，避免按键与视角残留。
+    fn release_cursor(&mut self) {
+        if let Some(window) = self.window.as_ref() {
+            if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
+                warn!(error = %err, "释放鼠标捕获失败");
+            }
+            window.set_cursor_visible(true);
+        }
+        self.cursor_grabbed = false;
+        self.controller.reset();
+    }
+
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            self.controller.update(
+                renderer.camera_mut(),
+                delta.as_secs_f32().min(MAX_CAMERA_DELTA),
+            );
+        }
+
         let outcome = match self.renderer.as_mut() {
             Some(renderer) => renderer.render(delta),
             None => return,
@@ -128,12 +172,36 @@ impl ApplicationHandler for App {
                 info!("收到关闭请求，退出");
                 event_loop.exit();
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
-            {
-                info!("按下 Esc，退出");
-                event_loop.exit();
+            WindowEvent::KeyboardInput { event, .. } => {
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
+                let pressed = event.state == ElementState::Pressed;
+                if code == KeyCode::Escape {
+                    if pressed {
+                        if self.cursor_grabbed {
+                            self.release_cursor();
+                        } else {
+                            info!("按下 Esc，退出");
+                            event_loop.exit();
+                        }
+                    }
+                    return;
+                }
+                self.controller.handle_key(code, pressed);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.cursor_grabbed => self.grab_cursor(),
+            WindowEvent::Focused(false) => {
+                if self.cursor_grabbed {
+                    warn!("窗口失去焦点，释放鼠标捕获");
+                    self.release_cursor();
+                } else {
+                    self.controller.reset();
+                }
             }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -160,6 +228,20 @@ impl ApplicationHandler for App {
                 self.next_frame = frame_start + FRAME_INTERVAL;
             }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if !self.cursor_grabbed {
+            return;
+        }
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.controller.add_look(delta.0 as f32, delta.1 as f32);
         }
     }
 
