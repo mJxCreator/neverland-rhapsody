@@ -1,0 +1,32 @@
+# Rust 编译产物
+/target/
+*.pdb
+*.rs.bk
+
+# 崩溃转储与性能采样
+*.dmp
+*.profraw
+
+# 日志与临时文件
+*.log
+*.tmp
+
+# 环境变量与凭证
+.env
+.env.*
+.cargo/config.toml
+.cargo/config
+.cargo/credentials
+.cargo/credentials.toml
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
