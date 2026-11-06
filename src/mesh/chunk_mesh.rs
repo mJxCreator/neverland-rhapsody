@@ -25,9 +25,19 @@ impl ChunkMesh {
     }
 }
 
-/// 只为与空气相邻的面生成四边形，隐藏区块内部面。
-pub fn build_chunk_mesh(chunk: &Chunk) -> ChunkMesh {
-    let origin = chunk.pos().origin();
+/// 只为与非实心方块相邻的面生成四边形，隐藏区块内部与跨区块贴合面。
+///
+/// `block_at_world` 提供世界坐标查询，使区块边界的邻居能查询到相邻区块，
+/// 避免在区块接缝处生成多余的侧面。
+pub fn build_chunk_mesh(
+    chunk: &Chunk,
+    block_at_world: impl Fn(i32, i32, i32) -> Block,
+) -> ChunkMesh {
+    let pos = chunk.pos();
+    let origin = pos.origin();
+    let base_x = pos.x * CHUNK_SIZE;
+    let base_y = pos.y * CHUNK_SIZE;
+    let base_z = pos.z * CHUNK_SIZE;
     let mut mesh = ChunkMesh::default();
 
     for y in 0..CHUNK_SIZE {
@@ -41,10 +51,10 @@ pub fn build_chunk_mesh(chunk: &Chunk) -> ChunkMesh {
                 let min = origin + Vec3::new(x as f32, y as f32, z as f32);
                 for face in Face::ALL {
                     let normal = face.normal();
-                    let neighbor = chunk.block_at(
-                        x + normal.x as i32,
-                        y + normal.y as i32,
-                        z + normal.z as i32,
+                    let neighbor = block_at_world(
+                        base_x + x + normal.x as i32,
+                        base_y + y + normal.y as i32,
+                        base_z + z + normal.z as i32,
                     );
                     if neighbor.is_solid() {
                         continue;
@@ -135,28 +145,53 @@ mod tests {
         chunk
     }
 
+    /// 只为单个区块建网格，区块外的邻居一律视为空气。
+    fn mesh_of(chunk: &Chunk) -> ChunkMesh {
+        build_chunk_mesh(chunk, |x, y, z| chunk.block_at(x, y, z))
+    }
+
     #[test]
     fn empty_chunk_has_no_geometry() {
-        let mesh = build_chunk_mesh(&Chunk::new(ChunkPos::new(0, 0, 0)));
+        let mesh = mesh_of(&Chunk::new(ChunkPos::new(0, 0, 0)));
         assert!(mesh.is_empty());
     }
 
     #[test]
     fn isolated_block_exposes_six_faces() {
-        let mesh = build_chunk_mesh(&chunk_with(&[(1, 1, 1, Block::Stone)]));
+        let mesh = mesh_of(&chunk_with(&[(1, 1, 1, Block::Stone)]));
         assert_eq!(mesh.vertices.len(), 24);
         assert_eq!(mesh.indices.len(), 36);
     }
 
     #[test]
     fn shared_face_is_culled() {
-        let mesh = build_chunk_mesh(&chunk_with(&[
+        let mesh = mesh_of(&chunk_with(&[
             (1, 1, 1, Block::Stone),
             (2, 1, 1, Block::Stone),
         ]));
         // 两个相邻方块共 12 个面，其中 2 个贴合面被隐藏。
         assert_eq!(mesh.vertices.len(), 40);
         assert_eq!(mesh.indices.len(), 60);
+    }
+
+    #[test]
+    fn neighboring_chunk_culls_the_seam_face() {
+        let mut left = Chunk::new(ChunkPos::new(0, 0, 0));
+        let mut right = Chunk::new(ChunkPos::new(1, 0, 0));
+        left.set_block(15, 1, 1, Block::Stone);
+        right.set_block(0, 1, 1, Block::Stone);
+
+        let mesh = build_chunk_mesh(&left, |x, y, z| {
+            if (0..CHUNK_SIZE).contains(&x) {
+                left.block_at(x, y, z)
+            } else {
+                right.block_at(x - CHUNK_SIZE, y, z)
+            }
+        });
+
+        // 单个方块有 6 个面，跨区块贴合面被隐藏后只剩 5 个。
+        assert_eq!(mesh.vertices.len(), 20);
+        assert_eq!(mesh.indices.len(), 30);
     }
 
     #[test]
@@ -169,7 +204,7 @@ mod tests {
                 }
             }
         }
-        let mesh = build_chunk_mesh(&chunk);
+        let mesh = mesh_of(&chunk);
         let faces = 6 * (CHUNK_SIZE * CHUNK_SIZE) as usize;
         assert_eq!(mesh.vertices.len(), faces * 4);
         assert_eq!(mesh.indices.len(), faces * 6);

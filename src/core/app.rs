@@ -38,7 +38,7 @@ impl App {
     pub fn new(config: AppConfig) -> Self {
         Self {
             config,
-            world: World::flat_demo(),
+            world: World::default(),
             window: None,
             renderer: None,
             controller: PlayerController::new(),

@@ -22,6 +22,14 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// 摄像机出生点在世界平面上的位置：世界中央偏后，面向 -Z 观察山地。
+const SPAWN_X: f32 = 48.0;
+const SPAWN_Z: f32 = 84.0;
+/// 出生点高出地表的距离，避免出生在地形内部，同时获得俯瞰山地的视角。
+const SPAWN_CLEARANCE: f32 = 14.0;
+/// 出生时的俯仰角，略微俯视。
+const SPAWN_PITCH: f32 = -0.28;
+
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
     /// 已提交并呈现。
@@ -120,9 +128,13 @@ impl Renderer {
         });
 
         let camera = Camera::new(
-            Vec3::new(16.0, 7.0, 30.0),
+            Vec3::new(
+                SPAWN_X,
+                world.height_at(SPAWN_X as i32, SPAWN_Z as i32) as f32 + SPAWN_CLEARANCE,
+                SPAWN_Z,
+            ),
             0.0,
-            -0.35,
+            SPAWN_PITCH,
             width as f32 / height as f32,
         );
 
@@ -248,7 +260,7 @@ fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> Vec<ChunkBuffers
         .chunks()
         .iter()
         .filter_map(|chunk| {
-            let mesh = build_chunk_mesh(chunk);
+            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
             if mesh.is_empty() {
                 return None;
             }

@@ -22,6 +22,15 @@ impl ChunkPos {
         Self { x, y, z }
     }
 
+    /// 由世界坐标反推所在区块，负坐标同样向下取整。
+    pub fn from_world(x: i32, y: i32, z: i32) -> Self {
+        Self {
+            x: x.div_euclid(CHUNK_SIZE),
+            y: y.div_euclid(CHUNK_SIZE),
+            z: z.div_euclid(CHUNK_SIZE),
+        }
+    }
+
     /// 区块最小角的世界坐标。
     pub fn origin(self) -> Vec3 {
         Vec3::new(
@@ -106,5 +115,16 @@ mod tests {
     fn chunk_origin_is_in_world_coordinates() {
         assert_eq!(ChunkPos::new(1, 0, 1).origin(), Vec3::new(16.0, 0.0, 16.0));
         assert_eq!(ChunkPos::new(0, 0, 0).origin(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn world_coordinates_map_back_to_chunks() {
+        assert_eq!(ChunkPos::from_world(0, 0, 0), ChunkPos::new(0, 0, 0));
+        assert_eq!(ChunkPos::from_world(15, 15, 15), ChunkPos::new(0, 0, 0));
+        assert_eq!(ChunkPos::from_world(16, 17, 31), ChunkPos::new(1, 1, 1));
+        assert_eq!(
+            ChunkPos::from_world(-1, -16, -17),
+            ChunkPos::new(-1, -1, -2)
+        );
     }
 }
