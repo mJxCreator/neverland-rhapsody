@@ -6,6 +6,10 @@ description = "A Rust-based voxel sandbox engine"
 
 [dependencies]
 anyhow = "1.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.34.2"
+pollster = "1.0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wgpu = "30.0.1"
 winit = "0.30"

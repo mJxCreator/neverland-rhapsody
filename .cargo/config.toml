@@ -1,0 +1,5 @@
+# 本机 MinGW 是 mcfgthread 变体（--enable-threads=mcf）。
+# rustc 调用 gcc 时使用 -nodefaultlibs，绕过了 gcc 默认 specs，
+# 因此需要显式补链 mcfgthread，否则 startup CRT 的 __MCF_* 符号未定义。
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-lmcfgthread"]

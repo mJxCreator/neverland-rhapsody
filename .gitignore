@@ -14,14 +14,13 @@
 # 环境变量与凭证
 .env
 .env.*
-.cargo/config.toml
-.cargo/config
 .cargo/credentials
 .cargo/credentials.toml
 
 # 编辑器与 IDE
 .vscode/
 .idea/
+.vs/
 *.swp
 *.swo
 *~
@@ -30,3 +29,6 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 其他
+help.md
