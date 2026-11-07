@@ -50,9 +50,20 @@ pub struct ChunkManager {
 }
 
 impl ChunkManager {
+    /// 创建调度器，并规范化参数：
+    /// 加载半径非负、卸载半径至少比加载半径大 1、单帧预算至少为 1。
+    ///
+    /// 这些约束保证加载区域始终落在卸载区域内部；否则同一区块会在同一帧被加载后立即卸载，
+    /// 预加载将永远无法结束。
     pub fn new(config: ChunkConfig) -> Self {
+        let load_radius = config.load_radius.max(0);
         Self {
-            config,
+            config: ChunkConfig {
+                load_radius,
+                unload_radius: config.unload_radius.max(load_radius + 1),
+                max_loads_per_frame: config.max_loads_per_frame.max(1),
+                max_meshes_per_frame: config.max_meshes_per_frame.max(1),
+            },
             pending: HashSet::new(),
             dirty_meshes: HashSet::new(),
         }
@@ -287,6 +298,29 @@ mod tests {
 
         let update = manager.update(player, &mut world, &mut no_edits, &mut always_unload);
         assert!(update.loaded.is_empty(), "已加载区块不应重复生成");
+    }
+
+    #[test]
+    fn invalid_config_is_normalized_to_prevent_thrashing() {
+        let mut manager = ChunkManager::new(ChunkConfig {
+            load_radius: -1,
+            unload_radius: -3,
+            max_loads_per_frame: 0,
+            max_meshes_per_frame: 0,
+        });
+        assert_eq!(manager.config.load_radius, 0);
+        assert_eq!(manager.config.unload_radius, 1);
+        assert_eq!(manager.config.max_loads_per_frame, 1);
+        assert_eq!(manager.config.max_meshes_per_frame, 1);
+
+        let mut world = World::default();
+        let loaded = manager.preload(ChunkPos::new(0, 0, 0), &mut world, &mut no_edits);
+        assert_eq!(loaded, WORLD_CHUNKS_Y as usize);
+        assert_eq!(world.chunk_count(), loaded);
+
+        // 卸载半径小于加载半径的配置也必须收敛，而不是每帧加载后立刻卸载。
+        let manager = ChunkManager::new(config(2, 1, 1));
+        assert_eq!(manager.config.unload_radius, 3);
     }
 
     #[test]

@@ -28,6 +28,8 @@ const MAX_CAMERA_DELTA: f32 = 0.05;
 const SELECTION_REACH: f32 = 8.0;
 /// 右键放置的方块类型。
 const PLACE_BLOCK: Block = Block::Grass;
+/// 存档写入失败后的重试间隔，避免每帧都重复写盘。
+const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
@@ -45,6 +47,8 @@ pub struct App {
     generation_ms: f64,
     /// 上一帧网格构建与上传耗时（毫秒）。
     mesh_ms: f64,
+    /// 下一次允许重试写入存档的时刻。
+    next_save_retry: Instant,
 }
 
 impl App {
@@ -65,6 +69,7 @@ impl App {
             next_frame: Instant::now(),
             generation_ms: 0.0,
             mesh_ms: 0.0,
+            next_save_retry: Instant::now(),
         }
     }
 
@@ -252,19 +257,21 @@ impl App {
         let player = ChunkPos::from_world(position.x.floor() as i32, 0, position.z.floor() as i32);
 
         let start = Instant::now();
-        // 卸载前先确认存档已落盘；失败时本帧拒绝卸载，数据保留在内存中等待下次重试。
-        let persisted = match self.save.ensure_persisted() {
-            Ok(()) => true,
-            Err(err) => {
-                warn!(error = %format!("{err:#}"), "区块卸载前写入存档失败");
-                false
+        // 写盘失败后按固定间隔重试，避免每帧反复读写整个存档文件。
+        let now = Instant::now();
+        if now >= self.next_save_retry {
+            self.next_save_retry = now + SAVE_RETRY_INTERVAL;
+            if let Err(err) = self.save.ensure_persisted() {
+                warn!(error = %format!("{err:#}"), "世界存档重试写入失败");
             }
-        };
+        }
+        // 即使写盘失败，改动仍完整保留在 WorldSave 的内存待写入队列中，
+        // 卸载区块不会丢失数据；若此时拒绝卸载，持续写盘失败会让已探索区块无界增长。
         let update = self.chunk_manager.update(
             player,
             &mut self.world,
             &mut |pos, world| self.save.apply_chunk(pos, world),
-            &mut |_| persisted,
+            &mut |_| true,
         );
         self.generation_ms = start.elapsed().as_secs_f64() * 1000.0;
         if !update.loaded.is_empty() || !update.unloaded.is_empty() {

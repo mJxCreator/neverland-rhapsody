@@ -68,6 +68,9 @@ pub struct WorldSave {
     edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>>,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
+    /// 主存档读取失败、本次数据来自备份时为 `true`。
+    /// 此时首次写盘不能把损坏的主存档滚动成 `.bak`，否则会覆盖唯一可用的备份。
+    primary_suspect: bool,
 }
 
 impl WorldSave {
@@ -86,17 +89,22 @@ impl WorldSave {
             seed,
             edits: HashMap::new(),
             unsaved: false,
+            primary_suspect: false,
         };
 
         for (index, candidate) in [save.path.clone(), save.backup_path()]
             .into_iter()
             .enumerate()
         {
+            let is_primary = index == 0;
             let text = match fs::read_to_string(&candidate) {
                 Ok(text) => text,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(err) => {
                     warn!(error = %err, path = %candidate.display(), "读取存档失败，尝试下一个来源");
+                    if is_primary {
+                        save.primary_suspect = true;
+                    }
                     continue;
                 }
             };
@@ -111,7 +119,7 @@ impl WorldSave {
                     return save;
                 }
                 Err(err) => {
-                    let source = if index == 0 {
+                    let source = if is_primary {
                         "主存档"
                     } else {
                         "备份存档"
@@ -121,6 +129,9 @@ impl WorldSave {
                         error = %format!("{err:#}"),
                         "{source}不可用，尝试下一个来源"
                     );
+                    if is_primary {
+                        save.primary_suspect = true;
+                    }
                 }
             }
         }
@@ -302,7 +313,8 @@ impl WorldSave {
         let temp = self.temp_path();
         fs::write(&temp, &json).with_context(|| format!("写入临时存档失败: {}", temp.display()))?;
 
-        if self.path.exists() {
+        // 主存档损坏、当前数据来自备份时，跳过滚动，保留唯一可用的备份。
+        if self.path.exists() && !self.primary_suspect {
             let backup = self.backup_path();
             if let Err(err) = fs::rename(&self.path, &backup) {
                 warn!(
@@ -324,6 +336,7 @@ impl WorldSave {
                 .with_context(|| format!("写入存档失败: {}", self.path.display()))?;
         }
         self.unsaved = false;
+        self.primary_suspect = false;
         Ok(())
     }
 
@@ -360,6 +373,13 @@ mod tests {
         for suffix in [".bak", ".tmp"] {
             let _ = fs::remove_file(suffixed(path, suffix));
         }
+    }
+
+    /// 读取存档文件中按区块记录的有效改动数量。
+    fn saved_edit_count(path: &Path) -> usize {
+        let text = fs::read_to_string(path).expect("读取存档失败");
+        let data: SaveFile = serde_json::from_str(&text).expect("解析存档失败");
+        data.chunk_edits.iter().map(|chunk| chunk.edits.len()).sum()
     }
 
     /// 创建只包含指定区块的世界。
@@ -580,6 +600,63 @@ mod tests {
 
         let loaded = WorldSave::load(&path, DEFAULT_SEED);
         assert_eq!(loaded.total_edits(), 1);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn fallback_backup_survives_the_first_write_after_corruption() {
+        let path = temp_path("preserve");
+        remove_all(&path);
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record(BlockEdit {
+            x: 1,
+            y: 1,
+            z: 1,
+            block: Block::Stone,
+        })
+        .expect("写盘应成功");
+        save.record(BlockEdit {
+            x: 2,
+            y: 1,
+            z: 2,
+            block: Block::Dirt,
+        })
+        .expect("写盘应成功");
+        assert_eq!(saved_edit_count(&suffixed(&path, ".bak")), 1);
+
+        fs::write(&path, "not json").expect("破坏主存档失败");
+
+        // 主存档损坏后从备份恢复；此时写盘不能把损坏的主存档滚动成 .bak。
+        let mut recovered = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(recovered.total_edits(), 1);
+        recovered
+            .record(BlockEdit {
+                x: 3,
+                y: 1,
+                z: 3,
+                block: Block::Stone,
+            })
+            .expect("写盘应成功");
+        assert_eq!(
+            saved_edit_count(&suffixed(&path, ".bak")),
+            1,
+            "唯一可用的备份被损坏的主存档覆盖"
+        );
+        assert_eq!(saved_edit_count(&path), 2);
+
+        // 主存档恢复有效后，下一次写盘重新滚动备份。
+        recovered
+            .record(BlockEdit {
+                x: 4,
+                y: 1,
+                z: 4,
+                block: Block::Stone,
+            })
+            .expect("写盘应成功");
+        assert_eq!(saved_edit_count(&suffixed(&path, ".bak")), 2);
+        assert_eq!(saved_edit_count(&path), 3);
 
         remove_all(&path);
     }
