@@ -30,5 +30,9 @@
 Thumbs.db
 desktop.ini
 
+# 运行时数据
+saves/
+
 # 其他
 help.md
+需求文档.md
