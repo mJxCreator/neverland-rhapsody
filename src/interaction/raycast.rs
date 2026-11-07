@@ -120,13 +120,29 @@ fn axis_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::world::WORLD_CHUNKS_Y;
+    use crate::world::{ChunkPos, World};
     use glam::Vec3;
 
     const MAX_DISTANCE: f32 = 200.0;
 
+    /// 只加载测试坐标附近的区块，模拟动态世界。
+    fn loaded_world() -> World {
+        let mut world = World::default();
+        for chunk_y in 0..WORLD_CHUNKS_Y {
+            for chunk_z in 0..2 {
+                for chunk_x in 0..2 {
+                    let chunk = world.generate_chunk(ChunkPos::new(chunk_x, chunk_y, chunk_z));
+                    world.insert_chunk(chunk);
+                }
+            }
+        }
+        world
+    }
+
     #[test]
     fn downward_ray_hits_the_surface_top_face() {
-        let world = World::default();
+        let world = loaded_world();
         let (x, z) = (10, 10);
         let height = world.height_at(x, z);
         let origin = Vec3::new(x as f32 + 0.5, 40.0, z as f32 + 0.5);
@@ -139,14 +155,14 @@ mod tests {
 
     #[test]
     fn upward_ray_into_the_sky_misses() {
-        let world = World::default();
+        let world = loaded_world();
         let origin = Vec3::new(10.5, 40.0, 10.5);
         assert_eq!(raycast(&world, origin, Vec3::Y, MAX_DISTANCE), None);
     }
 
     #[test]
     fn ray_stops_at_max_distance() {
-        let world = World::default();
+        let world = loaded_world();
         let origin = Vec3::new(10.5, 40.0, 10.5);
         // 地表远在 1 格外，短距离射线不应命中。
         assert_eq!(raycast(&world, origin, Vec3::NEG_Y, 1.0), None);
@@ -154,7 +170,7 @@ mod tests {
 
     #[test]
     fn zero_direction_and_invalid_distance_miss() {
-        let world = World::default();
+        let world = loaded_world();
         let origin = Vec3::new(10.5, 40.0, 10.5);
         assert_eq!(raycast(&world, origin, Vec3::ZERO, MAX_DISTANCE), None);
         assert_eq!(raycast(&world, origin, Vec3::NEG_Y, 0.0), None);
@@ -162,7 +178,7 @@ mod tests {
 
     #[test]
     fn ray_from_just_above_the_surface_hits_it() {
-        let world = World::default();
+        let world = loaded_world();
         let (x, z) = (10, 10);
         let height = world.height_at(x, z);
         // 从地表上方 2 格处向下射入，进入面必然是顶面。
@@ -174,7 +190,7 @@ mod tests {
 
     #[test]
     fn ray_starting_inside_a_solid_block_selects_nothing() {
-        let world = World::default();
+        let world = loaded_world();
         let (x, z) = (10, 10);
         let y = world.height_at(x, z) - 1;
         let origin = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
@@ -184,7 +200,7 @@ mod tests {
 
     #[test]
     fn ray_below_the_world_does_not_hit_phantom_stone() {
-        let world = World::default();
+        let world = loaded_world();
         let origin = Vec3::new(10.5, -1.5, 10.5);
 
         assert_eq!(raycast(&world, origin, Vec3::NEG_Y, MAX_DISTANCE), None);

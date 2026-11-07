@@ -23,13 +23,22 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// 摄像机出生点在世界平面上的位置：世界中央偏后，面向 -Z 观察山地。
+/// 出生点在世界平面上的位置：初始区域中央偏后，面向 -Z 观察山地。
 const SPAWN_X: f32 = 48.0;
 const SPAWN_Z: f32 = 84.0;
 /// 出生点高出地表的距离，接近第一人称眼高，便于准星选中近处方块。
 const SPAWN_CLEARANCE: f32 = 3.0;
 /// 出生时的俯仰角，略微俯视。
 const SPAWN_PITCH: f32 = -0.45;
+
+/// 出生点的世界坐标：按地形高度抬升，供上层在创建渲染器前预加载区块。
+pub fn spawn_position(world: &World) -> Vec3 {
+    Vec3::new(
+        SPAWN_X,
+        world.height_at(SPAWN_X as i32, SPAWN_Z as i32) as f32 + SPAWN_CLEARANCE,
+        SPAWN_Z,
+    )
+}
 
 /// 选中线框的棱数（立方体 12 条棱），每条棱两个顶点。
 const SELECTION_EDGE_COUNT: usize = 12;
@@ -148,11 +157,7 @@ impl Renderer {
         });
 
         let camera = Camera::new(
-            Vec3::new(
-                SPAWN_X,
-                world.height_at(SPAWN_X as i32, SPAWN_Z as i32) as f32 + SPAWN_CLEARANCE,
-                SPAWN_Z,
-            ),
+            spawn_position(world),
             0.0,
             SPAWN_PITCH,
             width as f32 / height as f32,
@@ -212,10 +217,14 @@ impl Renderer {
     /// 方块被修改后，重建受影响区块的网格并替换对应的 GPU 缓冲。
     pub fn update_chunks(&mut self, world: &World, positions: &[ChunkPos]) {
         for &pos in positions {
-            let Some(chunk) = world.chunk_at(pos) else {
-                continue;
+            let mesh = match world.chunk_at(pos) {
+                Some(chunk) => build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z)),
+                None => {
+                    // 区块已卸载，释放对应 GPU 资源。
+                    self.chunks.remove(&pos);
+                    continue;
+                }
             };
-            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
             match chunk_buffers(&self.device, &mesh) {
                 Some(buffers) => {
                     self.chunks.insert(pos, buffers);
@@ -226,6 +235,18 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// 释放已卸载区块的 GPU 缓冲。
+    pub fn remove_chunks(&mut self, positions: &[ChunkPos]) {
+        for pos in positions {
+            self.chunks.remove(pos);
+        }
+    }
+
+    /// 当前持有 GPU 网格的区块数量，用于调试统计。
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
     }
 
     /// 绘制一帧。
@@ -324,7 +345,6 @@ impl Renderer {
 fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> HashMap<ChunkPos, ChunkBuffers> {
     world
         .chunks()
-        .iter()
         .filter_map(|chunk| {
             let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
             let buffers = chunk_buffers(device, &mesh)?;

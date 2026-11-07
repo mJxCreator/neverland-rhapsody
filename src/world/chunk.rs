@@ -31,6 +31,15 @@ impl ChunkPos {
         }
     }
 
+    /// 世界坐标在该区块内的局部坐标；调用方应保证坐标确实落在区块内。
+    pub fn local_of(self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+        (
+            x - self.x * CHUNK_SIZE,
+            y - self.y * CHUNK_SIZE,
+            z - self.z * CHUNK_SIZE,
+        )
+    }
+
     /// 区块最小角的世界坐标。
     pub fn origin(self) -> Vec3 {
         Vec3::new(
@@ -126,5 +135,35 @@ mod tests {
             ChunkPos::from_world(-1, -16, -17),
             ChunkPos::new(-1, -1, -2)
         );
+    }
+
+    #[test]
+    fn x_axis_boundaries_round_towards_negative_infinity() {
+        let cases = [(0, 0), (15, 0), (16, 1), (-1, -1), (-16, -1), (-17, -2)];
+        for (world, chunk) in cases {
+            assert_eq!(ChunkPos::from_world(world, 0, 0).x, chunk);
+            assert_eq!(
+                ChunkPos::from_world(world, 0, 0).local_of(world, 0, 0).0,
+                world - chunk * CHUNK_SIZE
+            );
+        }
+    }
+
+    #[test]
+    fn z_axis_boundaries_round_towards_negative_infinity() {
+        let cases = [(0, 0), (15, 0), (16, 1), (-1, -1), (-16, -1), (-17, -2)];
+        for (world, chunk) in cases {
+            let pos = ChunkPos::from_world(0, 0, world);
+            assert_eq!(pos.z, chunk);
+            let (_, _, local_z) = pos.local_of(0, 0, world);
+            assert!((0..CHUNK_SIZE).contains(&local_z), "局部位越界: {local_z}");
+            assert_eq!(local_z, world - chunk * CHUNK_SIZE);
+        }
+    }
+
+    #[test]
+    fn local_coordinates_are_offsets_from_the_chunk_origin() {
+        let pos = ChunkPos::new(-2, 1, 3);
+        assert_eq!(pos.local_of(-17, 20, 52), (15, 4, 4));
     }
 }

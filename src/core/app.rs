@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glam::IVec3;
-use tracing::{error, info, warn};
+use glam::{IVec3, Vec3};
+use tracing::{debug, error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -16,9 +16,9 @@ use super::config::AppConfig;
 use super::time::FrameTimer;
 use crate::interaction::raycast::{placement_target, raycast, RayHit};
 use crate::player::PlayerController;
-use crate::renderer::{RenderOutcome, Renderer};
+use crate::renderer::{spawn_position, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
-use crate::world::{Block, ChunkPos, World};
+use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -34,29 +34,37 @@ pub struct App {
     config: AppConfig,
     world: World,
     save: WorldSave,
+    chunk_manager: ChunkManager,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     controller: PlayerController,
     cursor_grabbed: bool,
     timer: FrameTimer,
     next_frame: Instant,
+    /// 上一帧区块生成耗时（毫秒），用于调试日志。
+    generation_ms: f64,
+    /// 上一帧网格构建与上传耗时（毫秒）。
+    mesh_ms: f64,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let mut world = World::default();
-        let save = WorldSave::load(WorldSave::default_path(), &mut world);
+        let world = World::default();
+        let save = WorldSave::load(WorldSave::default_path(), world.seed());
 
         Self {
             config,
             world,
             save,
+            chunk_manager: ChunkManager::new(ChunkConfig::default()),
             window: None,
             renderer: None,
             controller: PlayerController::new(),
             cursor_grabbed: false,
             timer: FrameTimer::new(),
             next_frame: Instant::now(),
+            generation_ms: 0.0,
+            mesh_ms: 0.0,
         }
     }
 
@@ -88,6 +96,17 @@ impl App {
                 );
 
                 let window = Arc::new(window);
+                // 先按出生点填满初始加载区域，渲染器初始化时即可一次性上传网格。
+                let spawn = spawn_position(&self.world);
+                let player_chunk =
+                    ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
+                let loaded =
+                    self.chunk_manager
+                        .preload(player_chunk, &mut self.world, &mut |pos, world| {
+                            self.save.apply_chunk(pos, world)
+                        });
+                info!(chunks = self.world.chunk_count(), loaded, "初始区块已加载");
+
                 match Renderer::new(window.clone(), window.inner_size(), &self.world) {
                     Ok(renderer) => {
                         info!("渲染器已初始化");
@@ -220,6 +239,59 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_chunks(&self.world, &affected);
         }
+        // 已直接重建，避免调度器重复上传同一批区块。
+        self.chunk_manager.skip_dirty(&affected);
+    }
+
+    /// 推进动态区块生命周期：加载/卸载区块、应用存档改动、按预算重建网格。
+    fn stream_chunks(&mut self) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let position = renderer.camera().position();
+        let player = ChunkPos::from_world(position.x.floor() as i32, 0, position.z.floor() as i32);
+
+        let start = Instant::now();
+        // 卸载前先确认存档已落盘；失败时本帧拒绝卸载，数据保留在内存中等待下次重试。
+        let persisted = match self.save.ensure_persisted() {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(error = %format!("{err:#}"), "区块卸载前写入存档失败");
+                false
+            }
+        };
+        let update = self.chunk_manager.update(
+            player,
+            &mut self.world,
+            &mut |pos, world| self.save.apply_chunk(pos, world),
+            &mut |_| persisted,
+        );
+        self.generation_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if !update.loaded.is_empty() || !update.unloaded.is_empty() {
+            debug!(
+                loaded = update.loaded.len(),
+                unloaded = update.unloaded.len(),
+                "区块生命周期更新"
+            );
+        }
+
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        // 先释放已卸载区块的 GPU 资源，再补建本帧允许的网格。
+        renderer.remove_chunks(&update.unloaded);
+
+        let start = Instant::now();
+        let meshes = self.chunk_manager.take_meshes(player, &self.world);
+        renderer.update_chunks(&self.world, &meshes);
+        self.mesh_ms = start.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    /// 退出前确保内存中的方块改动已经落盘。
+    fn flush_save(&mut self) {
+        if let Err(err) = self.save.ensure_persisted() {
+            warn!(error = %format!("{err:#}"), "退出前写入世界存档失败");
+        }
     }
 
     /// 把一次改动写入存档；失败时只记录日志，不影响继续游戏。
@@ -234,6 +306,9 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             self.controller.update(renderer.camera_mut(), delta_secs);
         }
+
+        // 摄像机移动后先补齐区块，再让射线检测基于最新的已加载世界。
+        self.stream_chunks();
 
         let hit = self.targeted_block();
         if let Some(renderer) = self.renderer.as_mut() {
@@ -277,6 +352,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 info!("收到关闭请求，退出");
+                self.flush_save();
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -290,6 +366,7 @@ impl ApplicationHandler for App {
                             self.release_cursor();
                         } else {
                             info!("按下 Esc，退出");
+                            self.flush_save();
                             event_loop.exit();
                         }
                     }
@@ -342,9 +419,35 @@ impl ApplicationHandler for App {
                 self.draw_frame(stats.delta, event_loop);
 
                 if let Some(fps) = stats.fps {
+                    let (player, player_chunk, gpu_chunks) = match self.renderer.as_ref() {
+                        Some(renderer) => {
+                            let position = renderer.camera().position();
+                            (
+                                position,
+                                ChunkPos::from_world(
+                                    position.x.floor() as i32,
+                                    0,
+                                    position.z.floor() as i32,
+                                ),
+                                renderer.chunk_count(),
+                            )
+                        }
+                        None => (Vec3::ZERO, ChunkPos::new(0, 0, 0), 0),
+                    };
                     info!(
                         fps = f64::from(fps),
                         delta_ms = stats.delta.as_secs_f64() * 1000.0,
+                        player_x = player.x,
+                        player_y = player.y,
+                        player_z = player.z,
+                        chunk_x = player_chunk.x,
+                        chunk_z = player_chunk.z,
+                        loaded_chunks = self.world.chunk_count(),
+                        gpu_chunks,
+                        pending_generation = self.chunk_manager.pending_generation(),
+                        pending_meshes = self.chunk_manager.pending_mesh(),
+                        generation_ms = self.generation_ms,
+                        mesh_ms = self.mesh_ms,
                         "帧率统计"
                     );
                 }

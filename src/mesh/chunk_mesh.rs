@@ -136,6 +136,7 @@ fn face_corners(face: Face, min: Vec3) -> [Vec3; 4] {
 mod tests {
     use super::*;
     use crate::world::chunk::ChunkPos;
+    use crate::world::World;
 
     fn chunk_with(blocks: &[(i32, i32, i32, Block)]) -> Chunk {
         let mut chunk = Chunk::new(ChunkPos::new(0, 0, 0));
@@ -192,6 +193,41 @@ mod tests {
         // 单个方块有 6 个面，跨区块贴合面被隐藏后只剩 5 个。
         assert_eq!(mesh.vertices.len(), 20);
         assert_eq!(mesh.indices.len(), 30);
+    }
+
+    #[test]
+    fn chunk_boundary_faces_follow_neighbor_loading() {
+        let mut world = World::default();
+        let left = ChunkPos::new(0, 0, 0);
+        let right = ChunkPos::new(1, 0, 0);
+
+        let mut chunk = Chunk::new(left);
+        chunk.set_block(15, 1, 1, Block::Stone);
+        world.insert_chunk(chunk);
+
+        let mesh_without_neighbor = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
+            world.block_at(x, y, z)
+        });
+        // 邻居未加载时，区块边界外的格子视为空气，六个面都可见。
+        assert_eq!(mesh_without_neighbor.vertices.len(), 24);
+
+        let mut chunk = Chunk::new(right);
+        chunk.set_block(0, 1, 1, Block::Stone);
+        world.insert_chunk(chunk);
+
+        let mesh_with_neighbor = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
+            world.block_at(x, y, z)
+        });
+        // 邻居加载后，跨区块贴合的侧面被剔除。
+        assert_eq!(mesh_with_neighbor.vertices.len(), 20);
+
+        world.remove_chunk(right);
+
+        let mesh_after_unload = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
+            world.block_at(x, y, z)
+        });
+        // 邻居卸载后边界面需要重新出现。
+        assert_eq!(mesh_after_unload.vertices.len(), 24);
     }
 
     #[test]
