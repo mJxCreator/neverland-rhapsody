@@ -1,24 +1,31 @@
-//! 玩家输入控制器：把键盘与鼠标事件转换为摄像机的移动和视角。
+//! 玩家输入控制器：采集键盘与鼠标事件，输出移动意图与视角增量。
+//!
+//! 控制器不直接修改玩家位置，最终位移统一由物理系统处理。
 
-use glam::Vec3;
 use winit::keyboard::KeyCode;
-
-use crate::renderer::camera::Camera;
 
 /// 每像素鼠标位移对应的弧度。
 const MOUSE_SENSITIVITY: f32 = 0.0022;
-/// 摄像机移动速度（单位/秒）。
-const MOVE_SPEED: f32 = 8.0;
 
-/// 保存当前按键与待应用的鼠标位移，逐帧驱动摄像机。
+/// 一次输入解析得到的移动意图。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MovementIntent {
+    /// 前后意图，`1.0` 表示向前。
+    pub forward: f32,
+    /// 左右意图，`1.0` 表示向右。
+    pub right: f32,
+    /// 是否请求跳跃。
+    pub jump: bool,
+}
+
+/// 保存当前按键与待应用的鼠标位移。
 #[derive(Debug, Default)]
 pub struct PlayerController {
     forward: bool,
     backward: bool,
     left: bool,
     right: bool,
-    up: bool,
-    down: bool,
+    jump: bool,
     look_delta: (f32, f32),
 }
 
@@ -27,15 +34,14 @@ impl PlayerController {
         Self::default()
     }
 
-    /// 记录移动键状态，其余按键忽略。
+    /// 记录移动与跳跃键状态，其余按键忽略。
     pub fn handle_key(&mut self, code: KeyCode, pressed: bool) {
         let slot = match code {
             KeyCode::KeyW => &mut self.forward,
             KeyCode::KeyS => &mut self.backward,
             KeyCode::KeyA => &mut self.left,
             KeyCode::KeyD => &mut self.right,
-            KeyCode::Space => &mut self.up,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => &mut self.down,
+            KeyCode::Space => &mut self.jump,
             _ => return,
         };
         *slot = pressed;
@@ -52,89 +58,91 @@ impl PlayerController {
         *self = Self::default();
     }
 
-    /// 应用视角旋转与键盘位移；`delta_secs` 为本帧时长（秒）。
-    pub fn update(&mut self, camera: &mut Camera, delta_secs: f32) {
-        if self.look_delta != (0.0, 0.0) {
-            // 鼠标向右/向下移动时，视角向右/向下转。
-            camera.rotate(
-                -self.look_delta.0 * MOUSE_SENSITIVITY,
-                -self.look_delta.1 * MOUSE_SENSITIVITY,
-            );
-            self.look_delta = (0.0, 0.0);
-        }
+    /// 取出并清空累计的视角旋转增量（yaw, pitch），单位为弧度。
+    pub fn take_look(&mut self) -> (f32, f32) {
+        // 鼠标向右/向下移动时，视角向右/向下转。
+        let look = (
+            -self.look_delta.0 * MOUSE_SENSITIVITY,
+            -self.look_delta.1 * MOUSE_SENSITIVITY,
+        );
+        self.look_delta = (0.0, 0.0);
+        look
+    }
 
-        let forward = camera.forward();
-        let right = camera.right();
-        let mut direction = Vec3::ZERO;
-        if self.forward {
-            direction += forward;
-        }
-        if self.backward {
-            direction -= forward;
-        }
-        if self.right {
-            direction += right;
-        }
-        if self.left {
-            direction -= right;
-        }
-        if self.up {
-            direction += Vec3::Y;
-        }
-        if self.down {
-            direction -= Vec3::Y;
-        }
-
-        if direction.length_squared() > 0.0 {
-            camera.translate(direction.normalize() * MOVE_SPEED * delta_secs);
+    /// 当前按键组合对应的移动意图。
+    pub fn intent(&self) -> MovementIntent {
+        MovementIntent {
+            forward: axis(self.forward, self.backward),
+            right: axis(self.right, self.left),
+            jump: self.jump,
         }
     }
+}
+
+/// 正负两个按键合成一个 -1..1 的轴值。
+fn axis(positive: bool, negative: bool) -> f32 {
+    f32::from(u8::from(positive)) - f32::from(u8::from(negative))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn camera() -> Camera {
-        Camera::new(Vec3::ZERO, 0.0, 0.0, 1.0)
-    }
-
     #[test]
-    fn movement_keys_change_the_view() {
-        let mut camera = camera();
-        let before = camera.view_proj();
-
+    fn movement_keys_produce_an_intent() {
         let mut controller = PlayerController::new();
         controller.handle_key(KeyCode::KeyW, true);
-        controller.update(&mut camera, 1.0);
+        controller.handle_key(KeyCode::KeyD, true);
 
-        assert_ne!(before, camera.view_proj());
+        let intent = controller.intent();
+        assert_eq!(intent.forward, 1.0);
+        assert_eq!(intent.right, 1.0);
+        assert!(!intent.jump);
     }
 
     #[test]
-    fn mouse_look_changes_the_view() {
-        let mut camera = camera();
-        let before = camera.view_proj();
-
-        let mut controller = PlayerController::new();
-        controller.add_look(100.0, 0.0);
-        controller.update(&mut camera, 0.0);
-
-        assert_ne!(before, camera.view_proj());
-    }
-
-    #[test]
-    fn release_keys_stops_movement() {
-        let mut camera = camera();
-
+    fn opposite_keys_cancel_out() {
         let mut controller = PlayerController::new();
         controller.handle_key(KeyCode::KeyW, true);
-        controller.update(&mut camera, 1.0);
-        let moved = camera.view_proj();
+        controller.handle_key(KeyCode::KeyS, true);
+        assert_eq!(controller.intent().forward, 0.0);
+    }
 
+    #[test]
+    fn space_requests_a_jump() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::Space, true);
+        assert!(controller.intent().jump);
+        controller.handle_key(KeyCode::Space, false);
+        assert!(!controller.intent().jump);
+    }
+
+    #[test]
+    fn mouse_look_is_accumulated_then_consumed() {
+        let mut controller = PlayerController::new();
+        controller.add_look(100.0, -50.0);
+        let look = controller.take_look();
+
+        assert!(look.0 < 0.0, "鼠标右移应向右转");
+        assert!(look.1 > 0.0, "鼠标上移应抬头");
+        assert_eq!(controller.take_look(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn release_keys_stop_movement() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::KeyW, true);
         controller.handle_key(KeyCode::KeyW, false);
-        controller.update(&mut camera, 1.0);
+        assert_eq!(controller.intent(), MovementIntent::default());
+    }
 
-        assert_eq!(moved, camera.view_proj());
+    #[test]
+    fn reset_clears_every_input() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::KeyA, true);
+        controller.add_look(10.0, 10.0);
+        controller.reset();
+        assert_eq!(controller.intent(), MovementIntent::default());
+        assert_eq!(controller.take_look(), (0.0, 0.0));
     }
 }

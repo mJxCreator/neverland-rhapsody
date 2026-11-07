@@ -26,18 +26,19 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// 出生点在世界平面上的位置：初始区域中央偏后，面向 -Z 观察山地。
 const SPAWN_X: f32 = 48.0;
 const SPAWN_Z: f32 = 84.0;
-/// 出生点高出地表的距离，接近第一人称眼高，便于准星选中近处方块。
-const SPAWN_CLEARANCE: f32 = 3.0;
 /// 出生时的俯仰角，略微俯视。
 const SPAWN_PITCH: f32 = -0.45;
 
-/// 出生点的世界坐标：按地形高度抬升，供上层在创建渲染器前预加载区块。
-pub fn spawn_position(world: &World) -> Vec3 {
-    Vec3::new(
+/// 出生姿态：玩家双脚位置、偏航角与俯仰角。
+///
+/// 双脚落在地表高度上，物理系统接管后由重力与碰撞保持贴地。
+pub fn spawn_pose(world: &World) -> (Vec3, f32, f32) {
+    let feet = Vec3::new(
         SPAWN_X,
-        world.height_at(SPAWN_X as i32, SPAWN_Z as i32) as f32 + SPAWN_CLEARANCE,
+        world.height_at(SPAWN_X as i32, SPAWN_Z as i32) as f32,
         SPAWN_Z,
-    )
+    );
+    (feet, 0.0, SPAWN_PITCH)
 }
 
 /// 选中线框的棱数（立方体 12 条棱），每条棱两个顶点。
@@ -85,7 +86,16 @@ pub struct Renderer {
 
 impl Renderer {
     /// 创建 surface/device 与绘制资源；`world` 提供待渲染的区块。
-    pub fn new(window: Arc<Window>, size: PhysicalSize<u32>, world: &World) -> Result<Self> {
+    ///
+    /// 摄像机初始位置与朝向来自玩家实体，由上层按固定步长物理结果持续同步。
+    pub fn new(
+        window: Arc<Window>,
+        size: PhysicalSize<u32>,
+        world: &World,
+        eye_position: Vec3,
+        yaw: f32,
+        pitch: f32,
+    ) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
 
@@ -156,12 +166,7 @@ impl Renderer {
             }],
         });
 
-        let camera = Camera::new(
-            spawn_position(world),
-            0.0,
-            SPAWN_PITCH,
-            width as f32 / height as f32,
-        );
+        let camera = Camera::new(eye_position, yaw, pitch, width as f32 / height as f32);
 
         Ok(Self {
             surface,

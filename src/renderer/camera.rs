@@ -1,4 +1,4 @@
-//! 摄像机：位置、朝向与投影参数生成视图投影矩阵。
+//! 摄像机：由玩家实体位置与朝向派生的第一人称视图。
 
 use glam::camera::rh::proj::directx::perspective;
 use glam::camera::rh::view::look_at_mat4;
@@ -11,6 +11,8 @@ const FAR: f32 = 200.0;
 const MAX_PITCH_DEGREES: f32 = 89.0;
 
 /// 第一人称透视摄像机，用偏航与俯仰描述朝向。
+///
+/// 位置与角度每帧由玩家实体同步，不独立承担移动职责。
 pub struct Camera {
     position: Vec3,
     /// 绕 Y 轴的角度（弧度），增大表示向左转。
@@ -35,15 +37,11 @@ impl Camera {
         self.aspect = aspect;
     }
 
-    /// 叠加视角旋转；yaw 正方向为向左转，pitch 正方向为抬头。
-    pub fn rotate(&mut self, yaw_delta: f32, pitch_delta: f32) {
-        self.yaw += yaw_delta;
-        self.pitch = clamp_pitch(self.pitch + pitch_delta);
-    }
-
-    /// 按世界坐标平移摄像机。
-    pub fn translate(&mut self, delta: Vec3) {
-        self.position += delta;
+    /// 由玩家实体同步摄像机位置与朝向。
+    pub fn set_pose(&mut self, position: Vec3, yaw: f32, pitch: f32) {
+        self.position = position;
+        self.yaw = yaw;
+        self.pitch = clamp_pitch(pitch);
     }
 
     /// 摄像机当前所在的世界坐标。
@@ -56,12 +54,6 @@ impl Camera {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         Vec3::new(-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch)
-    }
-
-    /// 水平右方向的单位向量（不含俯仰）。
-    pub fn right(&self) -> Vec3 {
-        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
-        Vec3::new(cos_yaw, 0.0, -sin_yaw)
     }
 
     /// 视图投影矩阵（右上手坐标系，裁剪空间深度 0..1）。
@@ -92,17 +84,20 @@ mod tests {
     }
 
     #[test]
-    fn right_is_positive_x_by_default() {
-        let camera = test_camera();
-        assert!((camera.right() - Vec3::X).length() < 1e-6);
+    fn pose_changes_the_view() {
+        let mut camera = test_camera();
+        let before = camera.view_proj();
+        camera.set_pose(Vec3::new(1.0, 2.0, 3.0), 0.5, -0.2);
+        assert_ne!(before, camera.view_proj());
+        assert_eq!(camera.position(), Vec3::new(1.0, 2.0, 3.0));
     }
 
     #[test]
     fn pitch_is_clamped() {
         let mut camera = test_camera();
-        camera.rotate(0.0, 10.0);
+        camera.set_pose(Vec3::ZERO, 0.0, 10.0);
         assert!(camera.pitch <= MAX_PITCH_DEGREES.to_radians() + 1e-6);
-        camera.rotate(0.0, -20.0);
+        camera.set_pose(Vec3::ZERO, 0.0, -20.0);
         assert!(camera.pitch >= -MAX_PITCH_DEGREES.to_radians() - 1e-6);
     }
 }

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glam::{IVec3, Vec3};
 use tracing::{debug, error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -15,15 +14,13 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use super::config::AppConfig;
 use super::time::FrameTimer;
 use crate::interaction::raycast::{placement_target, raycast, RayHit};
-use crate::player::PlayerController;
-use crate::renderer::{spawn_position, RenderOutcome, Renderer};
+use crate::player::{PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController};
+use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
 use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
-/// 单帧参与摄像机更新的最大时长，避免窗口卡顿后位置跳变。
-const MAX_CAMERA_DELTA: f32 = 0.05;
 /// 准星射线长度：超出该距离的方块不会被选中。
 const SELECTION_REACH: f32 = 8.0;
 /// 右键放置的方块类型。
@@ -40,6 +37,10 @@ pub struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     controller: PlayerController,
+    player: Player,
+    physics: PhysicsSystem,
+    /// 上一帧实际执行的物理步数，用于调试日志。
+    physics_steps: u32,
     cursor_grabbed: bool,
     timer: FrameTimer,
     next_frame: Instant,
@@ -55,6 +56,11 @@ impl App {
     pub fn new(config: AppConfig) -> Self {
         let world = World::default();
         let save = WorldSave::load(WorldSave::default_path(), world.seed());
+        // 物理参数集中管理，玩家碰撞体尺寸也由同一处提供。
+        let physics = PhysicsSystem::new(PhysicsConfig::default());
+        let (spawn, yaw, pitch) = spawn_pose(&world);
+        let mut player = Player::new(spawn, physics.config().dimensions);
+        player.rotate_look(yaw, pitch);
 
         Self {
             config,
@@ -64,6 +70,9 @@ impl App {
             window: None,
             renderer: None,
             controller: PlayerController::new(),
+            player,
+            physics,
+            physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
             next_frame: Instant::now(),
@@ -102,7 +111,7 @@ impl App {
 
                 let window = Arc::new(window);
                 // 先按出生点填满初始加载区域，渲染器初始化时即可一次性上传网格。
-                let spawn = spawn_position(&self.world);
+                let spawn = self.player.position();
                 let player_chunk =
                     ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
                 let loaded =
@@ -112,7 +121,14 @@ impl App {
                         });
                 info!(chunks = self.world.chunk_count(), loaded, "初始区块已加载");
 
-                match Renderer::new(window.clone(), window.inner_size(), &self.world) {
+                match Renderer::new(
+                    window.clone(),
+                    window.inner_size(),
+                    &self.world,
+                    self.player.eye_position(),
+                    self.player.yaw(),
+                    self.player.pitch(),
+                ) {
                     Ok(renderer) => {
                         info!("渲染器已初始化");
                         self.renderer = Some(renderer);
@@ -176,16 +192,6 @@ impl App {
         )
     }
 
-    /// 摄像机所在方块坐标，用于阻止把方块放进自己所在的位置。
-    fn camera_cell(&self) -> Option<IVec3> {
-        let position = self.renderer.as_ref()?.camera().position();
-        Some(IVec3::new(
-            position.x.floor() as i32,
-            position.y.floor() as i32,
-            position.z.floor() as i32,
-        ))
-    }
-
     /// 左键破坏：把准星选中的方块变成空气。
     fn break_block(&mut self) {
         let Some(hit) = self.targeted_block() else {
@@ -218,7 +224,8 @@ impl App {
         if self.world.block_at(target.x, target.y, target.z).is_solid() {
             return;
         }
-        if self.camera_cell() == Some(target) {
+        // 方块不能放进玩家自身碰撞体，避免角色被生成在方块内部。
+        if self.player.intersects_block(target) {
             return;
         }
         let affected = self
@@ -250,11 +257,13 @@ impl App {
 
     /// 推进动态区块生命周期：加载/卸载区块、应用存档改动、按预算重建网格。
     fn stream_chunks(&mut self) {
-        let Some(renderer) = self.renderer.as_ref() else {
+        if self.renderer.is_none() {
             return;
-        };
-        let position = renderer.camera().position();
-        let player = ChunkPos::from_world(position.x.floor() as i32, 0, position.z.floor() as i32);
+        }
+        // 以玩家实体位置而非摄像机计算目标区块，摄像机只做渲染跟随。
+        let position = self.player.position();
+        let player_chunk =
+            ChunkPos::from_world(position.x.floor() as i32, 0, position.z.floor() as i32);
 
         let start = Instant::now();
         // 写盘失败后按固定间隔重试，避免每帧反复读写整个存档文件。
@@ -267,11 +276,19 @@ impl App {
         }
         // 即使写盘失败，改动仍完整保留在 WorldSave 的内存待写入队列中，
         // 卸载区块不会丢失数据；若此时拒绝卸载，持续写盘失败会让已探索区块无界增长。
+        //
+        // 卸载保护：保留玩家所在区块及其水平一圈邻居。玩家碰撞体最多横跨一格，
+        // 该范围覆盖任何可能的碰撞查询，避免依赖的方块数据先于玩家离开被卸载。
         let update = self.chunk_manager.update(
-            player,
+            player_chunk,
             &mut self.world,
             &mut |pos, world| self.save.apply_chunk(pos, world),
-            &mut |_| true,
+            &mut |pos: ChunkPos| {
+                (pos.x - player_chunk.x)
+                    .abs()
+                    .max((pos.z - player_chunk.z).abs())
+                    > 1
+            },
         );
         self.generation_ms = start.elapsed().as_secs_f64() * 1000.0;
         if !update.loaded.is_empty() || !update.unloaded.is_empty() {
@@ -289,7 +306,7 @@ impl App {
         renderer.remove_chunks(&update.unloaded);
 
         let start = Instant::now();
-        let meshes = self.chunk_manager.take_meshes(player, &self.world);
+        let meshes = self.chunk_manager.take_meshes(player_chunk, &self.world);
         renderer.update_chunks(&self.world, &meshes);
         self.mesh_ms = start.elapsed().as_secs_f64() * 1000.0;
     }
@@ -309,12 +326,30 @@ impl App {
     }
 
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
-        let delta_secs = delta.as_secs_f32().min(MAX_CAMERA_DELTA);
+        // 视角旋转与物理位移解耦：鼠标视角立即生效，位移走固定步长物理。
+        let look = self.controller.take_look();
+        self.player.rotate_look(look.0, look.1);
+
+        let intent = self.controller.intent();
+        let physics_world = PhysicsWorld::new(&self.world);
+        let update = self.physics.update(
+            &mut self.player,
+            &intent,
+            &physics_world,
+            delta.as_secs_f32(),
+        );
+        self.physics_steps = update.steps;
+
+        // 摄像机用物理插值系数跟随玩家，避免固定步长与渲染帧率不同步产生抖动。
+        let alpha = update.alpha;
+        let eye = self.player.interpolated_eye_position(alpha);
+        let yaw = self.player.yaw();
+        let pitch = self.player.pitch();
         if let Some(renderer) = self.renderer.as_mut() {
-            self.controller.update(renderer.camera_mut(), delta_secs);
+            renderer.camera_mut().set_pose(eye, yaw, pitch);
         }
 
-        // 摄像机移动后先补齐区块，再让射线检测基于最新的已加载世界。
+        // 物理移动后先补齐区块，再让射线检测基于最新的已加载世界。
         self.stream_chunks();
 
         let hit = self.targeted_block();
@@ -426,27 +461,24 @@ impl ApplicationHandler for App {
                 self.draw_frame(stats.delta, event_loop);
 
                 if let Some(fps) = stats.fps {
-                    let (player, player_chunk, gpu_chunks) = match self.renderer.as_ref() {
-                        Some(renderer) => {
-                            let position = renderer.camera().position();
-                            (
-                                position,
-                                ChunkPos::from_world(
-                                    position.x.floor() as i32,
-                                    0,
-                                    position.z.floor() as i32,
-                                ),
-                                renderer.chunk_count(),
-                            )
-                        }
-                        None => (Vec3::ZERO, ChunkPos::new(0, 0, 0), 0),
-                    };
+                    let player = self.player.position();
+                    let player_chunk =
+                        ChunkPos::from_world(player.x.floor() as i32, 0, player.z.floor() as i32);
+                    let gpu_chunks = self
+                        .renderer
+                        .as_ref()
+                        .map_or(0, crate::renderer::Renderer::chunk_count);
                     info!(
                         fps = f64::from(fps),
                         delta_ms = stats.delta.as_secs_f64() * 1000.0,
                         player_x = player.x,
                         player_y = player.y,
                         player_z = player.z,
+                        player_vy = self.player.velocity().y,
+                        player_ay = self.player.acceleration().y,
+                        player_grounded = self.player.is_grounded(),
+                        player_state = ?self.player.movement_state(),
+                        physics_steps = self.physics_steps,
                         chunk_x = player_chunk.x,
                         chunk_z = player_chunk.z,
                         loaded_chunks = self.world.chunk_count(),

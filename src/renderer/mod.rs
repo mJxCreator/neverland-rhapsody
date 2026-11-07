@@ -6,4 +6,4 @@ pub mod pipeline;
 #[allow(clippy::module_inception)]
 pub mod renderer;
 
-pub use self::renderer::{spawn_position, RenderOutcome, Renderer};
+pub use self::renderer::{spawn_pose, RenderOutcome, Renderer};

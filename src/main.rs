@@ -1,6 +1,6 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.9：动态区块世界。
+//! 当前里程碑 v0.10：玩家实体与物理碰撞。
 
 mod core;
 mod interaction;
