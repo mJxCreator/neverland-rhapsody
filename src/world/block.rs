@@ -48,7 +48,8 @@ impl Face {
 }
 
 /// 方块类型；`Air` 表示空位。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum Block {
     Air = 0,

@@ -16,6 +16,7 @@ use super::time::FrameTimer;
 use crate::interaction::raycast::{placement_target, raycast, RayHit};
 use crate::player::PlayerController;
 use crate::renderer::{RenderOutcome, Renderer};
+use crate::save::{BlockEdit, WorldSave};
 use crate::world::{Block, ChunkPos, World};
 
 /// 目标帧间隔，约 60 FPS。
@@ -31,6 +32,7 @@ const PLACE_BLOCK: Block = Block::Grass;
 pub struct App {
     config: AppConfig,
     world: World,
+    save: WorldSave,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     controller: PlayerController,
@@ -41,9 +43,13 @@ pub struct App {
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
+        let mut world = World::default();
+        let save = WorldSave::load(WorldSave::default_path(), &mut world);
+
         Self {
             config,
-            world: World::default(),
+            world,
+            save,
             window: None,
             renderer: None,
             controller: PlayerController::new(),
@@ -155,6 +161,12 @@ impl App {
             .set_block(hit.block.x, hit.block.y, hit.block.z, Block::Air);
         if !affected.is_empty() {
             info!(block = ?hit.block, "方块已破坏");
+            self.remember_edit(BlockEdit {
+                x: hit.block.x,
+                y: hit.block.y,
+                z: hit.block.z,
+                block: Block::Air,
+            });
         }
         self.rebuild_chunks(affected);
     }
@@ -173,6 +185,12 @@ impl App {
             .set_block(target.x, target.y, target.z, PLACE_BLOCK);
         if !affected.is_empty() {
             info!(block = ?target, "方块已放置");
+            self.remember_edit(BlockEdit {
+                x: target.x,
+                y: target.y,
+                z: target.z,
+                block: PLACE_BLOCK,
+            });
         }
         self.rebuild_chunks(affected);
     }
@@ -184,6 +202,13 @@ impl App {
         }
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_chunks(&self.world, &affected);
+        }
+    }
+
+    /// 把一次改动写入存档；失败时只记录日志，不影响继续游戏。
+    fn remember_edit(&mut self, edit: BlockEdit) {
+        if let Err(err) = self.save.record(edit) {
+            warn!(error = %format!("{err:#}"), "世界存档写入失败");
         }
     }
 
