@@ -8,5 +8,5 @@ pub mod terrain;
 pub mod world;
 
 pub use self::block::{Block, Face};
-pub use self::chunk::{Chunk, CHUNK_SIZE};
+pub use self::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
 pub use self::world::World;

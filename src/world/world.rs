@@ -42,6 +42,11 @@ impl World {
         &self.chunks
     }
 
+    /// 按区块坐标读取区块。
+    pub fn chunk_at(&self, pos: ChunkPos) -> Option<&Chunk> {
+        Self::chunk_index(pos).map(|index| &self.chunks[index])
+    }
+
     /// 某一世界方柱的地表高度。
     pub fn height_at(&self, world_x: i32, world_z: i32) -> i32 {
         self.terrain.height_at(world_x, world_z)
@@ -61,6 +66,57 @@ impl World {
             y - pos.y * CHUNK_SIZE,
             z - pos.z * CHUNK_SIZE,
         )
+    }
+
+    /// 写入世界坐标下的方块，返回需要重建网格的区块：自身以及与该方块相邻的区块。
+    ///
+    /// 坐标超出世界范围或方块没有变化时返回空列表。
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: Block) -> Vec<ChunkPos> {
+        if y < 0 {
+            return Vec::new();
+        }
+        let pos = ChunkPos::from_world(x, y, z);
+        let Some(index) = Self::chunk_index(pos) else {
+            return Vec::new();
+        };
+
+        let local_x = x - pos.x * CHUNK_SIZE;
+        let local_y = y - pos.y * CHUNK_SIZE;
+        let local_z = z - pos.z * CHUNK_SIZE;
+
+        let chunk = &mut self.chunks[index];
+        if chunk.block_at(local_x, local_y, local_z) == block {
+            return Vec::new();
+        }
+        chunk.set_block(local_x, local_y, local_z, block);
+
+        let mut affected = vec![pos];
+        let mut neighbors = [None; 6];
+        if local_x == 0 {
+            neighbors[0] = Some(ChunkPos::new(pos.x - 1, pos.y, pos.z));
+        }
+        if local_x == CHUNK_SIZE - 1 {
+            neighbors[1] = Some(ChunkPos::new(pos.x + 1, pos.y, pos.z));
+        }
+        if local_y == 0 {
+            neighbors[2] = Some(ChunkPos::new(pos.x, pos.y - 1, pos.z));
+        }
+        if local_y == CHUNK_SIZE - 1 {
+            neighbors[3] = Some(ChunkPos::new(pos.x, pos.y + 1, pos.z));
+        }
+        if local_z == 0 {
+            neighbors[4] = Some(ChunkPos::new(pos.x, pos.y, pos.z - 1));
+        }
+        if local_z == CHUNK_SIZE - 1 {
+            neighbors[5] = Some(ChunkPos::new(pos.x, pos.y, pos.z + 1));
+        }
+        for neighbor in neighbors.into_iter().flatten() {
+            if Self::chunk_index(neighbor).is_some() {
+                affected.push(neighbor);
+            }
+        }
+
+        affected
     }
 
     /// 区块坐标到集合下标；超出世界范围的区块返回 `None`。
@@ -132,5 +188,38 @@ mod tests {
                 assert_eq!(a.block_at(x, height - 1, z), b.block_at(x, height - 1, z));
             }
         }
+    }
+
+    #[test]
+    fn set_block_writes_and_reports_the_chunk() {
+        let mut world = World::new(DEFAULT_SEED);
+        let height = world.height_at(10, 10);
+        assert_eq!(world.block_at(10, height, 10), Block::Air);
+
+        let affected = world.set_block(10, height, 10, Block::Stone);
+
+        assert_eq!(world.block_at(10, height, 10), Block::Stone);
+        assert_eq!(affected, vec![ChunkPos::new(0, 0, 0)]);
+    }
+
+    #[test]
+    fn edits_on_a_chunk_border_report_neighbors() {
+        let mut world = World::new(DEFAULT_SEED);
+        // x = 15 是第 0 号区块的最后一列，x 方向邻居也需要重建接缝面。
+        let affected = world.set_block(15, 0, 8, Block::Air);
+
+        assert_eq!(world.block_at(15, 0, 8), Block::Air);
+        assert_eq!(
+            affected,
+            vec![ChunkPos::new(0, 0, 0), ChunkPos::new(1, 0, 0)]
+        );
+    }
+
+    #[test]
+    fn unchanged_or_out_of_bounds_edits_report_nothing() {
+        let mut world = World::new(DEFAULT_SEED);
+        assert!(world.set_block(10, 0, 10, Block::Stone).is_empty());
+        assert!(world.set_block(200, 10, 10, Block::Air).is_empty());
+        assert!(world.set_block(10, -5, 10, Block::Air).is_empty());
     }
 }

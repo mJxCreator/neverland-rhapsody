@@ -1,5 +1,6 @@
-//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制区块网格。
+//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制区块网格与选中线框。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -11,8 +12,8 @@ use winit::window::Window;
 
 use super::camera::Camera;
 use super::pipeline::{self, DEPTH_FORMAT};
-use crate::mesh::build_chunk_mesh;
-use crate::world::World;
+use crate::mesh::{build_chunk_mesh, ChunkMesh};
+use crate::world::{ChunkPos, World};
 
 /// 天空清屏色。
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -67,7 +68,7 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     selection_buffer: wgpu::Buffer,
     selection: Option<IVec3>,
-    chunks: Vec<ChunkBuffers>,
+    chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     camera: Camera,
@@ -203,6 +204,25 @@ impl Renderer {
         self.selection = block;
     }
 
+    /// 方块被修改后，重建受影响区块的网格并替换对应的 GPU 缓冲。
+    pub fn update_chunks(&mut self, world: &World, positions: &[ChunkPos]) {
+        for &pos in positions {
+            let Some(chunk) = world.chunk_at(pos) else {
+                continue;
+            };
+            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
+            match chunk_buffers(&self.device, &mesh) {
+                Some(buffers) => {
+                    self.chunks.insert(pos, buffers);
+                }
+                None => {
+                    // 区块已被挖空，移除其绘制缓冲。
+                    self.chunks.remove(&pos);
+                }
+            }
+        }
+    }
+
     /// 绘制一帧。
     pub fn render(&mut self) -> RenderOutcome {
         let view_proj: Mat4 = self.camera.view_proj();
@@ -269,7 +289,7 @@ impl Renderer {
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            for chunk in &self.chunks {
+            for chunk in self.chunks.values() {
                 render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -296,26 +316,13 @@ impl Renderer {
 }
 
 /// 把每个非空区块的网格上传为顶点/索引缓冲。
-fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> Vec<ChunkBuffers> {
+fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> HashMap<ChunkPos, ChunkBuffers> {
     world
         .chunks()
         .iter()
         .filter_map(|chunk| {
             let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
-            if mesh.is_empty() {
-                return None;
-            }
-
-            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("chunk vertices"),
-                contents: bytemuck::cast_slice(&mesh.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("chunk indices"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+            let buffers = chunk_buffers(device, &mesh)?;
 
             info!(
                 chunk = ?chunk.pos(),
@@ -324,13 +331,33 @@ fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> Vec<ChunkBuffers
                 "区块网格已上传"
             );
 
-            Some(ChunkBuffers {
-                vertex_buffer,
-                index_buffer,
-                index_count: mesh.indices.len() as u32,
-            })
+            Some((chunk.pos(), buffers))
         })
         .collect()
+}
+
+/// 为一份网格创建 GPU 缓冲；空网格返回 `None`。
+fn chunk_buffers(device: &wgpu::Device, mesh: &ChunkMesh) -> Option<ChunkBuffers> {
+    if mesh.is_empty() {
+        return None;
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("chunk vertices"),
+        contents: bytemuck::cast_slice(&mesh.vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("chunk indices"),
+        contents: bytemuck::cast_slice(&mesh.indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    Some(ChunkBuffers {
+        vertex_buffer,
+        index_buffer,
+        index_count: mesh.indices.len() as u32,
+    })
 }
 
 /// 立方体的 12 条棱，用顶点下标成对表示。

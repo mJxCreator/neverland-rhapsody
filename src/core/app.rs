@@ -13,10 +13,10 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
-use crate::interaction::raycast::raycast;
+use crate::interaction::raycast::{placement_target, raycast, RayHit};
 use crate::player::PlayerController;
 use crate::renderer::{RenderOutcome, Renderer};
-use crate::world::World;
+use crate::world::{Block, ChunkPos, World};
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -24,6 +24,8 @@ const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 const MAX_CAMERA_DELTA: f32 = 0.05;
 /// 准星射线长度：超出该距离的方块不会被选中。
 const SELECTION_REACH: f32 = 8.0;
+/// 右键放置的方块类型。
+const PLACE_BLOCK: Block = Block::Grass;
 
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
@@ -131,6 +133,60 @@ impl App {
         self.controller.reset();
     }
 
+    /// 当前准星命中的方块。
+    fn targeted_block(&mut self) -> Option<RayHit> {
+        let renderer = self.renderer.as_mut()?;
+        let camera = renderer.camera_mut();
+        raycast(
+            &self.world,
+            camera.position(),
+            camera.forward(),
+            SELECTION_REACH,
+        )
+    }
+
+    /// 左键破坏：把准星选中的方块变成空气。
+    fn break_block(&mut self) {
+        let Some(hit) = self.targeted_block() else {
+            return;
+        };
+        let affected = self
+            .world
+            .set_block(hit.block.x, hit.block.y, hit.block.z, Block::Air);
+        if !affected.is_empty() {
+            info!(block = ?hit.block, "方块已破坏");
+        }
+        self.rebuild_chunks(affected);
+    }
+
+    /// 右键放置：在命中面外侧的空格放下一块草方块。
+    fn place_block(&mut self) {
+        let Some(hit) = self.targeted_block() else {
+            return;
+        };
+        let target = placement_target(&hit);
+        if self.world.block_at(target.x, target.y, target.z).is_solid() {
+            return;
+        }
+        let affected = self
+            .world
+            .set_block(target.x, target.y, target.z, PLACE_BLOCK);
+        if !affected.is_empty() {
+            info!(block = ?target, "方块已放置");
+        }
+        self.rebuild_chunks(affected);
+    }
+
+    /// 方块变化后重建受影响区块的网格。
+    fn rebuild_chunks(&mut self, affected: Vec<ChunkPos>) {
+        if affected.is_empty() {
+            return;
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.update_chunks(&self.world, &affected);
+        }
+    }
+
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.renderer.as_mut() {
             self.controller.update(
@@ -207,9 +263,22 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button,
                 ..
-            } if !self.cursor_grabbed => self.grab_cursor(),
+            } => {
+                if !self.cursor_grabbed {
+                    // 首次点击只用于捕获鼠标，避免误触挖掘。
+                    if button == MouseButton::Left {
+                        self.grab_cursor();
+                    }
+                    return;
+                }
+                match button {
+                    MouseButton::Left => self.break_block(),
+                    MouseButton::Right => self.place_block(),
+                    _ => {}
+                }
+            }
             WindowEvent::Focused(false) => {
                 if self.cursor_grabbed {
                     warn!("窗口失去焦点，释放鼠标捕获");

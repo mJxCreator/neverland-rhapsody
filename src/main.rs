@@ -1,6 +1,6 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.6：射线检测。
+//! 当前里程碑 v0.7：方块交互。
 
 mod core;
 mod interaction;

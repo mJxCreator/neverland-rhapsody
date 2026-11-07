@@ -10,7 +10,7 @@ pub const CHUNK_SIZE: i32 = 16;
 pub const CHUNK_VOLUME: usize = (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize;
 
 /// 区块在区块坐标系中的位置。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkPos {
     pub x: i32,
     pub y: i32,

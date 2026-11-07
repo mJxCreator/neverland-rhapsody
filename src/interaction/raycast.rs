@@ -64,6 +64,12 @@ pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) 
     }
 }
 
+/// 放置目标：命中面外侧紧邻的那一格。
+pub fn placement_target(hit: &RayHit) -> IVec3 {
+    let normal = hit.face.normal();
+    hit.block + IVec3::new(normal.x as i32, normal.y as i32, normal.z as i32)
+}
+
 /// 计算三个轴上的步进方向、到下一条边界的距离，以及跨过一整格的距离。
 ///
 /// 方向分量为 0 的轴上步进为 0、距离为无穷大，遍历永远不会选中该轴。
@@ -155,5 +161,21 @@ mod tests {
         let hit = raycast(&world, origin, Vec3::new(0.0, -3.0, 0.0), 5.0).expect("应命中地表");
         assert_eq!(hit.block, IVec3::new(x, height - 1, z));
         assert_eq!(hit.face, Face::PosY);
+    }
+
+    #[test]
+    fn placement_target_is_outside_the_hit_face() {
+        let block = IVec3::new(4, 5, 6);
+        let top = RayHit {
+            block,
+            face: Face::PosY,
+        };
+        assert_eq!(placement_target(&top), IVec3::new(4, 6, 6));
+
+        let left = RayHit {
+            block,
+            face: Face::NegX,
+        };
+        assert_eq!(placement_target(&left), IVec3::new(3, 5, 6));
     }
 }
