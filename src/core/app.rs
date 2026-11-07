@@ -21,11 +21,16 @@ use crate::interaction::{
     ItemUse, MiningOutcome, MiningState, MiningTarget, RayHit,
 };
 use crate::item::{
-    collect_pickups, tool, DroppedItemConfig, DroppedItemStore, Inventory, ItemStack, Wear,
-    HOTBAR_OFFSET, STARTER_TOOLS,
+    collect_pickups, crafting, recipe_registry, tool, DroppedItemConfig, DroppedItemStore,
+    Inventory, ItemId, ItemStack, RecipeCategory, RecipeId, Wear, HOTBAR_OFFSET,
 };
-use crate::player::{PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController};
-use crate::renderer::{spawn_pose, ClickButton, InventoryUi, RenderOutcome, Renderer};
+use crate::player::{
+    damage, find_respawn_position, Damage, DamageOutcome, DamageSource, PhysicsConfig,
+    PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival,
+};
+use crate::renderer::{
+    spawn_pose, ClickButton, CraftingUi, DeathAction, DeathUi, InventoryUi, RenderOutcome, Renderer,
+};
 use crate::save::{BlockEdit, WorldSave};
 use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 
@@ -57,6 +62,14 @@ pub struct App {
     inventory: Inventory,
     /// 背包界面状态（开关、鼠标位置、拖动中的物品）。
     inventory_ui: InventoryUi,
+    /// 合成界面状态。
+    crafting_ui: CraftingUi,
+    /// 死亡界面状态。
+    death_ui: DeathUi,
+    /// 生命值、死亡状态与无敌帧。
+    survival: Survival,
+    /// 初始出生点；用于重生时的安全落点搜索。
+    spawn_anchor: Vec3,
     /// 世界掉落物。
     dropped: DroppedItemStore,
     /// 掉落物行为参数。
@@ -84,13 +97,23 @@ impl App {
         let mut player = Player::new(spawn, physics.config().dimensions);
         player.rotate_look(yaw, pitch);
 
-        // 旧档沿用已有背包；没有玩家数据的新世界发放示例工具，便于直接验收。
+        // 旧档沿用已有背包；新世界只发放无法通过采集获得的铁锭测试材料。
         let (inventory, selected_hotbar) = save
             .player()
             .map(Inventory::from_saved)
             .unwrap_or_else(|| (Self::starter_inventory(), 0));
+        let survival = save
+            .survival()
+            .map(Survival::from_saved)
+            .unwrap_or_default();
         let mut hotbar = Hotbar::new();
         hotbar.set_selected(selected_hotbar);
+        debug!(
+            recipes = recipe_registry::enabled().count(),
+            tools = recipe_registry::by_category(RecipeCategory::Tools).count(),
+            materials = recipe_registry::by_category(RecipeCategory::Materials).count(),
+            "配方注册表已加载"
+        );
 
         Self {
             config,
@@ -107,6 +130,10 @@ impl App {
             hotbar,
             inventory,
             inventory_ui: InventoryUi::new(),
+            crafting_ui: CraftingUi::new(),
+            death_ui: DeathUi::new(),
+            survival,
+            spawn_anchor: spawn,
             dropped: DroppedItemStore::new(),
             drop_config: DroppedItemConfig::default(),
             physics_steps: 0,
@@ -119,13 +146,12 @@ impl App {
         }
     }
 
-    /// 新建世界的示例工具：按快捷栏 1→9 号槽位依次放入木/石/铁镐、斧、铲。
-    ///
-    /// 本版本没有合成系统，示例工具让工具与耐久系统可以直接实机验收。
+    /// 新世界初始物品：铁锭没有冶炼来源，作为明确的测试材料发放；
+    /// 木材与石头由玩家按“采集 → 木棍 → 木镐 → 石镐”的合成闭环获得。
     fn starter_inventory() -> Inventory {
         let mut inventory = Inventory::new();
-        for (index, item) in STARTER_TOOLS.iter().copied().enumerate() {
-            inventory.set_slot(HOTBAR_OFFSET + index, ItemStack::new(item, 1));
+        if let Some(stack) = ItemStack::new(ItemId::IRON_INGOT, 4) {
+            inventory.set_slot(HOTBAR_OFFSET, Some(stack));
         }
         inventory
     }
@@ -239,7 +265,7 @@ impl App {
 
     /// 打开背包界面：暂停视角与挖掘输入，但世界物理与区块流送继续运行。
     fn open_inventory(&mut self) {
-        if self.renderer.is_none() {
+        if self.renderer.is_none() || self.survival.is_dead() || self.crafting_ui.is_open() {
             return;
         }
         if let Some(window) = self.window.as_ref() {
@@ -265,6 +291,153 @@ impl App {
         self.persist_player();
         self.grab_cursor();
         info!("背包已关闭");
+    }
+
+    /// 打开合成界面：玩家输入暂停，但世界继续运行。
+    fn open_crafting(&mut self) {
+        if self.renderer.is_none() || self.survival.is_dead() || self.inventory_ui.is_open() {
+            return;
+        }
+        if let Some(window) = self.window.as_ref() {
+            if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
+                warn!(error = %err, "打开合成界面时释放鼠标捕获失败");
+            }
+            window.set_cursor_visible(true);
+        }
+        self.cursor_grabbed = false;
+        self.mining_held = false;
+        self.mining.cancel();
+        self.controller.reset();
+        self.crafting_ui.open();
+        info!("合成界面已打开，按 C 或 Esc 关闭");
+    }
+
+    /// 关闭合成界面并恢复鼠标捕获；合成结果已在点击时写盘。
+    fn close_crafting(&mut self) {
+        self.crafting_ui.close();
+        self.persist_player();
+        self.grab_cursor();
+        info!("合成界面已关闭");
+    }
+
+    /// 执行一次合成；失败原因回显到界面，不修改背包。
+    fn craft_recipe(&mut self, recipe_id: RecipeId) {
+        match crafting::craft_by_id(recipe_id, &mut self.inventory) {
+            Ok(output) => {
+                self.crafting_ui.show_success(output);
+                self.persist_player();
+                info!(recipe = ?recipe_id, item = ?output.item(), "合成成功");
+            }
+            Err(error) => {
+                self.crafting_ui.show_failure(error);
+                info!(recipe = ?recipe_id, error = ?error, "合成失败");
+            }
+        }
+    }
+
+    /// 统一伤害结算：刷新 HUD 反馈，并在致死时进入死亡流程。
+    fn apply_damage(&mut self, damage: Damage) -> DamageOutcome {
+        let source = damage.source();
+        let outcome = damage::apply(&mut self.survival, damage);
+        match outcome {
+            DamageOutcome::Ignored => {}
+            DamageOutcome::Applied { .. } => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.hud_mut().show_damage();
+                }
+                self.persist_player();
+                info!(
+                    source = source.label(),
+                    health = self.survival.health(),
+                    "玩家受到伤害"
+                );
+            }
+            DamageOutcome::Killed => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.hud_mut().show_damage();
+                }
+                info!(source = source.label(), "玩家死亡");
+                self.enter_death(source);
+            }
+        }
+        outcome
+    }
+
+    /// 进入死亡状态：关闭其他界面、释放输入并显示死亡界面。
+    fn enter_death(&mut self, source: DamageSource) {
+        if self.death_ui.is_open() {
+            return;
+        }
+        self.inventory_ui.force_close(&mut self.inventory);
+        self.crafting_ui.close();
+        self.release_cursor();
+        self.death_ui.open(source);
+        self.persist_player();
+        info!(source = source.label(), "死亡界面已打开");
+    }
+
+    /// 重生：确保出生区块已加载，在出生点附近寻找安全落点并恢复满血。
+    fn respawn(&mut self) {
+        self.ensure_spawn_chunks();
+        let dimensions = self.physics.config().dimensions;
+        let position = find_respawn_position(&self.world, self.spawn_anchor, dimensions);
+        self.player.teleport(position);
+        self.physics.reset();
+        self.survival.respawn();
+        self.death_ui.close();
+        self.controller.reset();
+        self.persist_player();
+        info!(x = position.x, y = position.y, z = position.z, "玩家已重生");
+    }
+
+    /// 重生前同步加载出生点周围区块，保证安全落点搜索看到真实地形。
+    fn ensure_spawn_chunks(&mut self) {
+        let spawn = self.spawn_anchor;
+        let spawn_chunk = ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
+        let desired = ChunkManager::desired_positions(spawn_chunk, 1);
+        let mut loaded = Vec::new();
+        let mut edited = Vec::new();
+        for pos in desired {
+            if self.world.contains_chunk(pos) {
+                continue;
+            }
+            let chunk = self.world.generate_chunk(pos);
+            if !self.world.insert_chunk(chunk) {
+                continue;
+            }
+            edited.extend(self.save.apply_chunk(pos, &mut self.world));
+            let records = self.save.chunk_drops(pos).to_vec();
+            self.dropped.restore_chunk(pos, &records);
+            loaded.push(pos);
+        }
+        if loaded.is_empty() {
+            return;
+        }
+
+        // 新加载区块、其水平邻居以及存档改动的相邻区块都要重建，避免边界残面。
+        let mut affected = loaded.clone();
+        for pos in &loaded {
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let neighbor = ChunkPos::new(pos.x + dx, pos.y, pos.z + dz);
+                    if neighbor != *pos
+                        && self.world.contains_chunk(neighbor)
+                        && !affected.contains(&neighbor)
+                    {
+                        affected.push(neighbor);
+                    }
+                }
+            }
+        }
+        for pos in edited {
+            if self.world.contains_chunk(pos) && !affected.contains(&pos) {
+                affected.push(pos);
+            }
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.update_chunks(&self.world, &affected);
+        }
+        self.chunk_manager.skip_dirty(&affected);
     }
 
     /// 当前准星命中的方块。
@@ -471,10 +644,14 @@ impl App {
         self.mesh_ms = start.elapsed().as_secs_f64() * 1000.0;
     }
 
-    /// 退出前确保内存中的方块改动、掉落物与玩家背包已经落盘。
+    /// 退出前确保内存中的方块改动、掉落物、玩家背包与生命值已经落盘。
     fn flush_save(&mut self) {
         // 拖动中的物品先归位，避免关闭界面时丢失。
-        let _ = self.inventory_ui.try_close(&mut self.inventory);
+        if !self.inventory_ui.try_close(&mut self.inventory) {
+            self.inventory_ui.force_close(&mut self.inventory);
+        }
+        self.crafting_ui.close();
+        self.death_ui.close();
         self.persist_player();
 
         for pos in self.world.chunk_positions() {
@@ -486,11 +663,11 @@ impl App {
         }
     }
 
-    /// 把当前背包与快捷栏选择写入存档；失败只记录日志，不中断游戏。
+    /// 把当前背包、快捷栏选择与生存状态写入存档；失败只记录日志，不中断游戏。
     fn persist_player(&mut self) {
         let saved = self.inventory.to_saved(self.hotbar.selected_index());
-        if let Err(err) = self.save.set_player(saved) {
-            warn!(error = %format!("{err:#}"), "玩家背包写入存档失败");
+        if let Err(err) = self.save.set_player_state(saved, self.survival.to_saved()) {
+            warn!(error = %format!("{err:#}"), "玩家状态写入存档失败");
         }
     }
 
@@ -529,6 +706,15 @@ impl App {
             .update(&mut self.player, &intent, &physics_world, delta_secs);
         self.physics_steps = update.steps;
 
+        // 生命值计时与真实落地事件结算：下落距离由物理步落地瞬间计算，
+        // 不按帧高度差累加，避免插值与积分噪声产生误伤。
+        self.survival.update(delta_secs);
+        if let Some(distance) = update.landing_fall {
+            if let Some(fall_damage) = damage::fall_damage(distance) {
+                self.apply_damage(fall_damage);
+            }
+        }
+
         // 摄像机用物理插值系数跟随玩家，避免固定步长与渲染帧率不同步产生抖动。
         let alpha = update.alpha;
         let eye = self.player.interpolated_eye_position(alpha);
@@ -562,12 +748,20 @@ impl App {
             self.persist_player();
         }
 
-        let inventory_open = self.inventory_ui.is_open();
-        let hit = self.targeted_block();
+        let death_open = self.survival.is_dead();
+        let ui_blocking = self.inventory_ui.is_open() || self.crafting_ui.is_open() || death_open;
+        if ui_blocking {
+            self.mining.cancel();
+        }
+        let hit = if ui_blocking {
+            None
+        } else {
+            self.targeted_block()
+        };
         let mining_target = self.mining_target(hit);
-        let outcome = self
-            .mining
-            .update(self.mining_held, mining_target, delta_secs);
+        let outcome =
+            self.mining
+                .update(self.mining_held && !ui_blocking, mining_target, delta_secs);
 
         let mut selection = hit.map(|hit| hit.block);
         if let MiningOutcome::Completed { block } = outcome {
@@ -601,16 +795,30 @@ impl App {
         let progress = self.mining.progress();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.hud_mut().update(delta_secs);
-            renderer.set_selection(if inventory_open { None } else { selection });
             renderer
                 .hud_mut()
-                .set(selected_slot, slots, progress, inventory_open);
+                .set_health(self.survival.health(), self.survival.max_health());
+            renderer.set_selection(if ui_blocking { None } else { selection });
+            renderer
+                .hud_mut()
+                .set(selected_slot, slots, progress, ui_blocking);
             renderer.update_particles(delta_secs);
             self.dropped.build_vertices(renderer.drop_vertices_mut());
             let viewport = renderer.viewport();
             let mut ui_vertices = Vec::new();
-            self.inventory_ui
-                .build(&mut ui_vertices, &self.inventory, selected_slot, viewport);
+            if death_open {
+                self.death_ui.build(&mut ui_vertices, viewport);
+            } else if self.crafting_ui.is_open() {
+                self.crafting_ui.build(
+                    &mut ui_vertices,
+                    recipe_registry::all(),
+                    &self.inventory,
+                    viewport,
+                );
+            } else {
+                self.inventory_ui
+                    .build(&mut ui_vertices, &self.inventory, selected_slot, viewport);
+            }
             renderer.set_ui_vertices(ui_vertices);
         }
 
@@ -675,9 +883,15 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
+                // 死亡状态下只能通过死亡界面操作，键盘不再驱动任何游戏行为。
+                if self.survival.is_dead() {
+                    return;
+                }
                 if code == KeyCode::Escape {
                     if pressed {
-                        if self.inventory_ui.is_open() {
+                        if self.crafting_ui.is_open() {
+                            self.close_crafting();
+                        } else if self.inventory_ui.is_open() {
                             self.close_inventory();
                         } else if self.cursor_grabbed {
                             self.release_cursor();
@@ -689,8 +903,25 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                if code == KeyCode::KeyC {
+                    if pressed {
+                        if self.inventory_ui.is_open() {
+                            return;
+                        }
+                        if self.crafting_ui.is_open() {
+                            self.close_crafting();
+                        } else {
+                            self.open_crafting();
+                        }
+                    }
+                    return;
+                }
                 if code == KeyCode::KeyE {
                     if pressed {
+                        // 合成界面打开时不切换到背包，二者不能同时展示。
+                        if self.crafting_ui.is_open() {
+                            return;
+                        }
                         if self.inventory_ui.is_open() {
                             self.close_inventory();
                         } else {
@@ -699,8 +930,8 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                // 背包打开时只响应开关界面，暂停移动与视角输入。
-                if self.inventory_ui.is_open() {
+                // 界面打开时只响应开关界面，暂停移动与视角输入。
+                if self.inventory_ui.is_open() || self.crafting_ui.is_open() {
                     return;
                 }
                 // 未捕获鼠标时键盘不驱动相机，避免释放鼠标后误移动。
@@ -716,10 +947,49 @@ impl ApplicationHandler for App {
                 self.controller.handle_key(code, pressed);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.inventory_ui
-                    .set_cursor(position.x as f32, position.y as f32);
+                let cursor = (position.x as f32, position.y as f32);
+                self.inventory_ui.set_cursor(cursor.0, cursor.1);
+                self.crafting_ui.set_cursor(cursor);
+                self.death_ui.set_cursor(cursor);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 死亡界面优先：重生或返回主菜单后本帧不再处理其他输入。
+                if self.death_ui.is_open() {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let viewport = self
+                            .renderer
+                            .as_ref()
+                            .map_or((1280.0, 720.0), Renderer::viewport);
+                        let action = self.death_ui.click_at(viewport, self.death_ui.cursor());
+                        match action {
+                            DeathAction::Respawn => self.respawn(),
+                            DeathAction::MainMenu => {
+                                info!("死亡界面选择返回主菜单");
+                                self.flush_save();
+                                event_loop.exit();
+                            }
+                            DeathAction::None => {}
+                        }
+                    }
+                    return;
+                }
+                if self.crafting_ui.is_open() {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let viewport = self
+                            .renderer
+                            .as_ref()
+                            .map_or((1280.0, 720.0), Renderer::viewport);
+                        let clicked = self.crafting_ui.click_at(
+                            recipe_registry::all(),
+                            viewport,
+                            self.crafting_ui.cursor(),
+                        );
+                        if let Some(recipe_id) = clicked {
+                            self.craft_recipe(recipe_id);
+                        }
+                    }
+                    return;
+                }
                 if self.inventory_ui.is_open() {
                     if state == ElementState::Pressed {
                         let viewport = self
@@ -771,6 +1041,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                // 死亡或合成界面打开时滚轮不切换快捷栏。
+                if self.survival.is_dead() || self.crafting_ui.is_open() {
+                    return;
+                }
                 if !self.cursor_grabbed && !self.inventory_ui.is_open() {
                     return;
                 }
@@ -839,6 +1113,11 @@ impl ApplicationHandler for App {
                             .hotbar_stack(self.hotbar.selected_index())
                             .and_then(ItemStack::durability),
                         inventory_open = self.inventory_ui.is_open(),
+                        crafting_open = self.crafting_ui.is_open(),
+                        dead = self.survival.is_dead(),
+                        health = self.survival.health(),
+                        max_health = self.survival.max_health(),
+                        invulnerability = self.survival.invulnerability_remaining(),
                         dropped_items = self.dropped.len(),
                         mining_active = self.mining.is_mining(),
                         mining_target = ?self.mining.target(),

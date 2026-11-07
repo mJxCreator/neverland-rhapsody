@@ -42,6 +42,8 @@ pub struct Player {
     /// 抬头为正、低头为负的角度（弧度）。
     pitch: f32,
     dimensions: PlayerDimensions,
+    /// 本次腾空期间到达的最高位置，落地时用于计算真实下落距离。
+    fall_peak_y: f32,
 }
 
 impl Player {
@@ -55,6 +57,7 @@ impl Player {
             yaw: 0.0,
             pitch: 0.0,
             dimensions,
+            fall_peak_y: position.y,
         }
     }
 
@@ -164,6 +167,33 @@ impl Player {
         self.grounded = grounded;
     }
 
+    /// 当前腾空段内的最高位置。
+    pub(crate) fn fall_peak_y(&self) -> f32 {
+        self.fall_peak_y
+    }
+
+    /// 记录腾空期间到达过的最高位置。
+    pub(crate) fn observe_air_position(&mut self, position_y: f32) {
+        if position_y.is_finite() {
+            self.fall_peak_y = self.fall_peak_y.max(position_y);
+        }
+    }
+
+    /// 落地或重新站稳后重置下落距离基准。
+    pub(crate) fn reset_fall_peak(&mut self, position_y: f32) {
+        self.fall_peak_y = position_y;
+    }
+
+    /// 传送到安全位置并清空运动与跌落状态；重生与调试传送共用。
+    pub fn teleport(&mut self, position: Vec3) {
+        self.position = position;
+        self.previous_position = position;
+        self.velocity = Vec3::ZERO;
+        self.acceleration = Vec3::ZERO;
+        self.grounded = true;
+        self.fall_peak_y = position.y;
+    }
+
     /// 记录本次物理步开始时的位置，供摄像机插值。
     pub(crate) fn snapshot_previous_position(&mut self) {
         self.previous_position = self.position;
@@ -175,6 +205,7 @@ impl Player {
         self.velocity = Vec3::ZERO;
         self.acceleration = Vec3::ZERO;
         self.grounded = false;
+        self.fall_peak_y = position.y;
     }
 }
 

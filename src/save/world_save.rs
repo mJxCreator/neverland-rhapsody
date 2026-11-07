@@ -1,8 +1,8 @@
-//! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物与玩家背包，
-//! 并兼容 v0.8（version 1）、v0.11（version 2）与 v0.12（version 3）旧档。
+//! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物、玩家背包与生存状态，
+//! 并兼容 v0.8（version 1）、v0.11（version 2）、v0.12（version 3）与 v0.13（version 4）旧档。
 //!
-//! v0.13（version 4）在玩家背包槽位中新增工具耐久字段；该字段带默认值，
-//! 旧档读取时按“满耐久或普通物品”补全，写入时统一升级为 version 4。
+//! v0.14（version 5）新增 `survival` 字段（最大/当前生命值）；旧档缺省时按满血处理，
+//! 归零生命值按崩溃恢复规则恢复为满血，避免玩家被永久保存在死亡状态。
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,12 +13,13 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::item::{DroppedItemRecord, SavedInventory};
+use crate::player::SavedSurvival;
 use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 玩家背包（含工具耐久）+ 区块掉落物。
-const SAVE_VERSION: u32 = 4;
+/// 当前存档格式版本：区块数据 + 玩家背包（含工具耐久）+ 区块掉落物 + 生存状态。
+const SAVE_VERSION: u32 = 5;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -65,6 +66,9 @@ struct SaveFile {
     /// v0.12 起的玩家背包与快捷栏选择；旧档缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     player: Option<SavedInventory>,
+    /// v0.14 起的生存状态；旧档缺省时按满血存活处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    survival: Option<SavedSurvival>,
 }
 
 fn default_seed() -> u32 {
@@ -81,6 +85,8 @@ pub struct WorldSave {
     drops: HashMap<ChunkPos, Vec<DroppedItemRecord>>,
     /// 玩家背包与快捷栏选择；旧档尚未提供时为 `None`。
     player: Option<SavedInventory>,
+    /// 玩家生存状态；旧档尚未提供时为 `None`。
+    survival: Option<SavedSurvival>,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
     /// 主存档读取失败、本次数据来自备份时为 `true`。
@@ -105,6 +111,7 @@ impl WorldSave {
             edits: HashMap::new(),
             drops: HashMap::new(),
             player: None,
+            survival: None,
             unsaved: false,
             primary_suspect: false,
         };
@@ -215,6 +222,7 @@ impl WorldSave {
         self.edits = edits;
         self.drops = drops;
         self.player = data.player;
+        self.survival = data.survival.map(SavedSurvival::sanitized);
         Ok(())
     }
 
@@ -316,9 +324,19 @@ impl WorldSave {
         self.player.as_ref()
     }
 
-    /// 更新玩家背包并立即写盘。
-    pub fn set_player(&mut self, player: SavedInventory) -> Result<()> {
+    /// 玩家生存状态存档；旧档尚未提供时为 `None`。
+    pub fn survival(&self) -> Option<SavedSurvival> {
+        self.survival
+    }
+
+    /// 同时更新背包与生存状态并只写盘一次。
+    pub fn set_player_state(
+        &mut self,
+        player: SavedInventory,
+        survival: SavedSurvival,
+    ) -> Result<()> {
         self.player = Some(player);
+        self.survival = Some(survival.sanitized());
         self.unsaved = true;
         self.persist()
     }
@@ -397,6 +415,7 @@ impl WorldSave {
             edits: world_edits,
             chunk_edits,
             player: self.player.clone(),
+            survival: self.survival,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
 
@@ -587,7 +606,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 4"));
+        assert!(text.contains("\"version\": 5"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -832,9 +851,15 @@ mod tests {
             selected_hotbar: 4,
         };
 
-        WorldSave::load(&path, DEFAULT_SEED)
-            .set_player(inventory.clone())
-            .expect("保存玩家背包应成功");
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.set_player_state(
+            inventory.clone(),
+            SavedSurvival {
+                max_health: 20,
+                current_health: 20,
+            },
+        )
+        .expect("保存玩家背包应成功");
 
         let loaded = WorldSave::load(&path, DEFAULT_SEED);
         assert_eq!(loaded.player(), Some(&inventory));
@@ -887,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn a_v012_save_restores_tools_and_upgrades_to_version_4() {
+    fn a_v012_save_restores_tools_and_upgrades_to_version_5() {
         let path = temp_path("v012");
         remove_all(&path);
         let legacy = r#"{
@@ -921,13 +946,111 @@ mod tests {
             "普通物品没有耐久"
         );
 
-        // 首次写盘把格式升级到 version 4，且保留玩家数据。
-        let player = save.player().expect("玩家数据仍在").clone();
-        save.set_player(player).expect("写盘应成功");
+        // 首次写盘把格式升级到 version 5，且保留玩家数据。
+        save.record(BlockEdit {
+            x: 2,
+            y: 5,
+            z: 2,
+            block: Block::Stone,
+        })
+        .expect("写盘应成功");
         let text = fs::read_to_string(&path).expect("读取新存档失败");
         let data: SaveFile = serde_json::from_str(&text).expect("解析新存档失败");
-        assert_eq!(data.version, 4);
+        assert_eq!(data.version, 5);
+        assert!(data.survival.is_none(), "旧档升级时不应伪造生存数据");
 
+        remove_all(&path);
+    }
+
+    #[test]
+    fn survival_round_trips_with_the_player_state() {
+        let path = temp_path("survival");
+        remove_all(&path);
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        let inventory = crate::item::Inventory::new().to_saved(0);
+        save.set_player_state(
+            inventory,
+            SavedSurvival {
+                max_health: 20,
+                current_health: 12,
+            },
+        )
+        .expect("写盘应成功");
+
+        let reloaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(
+            reloaded.survival(),
+            Some(SavedSurvival {
+                max_health: 20,
+                current_health: 12,
+            })
+        );
+        remove_all(&path);
+    }
+
+    #[test]
+    fn a_save_without_survival_stays_backwards_compatible() {
+        let path = temp_path("no-survival");
+        remove_all(&path);
+        let text = r#"{
+            "version": 4,
+            "seed": 24301,
+            "player": {"slots": [], "selected_hotbar": 0}
+        }"#;
+        fs::write(&path, text).expect("写入旧档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert!(save.survival().is_none(), "旧档缺省生存状态");
+        assert!(save.player().is_some(), "旧档仍应保留背包");
+        remove_all(&path);
+    }
+
+    #[test]
+    fn zero_health_in_a_save_is_recovered_to_full_health() {
+        let path = temp_path("zero-health");
+        remove_all(&path);
+        let text = r#"{
+            "version": 5,
+            "seed": 24301,
+            "player": {"slots": [], "selected_hotbar": 0},
+            "survival": {"max_health": 20, "current_health": 0}
+        }"#;
+        fs::write(&path, text).expect("写入存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(
+            save.survival(),
+            Some(SavedSurvival {
+                max_health: 20,
+                current_health: 20,
+            }),
+            "崩溃时的死亡中间态必须恢复满血"
+        );
+        remove_all(&path);
+    }
+
+    #[test]
+    fn invalid_survival_values_are_sanitized() {
+        let path = temp_path("bad-survival");
+        remove_all(&path);
+        let text = r#"{
+            "version": 5,
+            "seed": 24301,
+            "player": {"slots": [], "selected_hotbar": 0},
+            "survival": {"max_health": 0, "current_health": 30}
+        }"#;
+        fs::write(&path, text).expect("写入存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(
+            save.survival(),
+            Some(SavedSurvival {
+                max_health: 20,
+                current_health: 20,
+            }),
+            "非法最大值回落默认，当前值钳制到最大值"
+        );
         remove_all(&path);
     }
 }

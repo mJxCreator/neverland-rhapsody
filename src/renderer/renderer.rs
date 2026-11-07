@@ -50,8 +50,8 @@ const SELECTION_VERTEX_COUNT: u32 = (SELECTION_EDGE_COUNT * 2) as u32;
 /// 线框相对方块表面的外扩量，避免与方块面共面导致闪烁。
 const SELECTION_EXPAND: f32 = 0.003;
 
-/// HUD 动态顶点缓冲容量；包含快捷栏、数量文字与背包面板，保留充足余量。
-const HUD_VERTEX_CAPACITY: usize = 16384;
+/// HUD 动态顶点缓冲容量；包含快捷栏、生命值、合成列表与界面文字，保留充足余量。
+const HUD_VERTEX_CAPACITY: usize = 32768;
 /// 破坏粒子动态顶点缓冲容量（约 100 个碎块）。
 const PARTICLE_VERTEX_CAPACITY: usize = 4096;
 /// 掉落物动态顶点缓冲容量（约 450 个小立方体）。

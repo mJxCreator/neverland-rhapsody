@@ -102,21 +102,6 @@ const DEFINITIONS: [ToolDefinition; 9] = [
     IRON_SHOVEL,
 ];
 
-/// 新建世界时放入快捷栏的示例工具，1→9 号槽位依次对应。
-///
-/// 本版本没有合成系统，示例工具保证工具系统可以直接实机验收。
-pub const STARTER_TOOLS: [ItemId; 9] = [
-    ItemId::WOODEN_PICKAXE,
-    ItemId::STONE_PICKAXE,
-    ItemId::IRON_PICKAXE,
-    ItemId::WOODEN_AXE,
-    ItemId::STONE_AXE,
-    ItemId::IRON_AXE,
-    ItemId::WOODEN_SHOVEL,
-    ItemId::STONE_SHOVEL,
-    ItemId::IRON_SHOVEL,
-];
-
 /// 按物品 ID 查询工具定义；非工具或无效 ID 返回 `None`。
 pub fn definition(item: ItemId) -> Option<&'static ToolDefinition> {
     DEFINITIONS.iter().find(|definition| definition.id == item)
@@ -174,13 +159,15 @@ mod tests {
     }
 
     #[test]
-    fn starter_tools_are_all_registered_and_unique() {
-        let mut raws: Vec<u16> = STARTER_TOOLS.iter().map(|item| item.raw()).collect();
-        raws.sort_unstable();
-        raws.dedup();
-        assert_eq!(raws.len(), STARTER_TOOLS.len());
-        for item in STARTER_TOOLS {
-            assert!(definition(item).is_some());
+    fn every_tool_has_a_registered_crafting_recipe() {
+        for tool in DEFINITIONS {
+            assert!(
+                crate::item::recipe_registry::all()
+                    .iter()
+                    .any(|recipe| recipe.output.item() == tool.id),
+                "工具 {:?} 缺少合成配方",
+                tool.id
+            );
         }
     }
 }

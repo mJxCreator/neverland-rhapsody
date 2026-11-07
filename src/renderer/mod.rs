@@ -1,6 +1,9 @@
-//! 渲染层：GPU 设备、渲染管线、摄像机、选中线框、HUD、背包界面、字体与破坏粒子。
+//! 渲染层：GPU 设备、渲染管线、摄像机、选中线框、HUD、背包/合成/死亡界面、
+//! 字体与破坏粒子。
 
 pub mod camera;
+pub mod crafting_ui;
+pub mod death_ui;
 pub mod font;
 pub mod hud;
 pub mod inventory_ui;
@@ -10,5 +13,7 @@ pub mod pipeline;
 #[allow(clippy::module_inception)]
 pub mod renderer;
 
+pub use self::crafting_ui::CraftingUi;
+pub use self::death_ui::{DeathAction, DeathUi};
 pub use self::inventory_ui::{ClickButton, InventoryUi};
 pub use self::renderer::{spawn_pose, RenderOutcome, Renderer};

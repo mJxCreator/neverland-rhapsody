@@ -155,8 +155,41 @@ const IRON_SHOVEL: ItemDefinition = ItemDefinition {
     item_type: ItemType::Tool,
 };
 
+const WOOD: ItemDefinition = ItemDefinition {
+    id: ItemId::WOOD,
+    name: "Wood",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.48, 0.32, 0.18),
+    },
+    associated_block: Some(Block::Wood),
+    item_type: ItemType::Block,
+};
+
+const STICK: ItemDefinition = ItemDefinition {
+    id: ItemId::STICK,
+    name: "Stick",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.66, 0.50, 0.28),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
+const IRON_INGOT: ItemDefinition = ItemDefinition {
+    id: ItemId::IRON_INGOT,
+    name: "Iron Ingot",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.86, 0.87, 0.90),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 13] = [
+const DEFINITIONS: [ItemDefinition; 16] = [
     INVALID,
     STONE,
     DIRT,
@@ -170,6 +203,9 @@ const DEFINITIONS: [ItemDefinition; 13] = [
     WOODEN_SHOVEL,
     STONE_SHOVEL,
     IRON_SHOVEL,
+    WOOD,
+    STICK,
+    IRON_INGOT,
 ];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。
@@ -262,10 +298,21 @@ mod tests {
 
     #[test]
     fn every_block_item_stacks_to_the_shared_limit() {
-        for item in [ItemId::STONE, ItemId::DIRT, ItemId::GRASS] {
+        for item in [ItemId::STONE, ItemId::DIRT, ItemId::GRASS, ItemId::WOOD] {
             let definition = definition(item).expect("物品应存在");
             assert_eq!(definition.max_stack_size, DEFAULT_MAX_STACK_SIZE);
             assert!(definition.is_placeable());
+        }
+    }
+
+    #[test]
+    fn crafting_materials_are_stackable_and_not_placeable() {
+        for item in [ItemId::STICK, ItemId::IRON_INGOT] {
+            let definition = definition(item).expect("材料应存在");
+            assert_eq!(definition.item_type, ItemType::Material);
+            assert_eq!(definition.max_stack_size, DEFAULT_MAX_STACK_SIZE);
+            assert!(!definition.is_placeable());
+            assert_eq!(item_for_block(Block::Wood), Some(ItemId::WOOD));
         }
     }
 

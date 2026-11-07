@@ -106,6 +106,8 @@ pub struct PhysicsUpdate {
     pub steps: u32,
     /// 摄像机插值系数，范围 0..1。
     pub alpha: f32,
+    /// 本帧发生落地时的实际下落距离（格）；未落地为 `None`。
+    pub landing_fall: Option<f32>,
 }
 
 /// 固定时间步长物理系统。
@@ -152,11 +154,15 @@ impl PhysicsSystem {
         self.accumulator += delta;
 
         let mut steps = 0;
+        let mut landing_fall: Option<f32> = None;
         while self.accumulator >= FIXED_TIMESTEP && steps < MAX_STEPS_PER_FRAME {
             if steps == 0 {
                 player.snapshot_previous_position();
             }
-            step_player(player, intent, &self.config, world, FIXED_TIMESTEP);
+            if let Some(distance) = step_player(player, intent, &self.config, world, FIXED_TIMESTEP)
+            {
+                landing_fall = Some(landing_fall.map_or(distance, |current| current.max(distance)));
+            }
             self.accumulator -= FIXED_TIMESTEP;
             steps += 1;
         }
@@ -164,7 +170,13 @@ impl PhysicsSystem {
         PhysicsUpdate {
             steps,
             alpha: self.interpolation_alpha(),
+            landing_fall,
         }
+    }
+
+    /// 清空未消费的物理时间；传送或重生后调用，避免旧时间片继续推进。
+    pub fn reset(&mut self) {
+        self.accumulator = 0.0;
     }
 }
 
@@ -175,10 +187,13 @@ fn step_player(
     config: &PhysicsConfig,
     world: &PhysicsWorld,
     delta_secs: f32,
-) {
+) -> Option<f32> {
     let was_grounded = player.is_grounded();
     let previous_position = player.position();
     let previous_velocity = player.velocity();
+    if !was_grounded {
+        player.observe_air_position(previous_position.y);
+    }
 
     // 水平方向移动意图，斜向输入归一化，避免对角线更快。
     let forward_axis = finite_axis(intent.forward);
@@ -247,7 +262,22 @@ fn step_player(
     // 兜底：任何非有限值都回到本步开始前的位置，避免 NaN 扩散。
     if !player.is_finite() {
         player.reset_motion(previous_position);
+        return None;
     }
+
+    // 只在“真正从空中落到地面”的这一步记录下落距离；跳跃与超短腾空由伤害
+    // 公式中的安全高度过滤。下落距离以本次腾空最高点为基准，而非逐帧高度差。
+    let landing_fall = if flags.ground && !was_grounded {
+        Some((player.fall_peak_y() - position.y).max(0.0))
+    } else {
+        None
+    };
+    if flags.ground {
+        player.reset_fall_peak(position.y);
+    } else {
+        player.observe_air_position(position.y);
+    }
+    landing_fall
 }
 
 fn finite_axis(value: f32) -> f32 {

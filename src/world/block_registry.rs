@@ -28,7 +28,7 @@ pub enum MiningCategory {
     Dirt,
     /// 石头类，镐适用。
     Stone,
-    /// 木质类，斧适用；本版本暂无对应方块。
+    /// 木质类，斧适用。
     Wood,
 }
 
@@ -74,6 +74,12 @@ impl BlockColors {
         top: Vec3::new(0.35, 0.62, 0.32),
         bottom: Vec3::new(0.45, 0.33, 0.22),
         side: Vec3::new(0.42, 0.47, 0.24),
+    };
+
+    const WOOD: Self = Self {
+        top: Vec3::new(0.58, 0.44, 0.26),
+        bottom: Vec3::new(0.58, 0.44, 0.26),
+        side: Vec3::new(0.48, 0.32, 0.18),
     };
 
     /// 某个朝向面的基础颜色。
@@ -145,9 +151,9 @@ pub const STONE: BlockProperties = BlockProperties {
     name: "Stone",
     hardness: 1.5,
     mining_category: MiningCategory::Stone,
-    // 石制及以上镐才能获得石头掉落；徒手与木镐可破坏但无掉落。
+    // v0.14 起木镐即可获得石头掉落，保证“木镐采石→石镐”的合成闭环。
     required_tool: Some(ToolType::Pickaxe),
-    harvest_level: 1,
+    harvest_level: 0,
     drop_rule: DropRule::RequiresCorrectTool,
     solid: true,
     breakable: true,
@@ -191,8 +197,25 @@ pub const GRASS: BlockProperties = BlockProperties {
     colors: BlockColors::GRASS,
 };
 
+pub const WOOD: BlockProperties = BlockProperties {
+    id: 4,
+    name: "Wood",
+    hardness: 2.0,
+    mining_category: MiningCategory::Wood,
+    // 斧只是推荐工具：徒手也能采集木材，保证新世界可以从零开始合成。
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::WOOD,
+};
+
 /// 全部方块属性，下标必须等于方块 ID。
-const DEFINITIONS: [BlockProperties; 4] = [AIR, STONE, DIRT, GRASS];
+const DEFINITIONS: [BlockProperties; 5] = [AIR, STONE, DIRT, GRASS, WOOD];
 
 /// 按方块类型查询统一属性。
 pub fn properties(block: Block) -> &'static BlockProperties {
@@ -205,7 +228,7 @@ mod tests {
 
     #[test]
     fn block_ids_are_stable_and_unique() {
-        let definitions = [AIR, STONE, DIRT, GRASS];
+        let definitions = [AIR, STONE, DIRT, GRASS, WOOD];
         let mut ids = Vec::new();
         for (index, definition) in definitions.iter().enumerate() {
             assert_eq!(definition.id as usize, index, "属性表顺序与 ID 不一致");
@@ -219,6 +242,7 @@ mod tests {
         assert_eq!(Block::Stone.id(), 1);
         assert_eq!(Block::Dirt.id(), 2);
         assert_eq!(Block::Grass.id(), 3);
+        assert_eq!(Block::Wood.id(), 4);
     }
 
     #[test]
@@ -227,6 +251,7 @@ mod tests {
         assert_eq!(properties(Block::Grass).hardness, 0.6);
         assert_eq!(properties(Block::Dirt).hardness, 0.5);
         assert_eq!(properties(Block::Stone).hardness, 1.5);
+        assert_eq!(properties(Block::Wood).hardness, 2.0);
     }
 
     #[test]
@@ -234,7 +259,10 @@ mod tests {
         let stone = properties(Block::Stone);
         assert_eq!(stone.mining_category, MiningCategory::Stone);
         assert_eq!(stone.required_tool, Some(ToolType::Pickaxe));
-        assert_eq!(stone.harvest_level, 1);
+        assert_eq!(
+            stone.harvest_level, 0,
+            "木镐必须能够采集石头，形成木镐→石镐的合成闭环"
+        );
         assert_eq!(stone.drop_rule, DropRule::RequiresCorrectTool);
 
         let dirt = properties(Block::Dirt);
@@ -271,7 +299,7 @@ mod tests {
 
     #[test]
     fn solid_blocks_are_breakable_placeable_and_selectable() {
-        for block in [Block::Stone, Block::Dirt, Block::Grass] {
+        for block in [Block::Stone, Block::Dirt, Block::Grass, Block::Wood] {
             let definition = properties(block);
             assert!(definition.solid);
             assert!(definition.breakable);

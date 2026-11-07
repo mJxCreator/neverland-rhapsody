@@ -35,6 +35,12 @@ const GRASS_DROPS: [BlockDrop; 1] = [BlockDrop {
     weight: 1,
 }];
 
+const WOOD_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::WOOD,
+    count: 1,
+    weight: 1,
+}];
+
 /// 指定方块被破坏后的掉落列表；不可掉落方块返回空列表。
 pub fn drops_for_block(block: Block) -> &'static [BlockDrop] {
     match block {
@@ -42,6 +48,7 @@ pub fn drops_for_block(block: Block) -> &'static [BlockDrop] {
         Block::Stone => &STONE_DROPS,
         Block::Dirt => &DIRT_DROPS,
         Block::Grass => &GRASS_DROPS,
+        Block::Wood => &WOOD_DROPS,
     }
 }
 
@@ -52,7 +59,7 @@ mod tests {
 
     #[test]
     fn breakable_blocks_drop_their_matching_item() {
-        for block in [Block::Stone, Block::Dirt, Block::Grass] {
+        for block in [Block::Stone, Block::Dirt, Block::Grass, Block::Wood] {
             let drops = drops_for_block(block);
             assert!(!drops.is_empty(), "{block:?} 必须配置掉落");
             for drop in drops {

@@ -103,8 +103,8 @@ mod tests {
     fn hard_blocks_require_the_right_tool_type_and_tier() {
         assert!(!can_harvest(Block::Stone, HarvestTool::HAND));
         assert!(
-            !can_harvest(Block::Stone, tool(ItemId::WOODEN_PICKAXE)),
-            "木镐等级不足"
+            can_harvest(Block::Stone, tool(ItemId::WOODEN_PICKAXE)),
+            "v0.14 起木镐即可采集石头"
         );
         assert!(
             !can_harvest(Block::Stone, tool(ItemId::STONE_SHOVEL)),
@@ -129,9 +129,20 @@ mod tests {
     }
 
     #[test]
+    fn wood_can_be_gathered_by_hand_to_bootstrap_crafting() {
+        assert!(can_harvest(Block::Wood, HarvestTool::HAND));
+        let drops = drops_for_harvest(Block::Wood, HarvestTool::HAND);
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].item, ItemId::WOOD);
+    }
+
+    #[test]
     fn unmet_conditions_produce_no_drops_for_required_blocks() {
         assert!(drops_for_harvest(Block::Stone, HarvestTool::HAND).is_empty());
-        assert!(drops_for_harvest(Block::Stone, tool(ItemId::WOODEN_PICKAXE)).is_empty());
+
+        let wood_pickaxe = drops_for_harvest(Block::Stone, tool(ItemId::WOODEN_PICKAXE));
+        assert_eq!(wood_pickaxe.len(), 1);
+        assert_eq!(wood_pickaxe[0].item, ItemId::STONE);
 
         let drops = drops_for_harvest(Block::Stone, tool(ItemId::STONE_PICKAXE));
         assert_eq!(drops.len(), 1);

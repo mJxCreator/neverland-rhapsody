@@ -73,6 +73,21 @@ impl InventoryUi {
         true
     }
 
+    /// 强制关闭界面（死亡等场景）：拖动中的物品优先放回背包，实在放不下则丢弃，
+    /// 避免死亡界面被背包遮挡后玩家无法继续操作。
+    pub fn force_close(&mut self, inventory: &mut Inventory) {
+        if let Some(held) = self.held.take() {
+            if let Some(remaining) = inventory.add_stack(held) {
+                tracing::warn!(
+                    item = ?remaining.item(),
+                    count = remaining.count(),
+                    "死亡时背包已满，拖动中的物品被丢弃"
+                );
+            }
+        }
+        self.open = false;
+    }
+
     /// 当前拖动中的物品。
     #[allow(dead_code)]
     pub fn held(&self) -> Option<ItemStack> {

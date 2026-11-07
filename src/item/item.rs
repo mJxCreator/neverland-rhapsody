@@ -27,6 +27,9 @@ impl ItemId {
     pub const WOODEN_SHOVEL: Self = Self(10);
     pub const STONE_SHOVEL: Self = Self(11);
     pub const IRON_SHOVEL: Self = Self(12);
+    pub const WOOD: Self = Self(13);
+    pub const STICK: Self = Self(14);
+    pub const IRON_INGOT: Self = Self(15);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {

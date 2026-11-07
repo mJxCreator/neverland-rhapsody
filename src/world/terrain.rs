@@ -15,6 +15,10 @@ const ROCK_LINE: i32 = 17;
 const DIRT_DEPTH: i32 = 4;
 /// 山地相对基准的最大抬升量。
 const MOUNTAIN_AMPLITUDE: f64 = 20.0;
+/// v0.14 木质资源：草地方柱上生成的最短树干高度。
+const TREE_TRUNK_HEIGHT: i32 = 3;
+/// 树干生成概率的稀疏槽位数：约 1/128 的草地方柱会长出树干。
+const TREE_SLOT_MODULUS: u32 = 128;
 
 /// 程序化地形生成器：低频噪声决定整体地势，山脊噪声抬升出山峰。
 pub struct TerrainGenerator {
@@ -55,7 +59,8 @@ impl TerrainGenerator {
         height.clamp(1.0, (WORLD_HEIGHT - 1) as f64) as i32
     }
 
-    /// 生成指定区块：按高度图自下而上填充石头、泥土与草方块。
+    /// 生成指定区块：按高度图自下而上填充石头、泥土与草方块，并在少量草地方柱上
+    /// 放置可徒手采集的树干，保证新世界能够从零开始获取木材。
     pub fn generate_chunk(&self, pos: ChunkPos) -> Chunk {
         let mut chunk = Chunk::new(pos);
         let origin_x = pos.x * CHUNK_SIZE;
@@ -64,20 +69,40 @@ impl TerrainGenerator {
 
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                let height = self.height_at(origin_x + x, origin_z + z);
-                if height <= origin_y {
-                    // 该方柱地表在本区块下方，本区块整列都是空气。
+                let world_x = origin_x + x;
+                let world_z = origin_z + z;
+                let height = self.height_at(world_x, world_z);
+                if height > origin_y {
+                    let local_top = (height - origin_y).min(CHUNK_SIZE);
+                    for y in 0..local_top {
+                        let world_y = origin_y + y;
+                        chunk.set_block(x, y, z, self.block_at_height(world_y, height));
+                    }
+                }
+
+                if !self.has_tree(world_x, world_z) || height >= ROCK_LINE {
                     continue;
                 }
-                let local_top = (height - origin_y).min(CHUNK_SIZE);
-                for y in 0..local_top {
-                    let world_y = origin_y + y;
-                    chunk.set_block(x, y, z, self.block_at_height(world_y, height));
+                for step in 0..TREE_TRUNK_HEIGHT {
+                    let world_y = height + step;
+                    if world_y < origin_y
+                        || world_y >= origin_y + CHUNK_SIZE
+                        || world_y >= WORLD_HEIGHT
+                    {
+                        continue;
+                    }
+                    chunk.set_block(x, world_y - origin_y, z, Block::Wood);
                 }
             }
         }
 
         chunk
+    }
+
+    /// 该方柱是否生成树干；固定种子的确定性哈希保证区块边界与重复加载一致。
+    fn has_tree(&self, world_x: i32, world_z: i32) -> bool {
+        let hash = world_x.wrapping_mul(37) ^ world_z.wrapping_mul(17);
+        hash.unsigned_abs().is_multiple_of(TREE_SLOT_MODULUS)
     }
 
     /// 地表高度以下某个 y 处应使用的方块类型。
@@ -151,7 +176,10 @@ mod tests {
         let height = terrain.height_at(5, 3);
         let chunk = terrain.generate_chunk(ChunkPos::new(0, 0, 0));
 
-        assert_eq!(chunk.block_at(5, height, 3), Block::Air);
+        assert!(
+            matches!(chunk.block_at(5, height, 3), Block::Air | Block::Wood),
+            "地表上方只能是空气或树干"
+        );
         assert!(chunk.block_at(5, height - 1, 3).is_solid());
         assert_eq!(chunk.block_at(5, 0, 3), Block::Stone);
     }

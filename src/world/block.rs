@@ -58,6 +58,7 @@ pub enum Block {
     Stone,
     Dirt,
     Grass,
+    Wood,
 }
 
 impl Block {

@@ -43,9 +43,19 @@ const TOAST_DURATION: f32 = 1.2;
 /// 提示淡出时长（秒）。
 const TOAST_FADE: f32 = 0.3;
 /// 选中工具名称与快捷栏的距离（像素）。
-const TOOL_LABEL_OFFSET: f32 = 24.0;
+const TOOL_LABEL_OFFSET: f32 = 50.0;
 /// 提示文字与快捷栏的距离（像素）。
-const TOAST_OFFSET: f32 = 46.0;
+const TOAST_OFFSET: f32 = 70.0;
+/// 生命值心形图标与快捷栏的距离（像素）。
+const HEALTH_OFFSET: f32 = 28.0;
+/// 单颗心形的像素边长。
+const HEART_PIXEL: f32 = 3.0;
+/// 心形之间的水平间距（像素）。
+const HEART_GAP: f32 = 2.0;
+/// 伤害闪屏持续时间（秒）。
+const DAMAGE_FLASH_DURATION: f32 = 0.35;
+/// 伤害闪屏边缘厚度（像素）。
+const DAMAGE_FLASH_THICKNESS: f32 = 26.0;
 /// 槽位耐久条高度（像素）。
 const DURABILITY_BAR_HEIGHT: f32 = 4.0;
 /// 耐久低于该比例时显示警示色。
@@ -72,6 +82,14 @@ const DURABILITY_BAR_BROKEN: [f32; 4] = [0.55, 0.12, 0.12, 0.85];
 const DURABILITY_HIGH: [f32; 4] = [0.38, 0.86, 0.42, 0.95];
 const DURABILITY_MID: [f32; 4] = [0.95, 0.80, 0.28, 0.95];
 const DURABILITY_LOW: [f32; 4] = [0.95, 0.32, 0.26, 0.95];
+const HEART_FULL: [f32; 4] = [0.86, 0.16, 0.16, 0.95];
+const HEART_EMPTY: [f32; 4] = [0.28, 0.09, 0.09, 0.85];
+const DAMAGE_FLASH: [f32; 4] = [0.72, 0.03, 0.03, 0.46];
+
+/// 7×7 像素心形图案，1 表示实心格。
+const HEART_PATTERN: [u8; 7] = [
+    0b0110110, 0b1111111, 0b1111111, 0b1110111, 0b0110110, 0b0011100, 0b0001000,
+];
 
 /// 提示类型；决定绘制时的文案与颜色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,8 +114,13 @@ pub struct HudModel {
     pub slots: [Option<ItemStack>; HOTBAR_SLOTS],
     /// 当前挖掘进度；`None` 表示不显示进度条。
     pub mining_progress: Option<f32>,
-    /// 背包界面是否打开；打开时不绘制战斗与快捷栏 HUD。
+    /// 背包/合成等全屏界面是否打开；打开时不绘制战斗与快捷栏 HUD。
     pub inventory_open: bool,
+    /// 当前生命值（1 点 = 半颗心）。
+    pub health: u32,
+    /// 最大生命值（1 点 = 半颗心）。
+    pub max_health: u32,
+    damage_flash_remaining: f32,
     toast: Option<Toast>,
 }
 
@@ -108,6 +131,9 @@ impl Default for HudModel {
             slots: [None; HOTBAR_SLOTS],
             mining_progress: None,
             inventory_open: false,
+            health: 20,
+            max_health: 20,
+            damage_flash_remaining: 0.0,
             toast: None,
         }
     }
@@ -126,6 +152,17 @@ impl HudModel {
         self.slots = slots;
         self.mining_progress = mining_progress.filter(|progress| progress.is_finite());
         self.inventory_open = inventory_open;
+    }
+
+    /// 写入生命值；最大值为 0 时回落到默认 20 点。
+    pub fn set_health(&mut self, health: u32, max_health: u32) {
+        self.max_health = if max_health == 0 { 20 } else { max_health };
+        self.health = health.min(self.max_health);
+    }
+
+    /// 受到伤害时触发短暂红色边缘反馈。
+    pub fn show_damage(&mut self) {
+        self.damage_flash_remaining = DAMAGE_FLASH_DURATION;
     }
 
     /// 显示一条拾取提示；重复拾取会刷新计时。
@@ -154,14 +191,15 @@ impl HudModel {
         });
     }
 
-    /// 推进提示计时。
+    /// 推进提示与伤害闪屏计时。
     pub fn update(&mut self, delta_secs: f32) {
-        let Some(toast) = &mut self.toast else {
-            return;
-        };
         if !delta_secs.is_finite() || delta_secs <= 0.0 {
             return;
         }
+        self.damage_flash_remaining = (self.damage_flash_remaining - delta_secs).max(0.0);
+        let Some(toast) = &mut self.toast else {
+            return;
+        };
         toast.remaining -= delta_secs;
         if toast.remaining <= 0.0 {
             self.toast = None;
@@ -178,11 +216,95 @@ impl HudModel {
             return;
         }
 
+        self.push_health(out, width, height);
         self.push_hotbar(out, width, height);
         self.push_tool_label(out, width, height);
         self.push_toast(out, width, height);
         self.push_progress(out, width, height);
+        self.push_damage_flash(out, width, height);
         push_crosshair(out, width, height);
+    }
+
+    /// 心形生命值：满心、半心与空心按 2 点生命值换算。
+    fn push_health(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+        let viewport = (width, height);
+        let hearts = self.max_health.div_ceil(2) as usize;
+        if hearts == 0 {
+            return;
+        }
+        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
+        let total_width =
+            hearts as f32 * heart_size + (hearts.saturating_sub(1)) as f32 * HEART_GAP;
+        let start_x = (width - total_width) * 0.5;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size;
+        for index in 0..hearts {
+            let x = start_x + index as f32 * (heart_size + HEART_GAP);
+            let remaining = (self.health as i64 - (index as i64) * 2).clamp(0, 2);
+            let fill = if remaining >= 2 {
+                HeartFill::Full
+            } else if remaining == 1 {
+                HeartFill::Half
+            } else {
+                HeartFill::Empty
+            };
+            push_heart(out, viewport, x, y, fill);
+        }
+    }
+
+    /// 受伤后覆盖屏幕四周的红色反馈，随时间淡出。
+    fn push_damage_flash(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+        if self.damage_flash_remaining <= 0.0 {
+            return;
+        }
+        let alpha = (self.damage_flash_remaining / DAMAGE_FLASH_DURATION).clamp(0.0, 1.0);
+        let mut color = DAMAGE_FLASH;
+        color[3] *= alpha;
+        let viewport = (width, height);
+        let thickness = DAMAGE_FLASH_THICKNESS;
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height: thickness,
+            },
+            color,
+        );
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                x: 0.0,
+                y: height - thickness,
+                width,
+                height: thickness,
+            },
+            color,
+        );
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                x: 0.0,
+                y: thickness,
+                width: thickness,
+                height: height - thickness * 2.0,
+            },
+            color,
+        );
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                x: width - thickness,
+                y: thickness,
+                width: thickness,
+                height: height - thickness * 2.0,
+            },
+            color,
+        );
     }
 
     fn push_hotbar(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
@@ -419,6 +541,70 @@ pub(crate) fn durability_color(ratio: f32) -> [f32; 4] {
         DURABILITY_MID
     } else {
         DURABILITY_HIGH
+    }
+}
+
+/// 心形填充状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeartFill {
+    Full,
+    Half,
+    Empty,
+}
+
+/// 绘制一颗 7×7 像素心形；半心只填充图案左半部分。
+fn push_heart(out: &mut Vec<HudVertex>, viewport: (f32, f32), x: f32, y: f32, fill: HeartFill) {
+    let heart_columns = HEART_PATTERN.len();
+    for (row, bits) in HEART_PATTERN.iter().enumerate() {
+        let mut column = 0;
+        while column < heart_columns {
+            let filled = bits & (1 << (heart_columns - 1 - column)) != 0;
+            if !filled {
+                column += 1;
+                continue;
+            }
+            let start = column;
+            while column < heart_columns
+                && HEART_PATTERN[row] & (1 << (heart_columns - 1 - column)) != 0
+            {
+                column += 1;
+            }
+            let is_visible = match fill {
+                HeartFill::Full => true,
+                HeartFill::Half => start <= heart_columns / 2,
+                HeartFill::Empty => false,
+            };
+            let color = if is_visible { HEART_FULL } else { HEART_EMPTY };
+            let visible_end = match fill {
+                HeartFill::Half => column.min(heart_columns / 2 + 1),
+                _ => column,
+            };
+            if !is_visible {
+                push_quad(
+                    out,
+                    viewport,
+                    HudRect {
+                        x: x + start as f32 * HEART_PIXEL,
+                        y: y + row as f32 * HEART_PIXEL,
+                        width: (column - start) as f32 * HEART_PIXEL,
+                        height: HEART_PIXEL,
+                    },
+                    HEART_EMPTY,
+                );
+                continue;
+            }
+            push_quad(
+                out,
+                viewport,
+                HudRect {
+                    x: x + start as f32 * HEART_PIXEL,
+                    y: y + row as f32 * HEART_PIXEL,
+                    width: (visible_end - start) as f32 * HEART_PIXEL,
+                    height: HEART_PIXEL,
+                },
+                color,
+            );
+        }
     }
 }
 
@@ -664,21 +850,43 @@ mod tests {
     }
 
     #[test]
-    fn breaking_a_tool_shows_a_warning_notice() {
+    fn health_is_clamped_and_defaults_are_safe() {
         let mut model = HudModel::default();
-        let mut before = Vec::new();
-        model.build(&mut before, 1280.0, 720.0);
+        model.set_health(50, 20);
+        assert_eq!(model.health, 20);
+        assert_eq!(model.max_health, 20);
+        model.set_health(5, 0);
+        assert_eq!(model.max_health, 20, "非法最大值回落到默认值");
+        assert_eq!(model.health, 5);
+    }
 
-        model.show_tool_broken(ItemId::WOODEN_PICKAXE);
-        assert_eq!(
-            model.toast.map(|toast| toast.kind),
-            Some(ToastKind::ToolBroken)
+    #[test]
+    fn half_hearts_render_a_partial_red_fill() {
+        let mut vertices = Vec::new();
+        let mut model = HudModel::default();
+        model.set_health(19, 20);
+        model.build(&mut vertices, 1280.0, 720.0);
+
+        assert!(
+            vertices.iter().any(|vertex| vertex.color == HEART_EMPTY),
+            "19/20 应出现半颗心，右半部分保持空心色"
         );
-        let mut after = Vec::new();
-        model.build(&mut after, 1280.0, 720.0);
-        assert!(after.len() > before.len());
+    }
 
-        model.update(TOAST_DURATION + 0.1);
-        assert!(model.toast.is_none());
+    #[test]
+    fn damage_flash_adds_edge_geometry_and_fades_out() {
+        let mut model = HudModel::default();
+        let mut plain = Vec::new();
+        model.build(&mut plain, 1280.0, 720.0);
+
+        model.show_damage();
+        let mut damaged = Vec::new();
+        model.build(&mut damaged, 1280.0, 720.0);
+        assert!(damaged.len() > plain.len(), "受伤反馈应额外绘制屏幕边缘");
+
+        model.update(DAMAGE_FLASH_DURATION + 0.1);
+        let mut recovered = Vec::new();
+        model.build(&mut recovered, 1280.0, 720.0);
+        assert_eq!(recovered.len(), plain.len(), "闪屏结束后恢复原 HUD");
     }
 }
