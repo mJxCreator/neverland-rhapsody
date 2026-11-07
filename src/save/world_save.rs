@@ -1,10 +1,10 @@
-//! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物、玩家背包与生存状态，
-//! 并兼容 v0.8（version 1）、v0.11（version 2）、v0.12（version 3）与 v0.13（version 4）旧档。
+//! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物、区块生物、玩家背包与生存状态，
+//! 并兼容 v0.8（version 1）至 v0.15（version 5）旧档。
 //!
-//! v0.14（version 5）新增 `survival` 字段（最大/当前生命值）；旧档缺省时按满血处理，
-//! 归零生命值按崩溃恢复规则恢复为满血，避免玩家被永久保存在死亡状态。
+//! v0.15（version 6）新增 `entities`（随区块保存的生物状态）与 `populated_chunks`
+//! （已自然生成过的水平区块列），旧档缺省为空，不会触发重复生成。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,14 +12,15 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::entity::EntityRecord;
 use crate::item::{DroppedItemRecord, SavedInventory};
 use crate::player::SavedSurvival;
 use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 玩家背包（含工具耐久）+ 区块掉落物 + 生存状态。
-const SAVE_VERSION: u32 = 5;
+/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态。
+const SAVE_VERSION: u32 = 6;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -41,7 +42,7 @@ struct LocalEdit {
     block: Block,
 }
 
-/// 一个区块的全部改动与掉落物。
+/// 一个区块的全部改动、掉落物与生物。
 #[derive(Serialize, Deserialize)]
 struct ChunkEdits {
     pos: [i32; 3],
@@ -49,6 +50,9 @@ struct ChunkEdits {
     /// v0.12 起随区块保存的掉落物；旧档缺省为空。
     #[serde(default)]
     drops: Vec<DroppedItemRecord>,
+    /// v0.15 起随区块保存的生物实体；旧档缺省为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    entities: Vec<EntityRecord>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,6 +73,9 @@ struct SaveFile {
     /// v0.14 起的生存状态；旧档缺省时按满血存活处理。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     survival: Option<SavedSurvival>,
+    /// v0.15 起记录已自然生成过的水平区块列（y 恒为 0）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    populated_chunks: Vec<[i32; 3]>,
 }
 
 fn default_seed() -> u32 {
@@ -83,6 +90,10 @@ pub struct WorldSave {
     edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>>,
     /// 各区块尚未恢复的掉落物；区块卸载时写入，重新加载时恢复。
     drops: HashMap<ChunkPos, Vec<DroppedItemRecord>>,
+    /// 各区块尚未恢复的生物；区块卸载时写入，重新加载时恢复。
+    entities: HashMap<ChunkPos, Vec<EntityRecord>>,
+    /// 已自然生成过生物的水平区块列，防止重新加载后重复生成。
+    populated_chunks: HashSet<ChunkPos>,
     /// 玩家背包与快捷栏选择；旧档尚未提供时为 `None`。
     player: Option<SavedInventory>,
     /// 玩家生存状态；旧档尚未提供时为 `None`。
@@ -110,6 +121,8 @@ impl WorldSave {
             seed,
             edits: HashMap::new(),
             drops: HashMap::new(),
+            entities: HashMap::new(),
+            populated_chunks: HashSet::new(),
             player: None,
             survival: None,
             unsaved: false,
@@ -178,6 +191,8 @@ impl WorldSave {
 
         let mut edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>> = HashMap::new();
         let mut drops: HashMap<ChunkPos, Vec<DroppedItemRecord>> = HashMap::new();
+        let mut entities: HashMap<ChunkPos, Vec<EntityRecord>> = HashMap::new();
+        let mut populated_chunks: HashSet<ChunkPos> = HashSet::new();
         if data.version == LEGACY_SAVE_VERSION {
             for edit in data.edits {
                 Self::insert_world_edit(&mut edits, edit);
@@ -216,11 +231,26 @@ impl WorldSave {
                 if !valid_drops.is_empty() {
                     drops.entry(pos).or_default().extend(valid_drops);
                 }
+
+                let valid_entities = chunk
+                    .entities
+                    .into_iter()
+                    .filter(|entity| entity.is_valid() && entity.chunk() == pos)
+                    .collect::<Vec<_>>();
+                if !valid_entities.is_empty() {
+                    entities.entry(pos).or_default().extend(valid_entities);
+                }
             }
+        }
+
+        for column in data.populated_chunks {
+            populated_chunks.insert(ChunkPos::new(column[0], 0, column[2]));
         }
 
         self.edits = edits;
         self.drops = drops;
+        self.entities = entities;
+        self.populated_chunks = populated_chunks;
         self.player = data.player;
         self.survival = data.survival.map(SavedSurvival::sanitized);
         Ok(())
@@ -319,6 +349,51 @@ impl WorldSave {
         self.unsaved = true;
     }
 
+    /// 读取指定区块尚未恢复的生物记录。
+    pub fn chunk_entities(&self, pos: ChunkPos) -> &[EntityRecord] {
+        self.entities.get(&pos).map_or(&[], Vec::as_slice)
+    }
+
+    /// 记录指定区块当前的生物快照；空列表表示该区块没有生物。
+    ///
+    /// 只更新内存并标记待写盘，由上层在批量处理后调用 `ensure_persisted`。
+    pub fn record_chunk_entities(&mut self, pos: ChunkPos, entities: Vec<EntityRecord>) {
+        if entities.is_empty() {
+            self.entities.remove(&pos);
+        } else {
+            self.entities.insert(pos, entities);
+        }
+        self.unsaved = true;
+    }
+
+    /// 该水平区块列是否已有自然生成记录。
+    pub fn is_chunk_populated(&self, column: ChunkPos) -> bool {
+        self.populated_chunks
+            .contains(&ChunkPos::new(column.x, 0, column.z))
+    }
+
+    /// 标记水平区块列已自然生成；只更新内存并标记待写盘。
+    pub fn record_populated_chunk(&mut self, column: ChunkPos) {
+        if self
+            .populated_chunks
+            .insert(ChunkPos::new(column.x, 0, column.z))
+        {
+            self.unsaved = true;
+        }
+    }
+
+    /// 已记录的自然生成区块列数量。
+    #[allow(dead_code)]
+    pub fn populated_chunk_count(&self) -> usize {
+        self.populated_chunks.len()
+    }
+
+    /// 已记录的生物总数。
+    #[allow(dead_code)]
+    pub fn total_entities(&self) -> usize {
+        self.entities.values().map(Vec::len).sum()
+    }
+
     /// 玩家背包存档；旧档尚未提供时为 `None`。
     pub fn player(&self) -> Option<&SavedInventory> {
         self.player.as_ref()
@@ -366,6 +441,7 @@ impl WorldSave {
             .edits
             .keys()
             .chain(self.drops.keys())
+            .chain(self.entities.keys())
             .copied()
             .collect();
         chunk_positions.sort_by_key(|pos| (pos.x, pos.y, pos.z));
@@ -398,16 +474,25 @@ impl WorldSave {
             }
 
             let drops = self.drops.get(&pos).cloned().unwrap_or_default();
-            if local_edits.is_empty() && drops.is_empty() {
+            let entities = self.entities.get(&pos).cloned().unwrap_or_default();
+            if local_edits.is_empty() && drops.is_empty() && entities.is_empty() {
                 continue;
             }
             chunk_edits.push(ChunkEdits {
                 pos: [pos.x, pos.y, pos.z],
                 edits: local_edits,
                 drops,
+                entities,
             });
         }
         world_edits.sort_by_key(|edit| (edit.x, edit.y, edit.z));
+
+        let mut populated_chunks: Vec<[i32; 3]> = self
+            .populated_chunks
+            .iter()
+            .map(|pos| [pos.x, 0, pos.z])
+            .collect();
+        populated_chunks.sort_by_key(|pos| (pos[0], pos[2]));
 
         let data = SaveFile {
             version: SAVE_VERSION,
@@ -416,6 +501,7 @@ impl WorldSave {
             chunk_edits,
             player: self.player.clone(),
             survival: self.survival,
+            populated_chunks,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
 
@@ -606,7 +692,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 5"));
+        assert!(text.contains("\"version\": 6"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -912,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn a_v012_save_restores_tools_and_upgrades_to_version_5() {
+    fn a_v012_save_restores_tools_and_upgrades_to_version_6() {
         let path = temp_path("v012");
         remove_all(&path);
         let legacy = r#"{
@@ -956,7 +1042,7 @@ mod tests {
         .expect("写盘应成功");
         let text = fs::read_to_string(&path).expect("读取新存档失败");
         let data: SaveFile = serde_json::from_str(&text).expect("解析新存档失败");
-        assert_eq!(data.version, 5);
+        assert_eq!(data.version, 6);
         assert!(data.survival.is_none(), "旧档升级时不应伪造生存数据");
 
         remove_all(&path);
@@ -1051,6 +1137,135 @@ mod tests {
             }),
             "非法最大值回落默认，当前值钳制到最大值"
         );
+        remove_all(&path);
+    }
+
+    fn sample_entity(id: u64) -> EntityRecord {
+        EntityRecord {
+            id,
+            kind: crate::entity::EntityTypeId::PIG.raw(),
+            x: 2.5,
+            y: 10.0,
+            z: 3.5,
+            vx: 0.4,
+            vy: 0.0,
+            vz: -0.2,
+            health: 8,
+            state: 1,
+            state_timer: 1.5,
+            anchor_x: 2.5,
+            anchor_z: 3.5,
+        }
+    }
+
+    #[test]
+    fn entity_records_round_trip_with_the_chunk_data() {
+        let path = temp_path("entities");
+        remove_all(&path);
+        let pos = ChunkPos::new(0, 0, 0);
+        let records = vec![sample_entity(5), sample_entity(11)];
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record_chunk_entities(pos, records.clone());
+        save.ensure_persisted().expect("写盘应成功");
+        assert_eq!(save.total_entities(), 2);
+
+        let loaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(loaded.chunk_entities(pos), records.as_slice());
+        assert_eq!(loaded.chunk_entities(ChunkPos::new(1, 0, 0)), &[]);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn populated_chunks_persist_and_normalize_vertical_index() {
+        let path = temp_path("populated");
+        remove_all(&path);
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record_populated_chunk(ChunkPos::new(1, 2, -3));
+        assert!(save.is_chunk_populated(ChunkPos::new(1, 0, -3)));
+        save.ensure_persisted().expect("写盘应成功");
+
+        let loaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert!(loaded.is_chunk_populated(ChunkPos::new(1, 0, -3)));
+        assert!(!loaded.is_chunk_populated(ChunkPos::new(2, 0, -3)));
+        assert_eq!(loaded.populated_chunk_count(), 1);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn a_v014_save_loads_with_no_entities_or_populated_chunks() {
+        let path = temp_path("v014-entities");
+        remove_all(&path);
+        let legacy = r#"{
+            "version": 5,
+            "seed": 24301,
+            "chunk_edits": [
+                {"pos": [0, 0, 0], "edits": [{"x": 2, "y": 3, "z": 4, "block": "stone"}], "drops": []}
+            ]
+        }"#;
+        fs::write(&path, legacy).expect("写入 v5 存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(save.total_edits(), 1);
+        assert_eq!(save.total_entities(), 0, "旧档不应含生物");
+        assert_eq!(save.populated_chunk_count(), 0, "旧档不应含生成记录");
+        assert_eq!(save.chunk_entities(ChunkPos::new(0, 0, 0)), &[]);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn invalid_entity_records_are_ignored_on_load() {
+        let path = temp_path("bad-entities");
+        remove_all(&path);
+        let text = r#"{
+            "version": 6,
+            "seed": 24301,
+            "chunk_edits": [
+                {"pos": [0, 0, 0], "edits": [], "drops": [], "entities": [
+                    {"id": 1, "type": 1, "x": 20.5, "y": 10.0, "z": 3.5, "health": 8},
+                    {"id": 2, "type": 99, "x": 2.5, "y": 10.0, "z": 3.5, "health": 8},
+                    {"id": 3, "type": 1, "x": 2.5, "y": 10.0, "z": 3.5, "health": 8, "state": 4},
+                    {"id": 4, "type": 1, "x": 2.5, "y": 10.0, "z": 3.5, "health": 0}
+                ]}
+            ]
+        }"#;
+        fs::write(&path, text).expect("写入存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(
+            save.total_entities(),
+            0,
+            "错位、未知类型、死亡与零血实体都应被忽略"
+        );
+        remove_all(&path);
+    }
+
+    #[test]
+    fn a_v015_save_preserves_entities_after_reload() {
+        let path = temp_path("v015-reload");
+        remove_all(&path);
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record_chunk_entities(ChunkPos::new(0, 0, 0), vec![sample_entity(9)]);
+        save.record_populated_chunk(ChunkPos::new(0, 0, 0));
+        save.set_player_state(
+            crate::item::Inventory::new().to_saved(0),
+            SavedSurvival {
+                max_health: 20,
+                current_health: 20,
+            },
+        )
+        .expect("写盘应成功");
+
+        let reloaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(reloaded.total_entities(), 1);
+        assert!(reloaded.is_chunk_populated(ChunkPos::new(0, 0, 0)));
+        assert_eq!(reloaded.chunk_entities(ChunkPos::new(0, 0, 0))[0].id, 9);
+
         remove_all(&path);
     }
 }

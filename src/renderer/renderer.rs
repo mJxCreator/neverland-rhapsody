@@ -56,6 +56,8 @@ const HUD_VERTEX_CAPACITY: usize = 32768;
 const PARTICLE_VERTEX_CAPACITY: usize = 4096;
 /// 掉落物动态顶点缓冲容量（约 450 个小立方体）。
 const DROP_VERTEX_CAPACITY: usize = 16384;
+/// 生物动态顶点缓冲容量（猪/牛盒状模型与掉落物共享顶点格式）。
+const ENTITY_VERTEX_CAPACITY: usize = 16384;
 
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
@@ -97,6 +99,8 @@ pub struct Renderer {
     particle_vertices: Vec<Vertex>,
     drop_buffer: wgpu::Buffer,
     drop_vertices: Vec<Vertex>,
+    entity_buffer: wgpu::Buffer,
+    entity_vertices: Vec<Vertex>,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -179,6 +183,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let entity_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("entity vertices"),
+            size: (ENTITY_VERTEX_CAPACITY * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let selection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("selection vertices"),
             size: (SELECTION_VERTEX_COUNT as usize * std::mem::size_of::<[f32; 3]>())
@@ -226,6 +236,8 @@ impl Renderer {
             particle_vertices: Vec::with_capacity(PARTICLE_VERTEX_CAPACITY),
             drop_buffer,
             drop_vertices: Vec::with_capacity(DROP_VERTEX_CAPACITY),
+            entity_buffer,
+            entity_vertices: Vec::with_capacity(ENTITY_VERTEX_CAPACITY),
             chunks,
             uniform_buffer,
             bind_group,
@@ -280,6 +292,11 @@ impl Renderer {
     /// 供上层直接复用的掉落物顶点缓冲。
     pub fn drop_vertices_mut(&mut self) -> &mut Vec<Vertex> {
         &mut self.drop_vertices
+    }
+
+    /// 供上层直接复用的生物顶点缓冲。
+    pub fn entity_vertices_mut(&mut self) -> &mut Vec<Vertex> {
+        &mut self.entity_vertices
     }
 
     /// 当前视口尺寸（像素）。
@@ -367,6 +384,15 @@ impl Renderer {
             );
         }
 
+        let entity_count = self.entity_vertices.len().min(ENTITY_VERTEX_CAPACITY) as u32;
+        if entity_count > 0 {
+            self.queue.write_buffer(
+                &self.entity_buffer,
+                0,
+                bytemuck::cast_slice(&self.entity_vertices[..entity_count as usize]),
+            );
+        }
+
         self.hud_model.build(
             &mut self.hud_vertices,
             self.config.width as f32,
@@ -451,6 +477,13 @@ impl Renderer {
                 render_pass.set_bind_group(0, &self.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.drop_buffer.slice(..));
                 render_pass.draw(0..drop_count, 0..1);
+            }
+
+            if entity_count > 0 {
+                render_pass.set_pipeline(&self.pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                render_pass.draw(0..entity_count, 0..1);
             }
 
             if self.selection.is_some() {

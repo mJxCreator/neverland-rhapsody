@@ -16,6 +16,11 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
+use crate::entity::{
+    entity_collision, entity_registry, entity_render, AiConfig, DamageResult, EntityId,
+    EntityManager, EntityPhysicsConfig, EntityPhysicsSystem, EntityRenderConfig, SpawnConfig,
+    Spawner,
+};
 use crate::interaction::{
     drops_for_harvest, placement_cell, primary_use, raycast, secondary_use, HarvestTool, Hotbar,
     ItemUse, MiningOutcome, MiningState, MiningTarget, RayHit,
@@ -38,6 +43,10 @@ use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 /// 准星射线长度：超出该距离的方块不会被选中。
 const SELECTION_REACH: f32 = 8.0;
+/// 生物交互距离：准星在该距离内命中生物时可造成伤害。
+const ENTITY_REACH: f32 = 4.0;
+/// 单次测试攻击的基础伤害；只用于验证伤害与掉落闭环。
+const CREATURE_TEST_DAMAGE: u32 = 3;
 /// 存档写入失败后的重试间隔，避免每帧都重复写盘。
 const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -74,6 +83,16 @@ pub struct App {
     dropped: DroppedItemStore,
     /// 掉落物行为参数。
     drop_config: DroppedItemConfig,
+    /// 生物实体管理器。
+    entities: EntityManager,
+    /// 实体固定步长物理。
+    entity_physics: EntityPhysicsSystem,
+    /// 生物自然生成器。
+    spawner: Spawner,
+    /// 生物 AI 参数。
+    ai_config: AiConfig,
+    /// 生物渲染参数。
+    entity_render_config: EntityRenderConfig,
     /// 上一帧实际执行的物理步数，用于调试日志。
     physics_steps: u32,
     cursor_grabbed: bool,
@@ -106,6 +125,7 @@ impl App {
             .survival()
             .map(Survival::from_saved)
             .unwrap_or_default();
+        let spawn_seed = world.seed();
         let mut hotbar = Hotbar::new();
         hotbar.set_selected(selected_hotbar);
         debug!(
@@ -136,6 +156,11 @@ impl App {
             spawn_anchor: spawn,
             dropped: DroppedItemStore::new(),
             drop_config: DroppedItemConfig::default(),
+            entities: EntityManager::new(),
+            entity_physics: EntityPhysicsSystem::new(EntityPhysicsConfig::default()),
+            spawner: Spawner::new(SpawnConfig::default(), spawn_seed),
+            ai_config: AiConfig::default(),
+            entity_render_config: EntityRenderConfig::default(),
             physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
@@ -195,11 +220,13 @@ impl App {
                         });
                 info!(chunks = self.world.chunk_count(), loaded, "初始区块已加载");
 
-                // 存档中属于已加载区块的掉落物恢复为运行时实体。
+                // 存档中属于已加载区块的掉落物与生物恢复为运行时实体。
                 let loaded_chunks: Vec<ChunkPos> = self.world.chunk_positions().collect();
                 for pos in loaded_chunks {
                     let records = self.save.chunk_drops(pos).to_vec();
                     self.dropped.restore_chunk(pos, &records);
+                    let entities = self.save.chunk_entities(pos).to_vec();
+                    self.entities.restore_chunk(pos, &entities);
                 }
 
                 match Renderer::new(
@@ -408,6 +435,8 @@ impl App {
             edited.extend(self.save.apply_chunk(pos, &mut self.world));
             let records = self.save.chunk_drops(pos).to_vec();
             self.dropped.restore_chunk(pos, &records);
+            let entities = self.save.chunk_entities(pos).to_vec();
+            self.entities.restore_chunk(pos, &entities);
             loaded.push(pos);
         }
         if loaded.is_empty() {
@@ -438,6 +467,85 @@ impl App {
             renderer.update_chunks(&self.world, &affected);
         }
         self.chunk_manager.skip_dirty(&affected);
+    }
+
+    /// 当前准星命中的生物；若方块比生物更近则不返回，避免隔墙攻击。
+    fn targeted_creature(&self) -> Option<EntityId> {
+        let renderer = self.renderer.as_ref()?;
+        let camera = renderer.camera();
+        let origin = camera.position();
+        let direction = camera.forward();
+        let hit = entity_collision::raycast_entities(
+            self.entities.creatures(),
+            origin,
+            direction,
+            ENTITY_REACH,
+        )?;
+        if let Some(block_hit) = raycast(&self.world, origin, direction, ENTITY_REACH) {
+            if let Some(block_distance) = entity_collision::ray_block_distance(
+                origin,
+                direction,
+                block_hit.block,
+                ENTITY_REACH,
+            ) {
+                if block_distance <= hit.1 {
+                    return None;
+                }
+            }
+        }
+        Some(hit.0)
+    }
+
+    /// 对生物造成一次基础测试伤害；击杀时只结算一次掉落。
+    fn attack_creature(&mut self, id: EntityId) {
+        let Some((kind, position)) = self
+            .entities
+            .get(id)
+            .map(|creature| (creature.kind(), creature.entity.position()))
+        else {
+            return;
+        };
+        let source = self.player.eye_position();
+        match self.entities.apply_damage(
+            id,
+            CREATURE_TEST_DAMAGE,
+            source,
+            self.ai_config.flee_seconds,
+        ) {
+            DamageResult::Killed => {
+                info!(entity = id.raw(), ?kind, "生物已被击杀");
+                self.spawn_creature_drops(kind, position, id);
+            }
+            DamageResult::Applied { remaining } => {
+                debug!(entity = id.raw(), remaining, "生物受到伤害");
+            }
+            DamageResult::Ignored => {}
+        }
+    }
+
+    /// 按实体定义生成生物掉落物；数量由定义固定配置。
+    fn spawn_creature_drops(
+        &mut self,
+        kind: crate::entity::EntityTypeId,
+        position: Vec3,
+        id: EntityId,
+    ) {
+        let Some(definition) = entity_registry::definition(kind) else {
+            return;
+        };
+        for (index, drop) in definition.drops.iter().enumerate() {
+            let count = drop.count_for(id.raw());
+            if count == 0 {
+                continue;
+            }
+            let Some(stack) = ItemStack::new(drop.item, count) else {
+                continue;
+            };
+            let direction = if index % 2 == 0 { 1.0 } else { -1.0 };
+            let velocity = Vec3::new(0.2 * direction, 1.3, -0.1 * direction);
+            self.dropped
+                .spawn(stack, position + Vec3::Y * 0.5, velocity, &self.drop_config);
+        }
     }
 
     /// 当前准星命中的方块。
@@ -617,15 +725,19 @@ impl App {
             );
         }
 
-        // 区块卸载前保存所属掉落物，重新加载的区块则从存档恢复，二者互不重复。
+        // 区块卸载前保存所属掉落物与生物，重新加载的区块则从存档恢复，二者互不重复。
         for pos in &update.loaded {
             let records = self.save.chunk_drops(*pos).to_vec();
             self.dropped.restore_chunk(*pos, &records);
+            let entities = self.save.chunk_entities(*pos).to_vec();
+            self.entities.restore_chunk(*pos, &entities);
         }
         if !update.unloaded.is_empty() {
             for pos in &update.unloaded {
                 let records = self.dropped.remove_chunk(*pos);
                 self.save.record_chunk_drops(*pos, records);
+                let entities = self.entities.take_chunk_entities(*pos);
+                self.save.record_chunk_entities(*pos, entities);
             }
             if let Err(err) = self.save.ensure_persisted() {
                 warn!(error = %format!("{err:#}"), "卸载区块时写入存档失败");
@@ -657,6 +769,8 @@ impl App {
         for pos in self.world.chunk_positions() {
             let records = self.dropped.snapshot_chunk(pos);
             self.save.record_chunk_drops(pos, records);
+            let entities = self.entities.snapshot_chunk(pos);
+            self.save.record_chunk_entities(pos, entities);
         }
         if let Err(err) = self.save.ensure_persisted() {
             warn!(error = %format!("{err:#}"), "退出前写入世界存档失败");
@@ -715,6 +829,38 @@ impl App {
             }
         }
 
+        // 生物物理与玩家物理共用固定步长；重叠时把玩家水平推开，避免相互穿透。
+        let player_box = self.player.aabb();
+        self.entity_physics.update(
+            self.entities.creatures_mut(),
+            &self.world,
+            Some(player_box),
+            delta_secs,
+        );
+        let mut separated = self.player.position();
+        let entity_physics_world = PhysicsWorld::new(&self.world);
+        let dimensions = self.physics.config().dimensions;
+        entity_collision::resolve_player_overlaps(
+            &mut separated,
+            dimensions.width,
+            dimensions.height,
+            self.entities.creatures(),
+            &|x, y, z| entity_physics_world.is_solid(x, y, z),
+        );
+        let shift = separated - self.player.position();
+        if shift != Vec3::ZERO {
+            self.player.shift_position(shift);
+        }
+
+        // AI 决策频率由距离控制，移动仍由物理步执行。
+        self.entities.update_ai(
+            delta_secs,
+            self.player.position(),
+            &self.world,
+            &self.ai_config,
+        );
+        self.entities.update_deaths(delta_secs);
+
         // 摄像机用物理插值系数跟随玩家，避免固定步长与渲染帧率不同步产生抖动。
         let alpha = update.alpha;
         let eye = self.player.interpolated_eye_position(alpha);
@@ -726,6 +872,25 @@ impl App {
 
         // 物理移动后先补齐区块，再让射线检测基于最新的已加载世界。
         self.stream_chunks();
+
+        // 自然生成依赖已加载区块；新区块列一旦生成就写入存档，避免重载后重复生成。
+        let spawn_player_box = self.player.aabb();
+        let populated = self.spawner.update(
+            &mut self.entities,
+            &self.world,
+            self.player.position(),
+            spawn_player_box,
+            &|column| self.save.is_chunk_populated(column),
+            delta_secs,
+        );
+        if !populated.is_empty() {
+            for column in populated {
+                self.save.record_populated_chunk(column);
+            }
+            if let Err(err) = self.save.ensure_persisted() {
+                warn!(error = %format!("{err:#}"), "自然生成记录写入存档失败");
+            }
+        }
 
         // 掉落物物理与自动拾取；拾取后立即同步玩家背包与所属区块存档。
         self.dropped
@@ -804,6 +969,18 @@ impl App {
                 .set(selected_slot, slots, progress, ui_blocking);
             renderer.update_particles(delta_secs);
             self.dropped.build_vertices(renderer.drop_vertices_mut());
+            let view_proj = renderer.camera().view_proj();
+            let camera_position = renderer.camera().position();
+            let entity_vertices = renderer.entity_vertices_mut();
+            entity_vertices.clear();
+            entity_render::build_vertices(
+                self.entities.creatures(),
+                self.entity_physics.alpha(),
+                view_proj,
+                camera_position,
+                &self.entity_render_config,
+                entity_vertices,
+            );
             let viewport = renderer.viewport();
             let mut ui_vertices = Vec::new();
             if death_open {
@@ -1027,9 +1204,15 @@ impl ApplicationHandler for App {
                     // 主要使用入口只用于识别物品语义；徒手与方块物品仍可徒手挖掘，
                     // 实际效率由 Mining 依据当前工具倍率计算。
                     (MouseButton::Left, ElementState::Pressed) => {
-                        let stack = self.inventory.hotbar_stack(self.hotbar.selected_index());
-                        debug!(primary = ?primary_use(stack), "主要使用");
-                        self.mining_held = true;
+                        if let Some(target) = self.targeted_creature() {
+                            self.attack_creature(target);
+                            self.mining_held = false;
+                            self.mining.cancel();
+                        } else {
+                            let stack = self.inventory.hotbar_stack(self.hotbar.selected_index());
+                            debug!(primary = ?primary_use(stack), "主要使用");
+                            self.mining_held = true;
+                        }
                     }
                     (MouseButton::Left, ElementState::Released) => {
                         self.mining_held = false;
@@ -1119,6 +1302,8 @@ impl ApplicationHandler for App {
                         max_health = self.survival.max_health(),
                         invulnerability = self.survival.invulnerability_remaining(),
                         dropped_items = self.dropped.len(),
+                        entities = self.entities.len(),
+                        alive_entities = self.entities.alive_count(),
                         mining_active = self.mining.is_mining(),
                         mining_target = ?self.mining.target(),
                         mining_progress = self.mining.progress(),

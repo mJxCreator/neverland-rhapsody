@@ -199,6 +199,15 @@ impl Player {
         self.previous_position = self.position;
     }
 
+    /// 在不改变速度与落地状态的前提下平移玩家位置，用于与生物碰撞后的分离。
+    pub fn shift_position(&mut self, delta: Vec3) {
+        if !delta.is_finite() {
+            return;
+        }
+        self.position += delta;
+        self.previous_position += delta;
+    }
+
     /// 数值异常时回到安全位置并清空运动状态。
     pub(crate) fn reset_motion(&mut self, position: Vec3) {
         self.position = position;

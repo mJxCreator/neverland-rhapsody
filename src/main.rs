@@ -1,8 +1,9 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.13：工具系统、挖掘效率、采集掉落、耐久与 v4 存档。
+//! 当前里程碑 v0.15：猪与牛生物、实体物理与 AI、自然生成与 v6 存档。
 
 mod core;
+mod entity;
 mod interaction;
 mod item;
 mod mesh;

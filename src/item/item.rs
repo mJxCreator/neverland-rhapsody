@@ -30,6 +30,9 @@ impl ItemId {
     pub const WOOD: Self = Self(13);
     pub const STICK: Self = Self(14);
     pub const IRON_INGOT: Self = Self(15);
+    pub const RAW_PORKCHOP: Self = Self(16);
+    pub const RAW_BEEF: Self = Self(17);
+    pub const LEATHER: Self = Self(18);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {

@@ -188,8 +188,41 @@ const IRON_INGOT: ItemDefinition = ItemDefinition {
     item_type: ItemType::Material,
 };
 
+const RAW_PORKCHOP: ItemDefinition = ItemDefinition {
+    id: ItemId::RAW_PORKCHOP,
+    name: "Raw Porkchop",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.92, 0.50, 0.53),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
+const RAW_BEEF: ItemDefinition = ItemDefinition {
+    id: ItemId::RAW_BEEF,
+    name: "Raw Beef",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.70, 0.22, 0.22),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
+const LEATHER: ItemDefinition = ItemDefinition {
+    id: ItemId::LEATHER,
+    name: "Leather",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.55, 0.38, 0.22),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 16] = [
+const DEFINITIONS: [ItemDefinition; 19] = [
     INVALID,
     STONE,
     DIRT,
@@ -206,6 +239,9 @@ const DEFINITIONS: [ItemDefinition; 16] = [
     WOOD,
     STICK,
     IRON_INGOT,
+    RAW_PORKCHOP,
+    RAW_BEEF,
+    LEATHER,
 ];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。
@@ -314,6 +350,19 @@ mod tests {
             assert!(!definition.is_placeable());
             assert_eq!(item_for_block(Block::Wood), Some(ItemId::WOOD));
         }
+    }
+
+    #[test]
+    fn creature_drop_items_are_registered_materials() {
+        for item in [ItemId::RAW_PORKCHOP, ItemId::RAW_BEEF, ItemId::LEATHER] {
+            let definition = definition(item).expect("生物掉落物品应已注册");
+            assert_eq!(definition.item_type, ItemType::Material);
+            assert_eq!(definition.max_stack_size, DEFAULT_MAX_STACK_SIZE);
+            assert_eq!(block_for_item(item), None);
+        }
+        assert_eq!(ItemId::RAW_PORKCHOP.raw(), 16);
+        assert_eq!(ItemId::RAW_BEEF.raw(), 17);
+        assert_eq!(ItemId::LEATHER.raw(), 18);
     }
 
     #[test]
