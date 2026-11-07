@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use glam::{Mat4, Vec3};
+use glam::{IVec3, Mat4, Vec3};
 use tracing::info;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
@@ -25,10 +25,17 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// 摄像机出生点在世界平面上的位置：世界中央偏后，面向 -Z 观察山地。
 const SPAWN_X: f32 = 48.0;
 const SPAWN_Z: f32 = 84.0;
-/// 出生点高出地表的距离，避免出生在地形内部，同时获得俯瞰山地的视角。
-const SPAWN_CLEARANCE: f32 = 14.0;
+/// 出生点高出地表的距离，接近第一人称眼高，便于准星选中近处方块。
+const SPAWN_CLEARANCE: f32 = 3.0;
 /// 出生时的俯仰角，略微俯视。
-const SPAWN_PITCH: f32 = -0.28;
+const SPAWN_PITCH: f32 = -0.45;
+
+/// 选中线框的棱数（立方体 12 条棱），每条棱两个顶点。
+const SELECTION_EDGE_COUNT: usize = 12;
+/// 选中线框的顶点总数。
+const SELECTION_VERTEX_COUNT: u32 = (SELECTION_EDGE_COUNT * 2) as u32;
+/// 线框相对方块表面的外扩量，避免与方块面共面导致闪烁。
+const SELECTION_EXPAND: f32 = 0.003;
 
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
@@ -57,6 +64,9 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
+    selection_pipeline: wgpu::RenderPipeline,
+    selection_buffer: wgpu::Buffer,
+    selection: Option<IVec3>,
     chunks: Vec<ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -109,6 +119,15 @@ impl Renderer {
         });
 
         let pipeline = pipeline::create_pipeline(&device, config.format, &bind_group_layout);
+        let selection_pipeline =
+            pipeline::create_selection_pipeline(&device, config.format, &bind_group_layout);
+        let selection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("selection vertices"),
+            size: (SELECTION_VERTEX_COUNT as usize * std::mem::size_of::<[f32; 3]>())
+                as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let chunks = upload_chunk_meshes(&device, world);
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -145,6 +164,9 @@ impl Renderer {
             config,
             depth_view,
             pipeline,
+            selection_pipeline,
+            selection_buffer,
+            selection: None,
             chunks,
             uniform_buffer,
             bind_group,
@@ -176,6 +198,11 @@ impl Renderer {
         &mut self.camera
     }
 
+    /// 更新准星选中的方块，`None` 表示当前没有可高亮的方块。
+    pub fn set_selection(&mut self, block: Option<IVec3>) {
+        self.selection = block;
+    }
+
     /// 绘制一帧。
     pub fn render(&mut self) -> RenderOutcome {
         let view_proj: Mat4 = self.camera.view_proj();
@@ -184,6 +211,13 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&view_proj.to_cols_array_2d()),
         );
+        if let Some(block) = self.selection {
+            self.queue.write_buffer(
+                &self.selection_buffer,
+                0,
+                bytemuck::cast_slice(&selection_vertices(block)),
+            );
+        }
 
         let (surface_texture, needs_reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
@@ -241,6 +275,13 @@ impl Renderer {
                     .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
+
+            if self.selection.is_some() {
+                render_pass.set_pipeline(&self.selection_pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.selection_buffer.slice(..));
+                render_pass.draw(0..SELECTION_VERTEX_COUNT, 0..1);
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -292,6 +333,45 @@ fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> Vec<ChunkBuffers
         .collect()
 }
 
+/// 立方体的 12 条棱，用顶点下标成对表示。
+const CUBE_EDGES: [(usize, usize); SELECTION_EDGE_COUNT] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
+
+/// 生成选中方块的线框顶点（12 条棱 × 2 个端点），位置为世界坐标。
+fn selection_vertices(block: IVec3) -> [[f32; 3]; SELECTION_EDGE_COUNT * 2] {
+    let min = block.as_vec3() - Vec3::splat(SELECTION_EXPAND);
+    let max = min + Vec3::splat(1.0 + SELECTION_EXPAND * 2.0);
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+
+    let mut vertices = [[0.0; 3]; SELECTION_EDGE_COUNT * 2];
+    for (index, (start, end)) in CUBE_EDGES.iter().enumerate() {
+        vertices[index * 2] = corners[*start].to_array();
+        vertices[index * 2 + 1] = corners[*end].to_array();
+    }
+    vertices
+}
+
 fn create_depth_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -311,4 +391,25 @@ fn create_depth_view(
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_outline_wraps_the_whole_block() {
+        let block = IVec3::new(2, 3, 4);
+        let vertices = selection_vertices(block);
+
+        assert_eq!(vertices.len(), SELECTION_VERTEX_COUNT as usize);
+        for [x, y, z] in vertices {
+            for (value, axis_min) in [(x, 2.0), (y, 3.0), (z, 4.0)] {
+                // 允许 f32 舍入误差。
+                let lower = axis_min - SELECTION_EXPAND - 1e-4;
+                let upper = axis_min + 1.0 + SELECTION_EXPAND + 1e-4;
+                assert!((lower..=upper).contains(&value), "坐标越界: {value}");
+            }
+        }
+    }
 }

@@ -13,6 +13,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
+use crate::interaction::raycast::raycast;
 use crate::player::PlayerController;
 use crate::renderer::{RenderOutcome, Renderer};
 use crate::world::World;
@@ -21,6 +22,8 @@ use crate::world::World;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 /// 单帧参与摄像机更新的最大时长，避免窗口卡顿后位置跳变。
 const MAX_CAMERA_DELTA: f32 = 0.05;
+/// 准星射线长度：超出该距离的方块不会被选中。
+const SELECTION_REACH: f32 = 8.0;
 
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
@@ -134,6 +137,15 @@ impl App {
                 renderer.camera_mut(),
                 delta.as_secs_f32().min(MAX_CAMERA_DELTA),
             );
+
+            let camera = renderer.camera_mut();
+            let hit = raycast(
+                &self.world,
+                camera.position(),
+                camera.forward(),
+                SELECTION_REACH,
+            );
+            renderer.set_selection(hit.map(|hit| hit.block));
         }
 
         let outcome = match self.renderer.as_mut() {

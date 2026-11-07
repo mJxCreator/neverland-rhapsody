@@ -46,6 +46,11 @@ impl Camera {
         self.position += delta;
     }
 
+    /// 摄像机当前所在的世界坐标。
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
     /// 视线方向的单位向量（含俯仰）。
     pub fn forward(&self) -> Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
