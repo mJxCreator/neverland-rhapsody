@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 use tracing::{debug, error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -19,8 +19,12 @@ use super::time::FrameTimer;
 use crate::interaction::{
     placement_cell, raycast, Hotbar, MiningOutcome, MiningState, MiningTarget, RayHit,
 };
+use crate::item::{
+    block_for_item, collect_pickups, drops_for_block, DroppedItemConfig, DroppedItemStore,
+    Inventory, ItemStack,
+};
 use crate::player::{PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController};
-use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
+use crate::renderer::{spawn_pose, ClickButton, InventoryUi, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
 use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 
@@ -46,8 +50,16 @@ pub struct App {
     mining: MiningState,
     /// 左键是否仍按住。
     mining_held: bool,
-    /// 方块快捷栏选择，决定右键放置的方块类型。
+    /// 快捷栏仅保存选中下标，物品内容来自背包。
     hotbar: Hotbar,
+    /// 玩家背包：27 格主背包 + 9 格快捷栏。
+    inventory: Inventory,
+    /// 背包界面状态（开关、鼠标位置、拖动中的物品）。
+    inventory_ui: InventoryUi,
+    /// 世界掉落物。
+    dropped: DroppedItemStore,
+    /// 掉落物行为参数。
+    drop_config: DroppedItemConfig,
     /// 上一帧实际执行的物理步数，用于调试日志。
     physics_steps: u32,
     cursor_grabbed: bool,
@@ -71,6 +83,14 @@ impl App {
         let mut player = Player::new(spawn, physics.config().dimensions);
         player.rotate_look(yaw, pitch);
 
+        // 旧档没有玩家数据时按空背包启动（v0.12 迁移策略）。
+        let (inventory, selected_hotbar) = save
+            .player()
+            .map(Inventory::from_saved)
+            .unwrap_or((Inventory::new(), 0));
+        let mut hotbar = Hotbar::new();
+        hotbar.set_selected(selected_hotbar);
+
         Self {
             config,
             world,
@@ -83,7 +103,11 @@ impl App {
             physics,
             mining: MiningState::new(),
             mining_held: false,
-            hotbar: Hotbar::new(),
+            hotbar,
+            inventory,
+            inventory_ui: InventoryUi::new(),
+            dropped: DroppedItemStore::new(),
+            drop_config: DroppedItemConfig::default(),
             physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
@@ -132,6 +156,13 @@ impl App {
                             self.save.apply_chunk(pos, world)
                         });
                 info!(chunks = self.world.chunk_count(), loaded, "初始区块已加载");
+
+                // 存档中属于已加载区块的掉落物恢复为运行时实体。
+                let loaded_chunks: Vec<ChunkPos> = self.world.chunk_positions().collect();
+                for pos in loaded_chunks {
+                    let records = self.save.chunk_drops(pos).to_vec();
+                    self.dropped.restore_chunk(pos, &records);
+                }
 
                 match Renderer::new(
                     window.clone(),
@@ -194,6 +225,36 @@ impl App {
         self.controller.reset();
     }
 
+    /// 打开背包界面：暂停视角与挖掘输入，但世界物理与区块流送继续运行。
+    fn open_inventory(&mut self) {
+        if self.renderer.is_none() {
+            return;
+        }
+        if let Some(window) = self.window.as_ref() {
+            if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
+                warn!(error = %err, "打开背包时释放鼠标捕获失败");
+            }
+            window.set_cursor_visible(true);
+        }
+        self.cursor_grabbed = false;
+        self.mining_held = false;
+        self.mining.cancel();
+        self.controller.reset();
+        self.inventory_ui.open();
+        info!("背包已打开，按 E 或 Esc 关闭");
+    }
+
+    /// 关闭背包界面：拖动中的物品先归位，再恢复鼠标捕获。
+    fn close_inventory(&mut self) {
+        if !self.inventory_ui.try_close(&mut self.inventory) {
+            warn!("背包已满，无法放下拖动中的物品，界面保持打开");
+            return;
+        }
+        self.persist_player();
+        self.grab_cursor();
+        info!("背包已关闭");
+    }
+
     /// 当前准星命中的方块。
     fn targeted_block(&self) -> Option<RayHit> {
         let renderer = self.renderer.as_ref()?;
@@ -233,6 +294,7 @@ impl App {
             z: block.z,
             block: Block::Air,
         });
+        self.spawn_block_drops(block, block_type);
         self.rebuild_chunks(affected);
         self.mining.cancel();
         if let Some(renderer) = self.renderer.as_mut() {
@@ -241,12 +303,37 @@ impl App {
         }
     }
 
-    /// 右键放置：在命中面外侧的空格放下快捷栏当前选中的方块。
+    /// 按方块掉落表生成掉落物；初始速度带轻微抛出效果。
+    fn spawn_block_drops(&mut self, block: IVec3, block_type: Block) {
+        let center = Vec3::new(
+            block.x as f32 + 0.5,
+            block.y as f32 + 0.5,
+            block.z as f32 + 0.5,
+        );
+        for (index, drop) in drops_for_block(block_type).iter().enumerate() {
+            let Some(stack) = ItemStack::new(drop.item, drop.count) else {
+                continue;
+            };
+            let direction = if index % 2 == 0 { 1.0 } else { -1.0 };
+            let velocity = Vec3::new(0.18 * direction, 1.2, -0.08 * direction);
+            self.dropped
+                .spawn(stack, center, velocity, &self.drop_config);
+        }
+    }
+
+    /// 右键放置：在命中面外侧的空格放下快捷栏当前选中的方块物品。
     fn place_block(&mut self) {
         let Some(hit) = self.targeted_block() else {
             return;
         };
-        let block = self.hotbar.selected_block();
+        let Some(stack) = self.inventory.hotbar_stack(self.hotbar.selected_index()) else {
+            debug!("当前快捷栏槽位为空，无法放置");
+            return;
+        };
+        let Some(block) = block_for_item(stack.item()) else {
+            debug!(item = ?stack.item(), "该物品不能放置为方块");
+            return;
+        };
         let target = match placement_cell(&self.world, &hit, &self.player, block) {
             Ok(target) => target,
             Err(reason) => {
@@ -259,6 +346,10 @@ impl App {
         if affected.is_empty() {
             return;
         }
+
+        // 世界写入成功后才扣减物品，避免放置失败时损失库存。
+        self.inventory.remove_item(stack.item(), 1);
+        self.persist_player();
 
         info!(block = ?target, block_type = ?block, "方块已放置");
         self.remember_edit(BlockEdit {
@@ -326,6 +417,21 @@ impl App {
             );
         }
 
+        // 区块卸载前保存所属掉落物，重新加载的区块则从存档恢复，二者互不重复。
+        for pos in &update.loaded {
+            let records = self.save.chunk_drops(*pos).to_vec();
+            self.dropped.restore_chunk(*pos, &records);
+        }
+        if !update.unloaded.is_empty() {
+            for pos in &update.unloaded {
+                let records = self.dropped.remove_chunk(*pos);
+                self.save.record_chunk_drops(*pos, records);
+            }
+            if let Err(err) = self.save.ensure_persisted() {
+                warn!(error = %format!("{err:#}"), "卸载区块时写入存档失败");
+            }
+        }
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -338,10 +444,41 @@ impl App {
         self.mesh_ms = start.elapsed().as_secs_f64() * 1000.0;
     }
 
-    /// 退出前确保内存中的方块改动已经落盘。
+    /// 退出前确保内存中的方块改动、掉落物与玩家背包已经落盘。
     fn flush_save(&mut self) {
+        // 拖动中的物品先归位，避免关闭界面时丢失。
+        let _ = self.inventory_ui.try_close(&mut self.inventory);
+        self.persist_player();
+
+        for pos in self.world.chunk_positions() {
+            let records = self.dropped.snapshot_chunk(pos);
+            self.save.record_chunk_drops(pos, records);
+        }
         if let Err(err) = self.save.ensure_persisted() {
             warn!(error = %format!("{err:#}"), "退出前写入世界存档失败");
+        }
+    }
+
+    /// 把当前背包与快捷栏选择写入存档；失败只记录日志，不中断游戏。
+    fn persist_player(&mut self) {
+        let saved = self.inventory.to_saved(self.hotbar.selected_index());
+        if let Err(err) = self.save.set_player(saved) {
+            warn!(error = %format!("{err:#}"), "玩家背包写入存档失败");
+        }
+    }
+
+    /// 把发生变化的区块掉落物快照写回存档。
+    fn persist_dirty_drops(&mut self) {
+        let chunks = self.dropped.take_dirty_chunks();
+        if chunks.is_empty() {
+            return;
+        }
+        for pos in chunks {
+            let records = self.dropped.snapshot_chunk(pos);
+            self.save.record_chunk_drops(pos, records);
+        }
+        if let Err(err) = self.save.ensure_persisted() {
+            warn!(error = %format!("{err:#}"), "掉落物变化写入存档失败");
         }
     }
 
@@ -353,18 +490,16 @@ impl App {
     }
 
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
+        let delta_secs = delta.as_secs_f32();
         // 视角旋转与物理位移解耦：鼠标视角立即生效，位移走固定步长物理。
         let look = self.controller.take_look();
         self.player.rotate_look(look.0, look.1);
 
         let intent = self.controller.intent();
         let physics_world = PhysicsWorld::new(&self.world);
-        let update = self.physics.update(
-            &mut self.player,
-            &intent,
-            &physics_world,
-            delta.as_secs_f32(),
-        );
+        let update = self
+            .physics
+            .update(&mut self.player, &intent, &physics_world, delta_secs);
         self.physics_steps = update.steps;
 
         // 摄像机用物理插值系数跟随玩家，避免固定步长与渲染帧率不同步产生抖动。
@@ -379,9 +514,30 @@ impl App {
         // 物理移动后先补齐区块，再让射线检测基于最新的已加载世界。
         self.stream_chunks();
 
+        // 掉落物物理与自动拾取；拾取后立即同步玩家背包与所属区块存档。
+        self.dropped
+            .update(delta_secs, &self.world, &self.drop_config);
+        // 以玩家身体中心作为拾取判定点。
+        let center = self.player.position() + Vec3::Y * 0.9;
+        let picked = collect_pickups(
+            &mut self.dropped,
+            &mut self.inventory,
+            center,
+            &self.drop_config,
+        );
+        self.persist_dirty_drops();
+        if !picked.is_empty() {
+            if let Some(renderer) = self.renderer.as_mut() {
+                if let Some((item, count)) = picked.headline() {
+                    renderer.hud_mut().show_pickup(item, count);
+                }
+            }
+            self.persist_player();
+        }
+
+        let inventory_open = self.inventory_ui.is_open();
         let hit = self.targeted_block();
         let mining_target = self.mining_target(hit);
-        let delta_secs = delta.as_secs_f32();
         let outcome = self
             .mining
             .update(self.mining_held, mining_target, delta_secs);
@@ -394,13 +550,22 @@ impl App {
             selection = None;
         }
 
-        let slots = *self.hotbar.slots();
+        let slots = self.inventory.hotbar_slots();
         let selected_slot = self.hotbar.selected_index();
         let progress = self.mining.progress();
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_selection(selection);
-            renderer.hud_mut().set(selected_slot, slots, progress);
+            renderer.hud_mut().update(delta_secs);
+            renderer.set_selection(if inventory_open { None } else { selection });
+            renderer
+                .hud_mut()
+                .set(selected_slot, slots, progress, inventory_open);
             renderer.update_particles(delta_secs);
+            self.dropped.build_vertices(renderer.drop_vertices_mut());
+            let viewport = renderer.viewport();
+            let mut ui_vertices = Vec::new();
+            self.inventory_ui
+                .build(&mut ui_vertices, &self.inventory, selected_slot, viewport);
+            renderer.set_ui_vertices(ui_vertices);
         }
 
         let outcome = match self.renderer.as_mut() {
@@ -424,7 +589,7 @@ impl App {
     }
 }
 
-/// 数字键 1-5 对应的快捷栏槽位；其他按键返回 `None`。
+/// 数字键 1-9 对应的快捷栏槽位；其他按键返回 `None`。
 fn hotbar_slot_for_key(code: KeyCode) -> Option<usize> {
     match code {
         KeyCode::Digit1 => Some(0),
@@ -432,6 +597,10 @@ fn hotbar_slot_for_key(code: KeyCode) -> Option<usize> {
         KeyCode::Digit3 => Some(2),
         KeyCode::Digit4 => Some(3),
         KeyCode::Digit5 => Some(4),
+        KeyCode::Digit6 => Some(5),
+        KeyCode::Digit7 => Some(6),
+        KeyCode::Digit8 => Some(7),
+        KeyCode::Digit9 => Some(8),
         _ => None,
     }
 }
@@ -462,7 +631,9 @@ impl ApplicationHandler for App {
                 let pressed = event.state == ElementState::Pressed;
                 if code == KeyCode::Escape {
                     if pressed {
-                        if self.cursor_grabbed {
+                        if self.inventory_ui.is_open() {
+                            self.close_inventory();
+                        } else if self.cursor_grabbed {
                             self.release_cursor();
                         } else {
                             info!("按下 Esc，退出");
@@ -472,19 +643,62 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                if code == KeyCode::KeyE {
+                    if pressed {
+                        if self.inventory_ui.is_open() {
+                            self.close_inventory();
+                        } else {
+                            self.open_inventory();
+                        }
+                    }
+                    return;
+                }
+                // 背包打开时只响应开关界面，暂停移动与视角输入。
+                if self.inventory_ui.is_open() {
+                    return;
+                }
                 // 未捕获鼠标时键盘不驱动相机，避免释放鼠标后误移动。
                 if !self.cursor_grabbed {
                     return;
                 }
                 if let Some(slot) = hotbar_slot_for_key(code) {
-                    if pressed {
-                        self.hotbar.select_slot(slot);
+                    if pressed && self.hotbar.select_slot(slot) {
+                        self.persist_player();
                     }
                     return;
                 }
                 self.controller.handle_key(code, pressed);
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.inventory_ui
+                    .set_cursor(position.x as f32, position.y as f32);
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.inventory_ui.is_open() {
+                    if state == ElementState::Pressed {
+                        let viewport = self
+                            .renderer
+                            .as_ref()
+                            .map_or((1280.0, 720.0), Renderer::viewport);
+                        let click = match button {
+                            MouseButton::Left => Some(ClickButton::Left),
+                            MouseButton::Right => Some(ClickButton::Right),
+                            _ => None,
+                        };
+                        if let Some(click) = click {
+                            let cursor = self.inventory_ui.cursor();
+                            if self.inventory_ui.click_at(
+                                &mut self.inventory,
+                                click,
+                                cursor,
+                                viewport,
+                            ) {
+                                self.persist_player();
+                            }
+                        }
+                    }
+                    return;
+                }
                 if !self.cursor_grabbed {
                     // 首次点击只用于捕获鼠标，避免误触挖掘。
                     if state == ElementState::Pressed && button == MouseButton::Left {
@@ -505,14 +719,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !self.cursor_grabbed {
+                if !self.cursor_grabbed && !self.inventory_ui.is_open() {
                     return;
                 }
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
+                let before = self.hotbar.selected_index();
                 self.hotbar.scroll(amount);
+                if before != self.hotbar.selected_index() {
+                    self.persist_player();
+                }
             }
             WindowEvent::Focused(false) => {
                 if self.cursor_grabbed {
@@ -563,7 +781,9 @@ impl ApplicationHandler for App {
                         pending_meshes = self.chunk_manager.pending_mesh(),
                         generation_ms = self.generation_ms,
                         mesh_ms = self.mesh_ms,
-                        selected_block = ?self.hotbar.selected_block(),
+                        selected_hotbar = self.hotbar.selected_index(),
+                        inventory_open = self.inventory_ui.is_open(),
+                        dropped_items = self.dropped.len(),
                         mining_active = self.mining.is_mining(),
                         mining_target = ?self.mining.target(),
                         mining_progress = self.mining.progress(),

@@ -1,4 +1,5 @@
-//! 世界存档：按区块记录玩家对程序化地形的改动，兼容 v0.8 的世界坐标旧档。
+//! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物与玩家背包，
+//! 并兼容 v0.8（version 1）与 v0.11（version 2）旧档。
 
 use std::collections::HashMap;
 use std::fs;
@@ -8,12 +9,13 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::item::{DroppedItemRecord, SavedInventory};
 use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：按区块组织改动数据。
-const SAVE_VERSION: u32 = 2;
+/// 当前存档格式版本：区块数据 + 玩家背包 + 区块掉落物。
+const SAVE_VERSION: u32 = 3;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -35,11 +37,14 @@ struct LocalEdit {
     block: Block,
 }
 
-/// 一个区块的全部改动。
+/// 一个区块的全部改动与掉落物。
 #[derive(Serialize, Deserialize)]
 struct ChunkEdits {
     pos: [i32; 3],
     edits: Vec<LocalEdit>,
+    /// v0.12 起随区块保存的掉落物；旧档缺省为空。
+    #[serde(default)]
+    drops: Vec<DroppedItemRecord>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,6 +59,9 @@ struct SaveFile {
     /// v0.9 起按区块组织的改动。
     #[serde(default)]
     chunk_edits: Vec<ChunkEdits>,
+    /// v0.12 起的玩家背包与快捷栏选择；旧档缺省为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    player: Option<SavedInventory>,
 }
 
 fn default_seed() -> u32 {
@@ -66,6 +74,10 @@ pub struct WorldSave {
     seed: u32,
     /// 以区块坐标索引，区块内以局部坐标去重，只保留最后一次改动。
     edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>>,
+    /// 各区块尚未恢复的掉落物；区块卸载时写入，重新加载时恢复。
+    drops: HashMap<ChunkPos, Vec<DroppedItemRecord>>,
+    /// 玩家背包与快捷栏选择；旧档尚未提供时为 `None`。
+    player: Option<SavedInventory>,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
     /// 主存档读取失败、本次数据来自备份时为 `true`。
@@ -88,6 +100,8 @@ impl WorldSave {
             path,
             seed,
             edits: HashMap::new(),
+            drops: HashMap::new(),
+            player: None,
             unsaved: false,
             primary_suspect: false,
         };
@@ -141,12 +155,11 @@ impl WorldSave {
     /// 解析存档文本、校验版本与种子，并把改动载入内存。
     fn apply_text(&mut self, text: &str) -> Result<()> {
         let data: SaveFile = serde_json::from_str(text).context("解析存档失败")?;
-        if data.version != SAVE_VERSION && data.version != LEGACY_SAVE_VERSION {
+        if !(LEGACY_SAVE_VERSION..=SAVE_VERSION).contains(&data.version) {
             bail!(
-                "存档版本 {} 与当前支持的版本 {} / {} 不一致",
+                "存档版本 {} 与当前支持的版本 1..={} 不一致",
                 data.version,
-                SAVE_VERSION,
-                LEGACY_SAVE_VERSION
+                SAVE_VERSION
             );
         }
         if data.seed != self.seed {
@@ -154,6 +167,7 @@ impl WorldSave {
         }
 
         let mut edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>> = HashMap::new();
+        let mut drops: HashMap<ChunkPos, Vec<DroppedItemRecord>> = HashMap::new();
         if data.version == LEGACY_SAVE_VERSION {
             for edit in data.edits {
                 Self::insert_world_edit(&mut edits, edit);
@@ -178,11 +192,37 @@ impl WorldSave {
                         .or_default()
                         .insert((edit.x, edit.y, edit.z), edit.block);
                 }
+
+                let valid_drops = chunk
+                    .drops
+                    .into_iter()
+                    .filter(|drop| {
+                        Self::drop_belongs_to(drop, pos)
+                            && drop.x.is_finite()
+                            && drop.y.is_finite()
+                            && drop.z.is_finite()
+                    })
+                    .collect::<Vec<_>>();
+                if !valid_drops.is_empty() {
+                    drops.entry(pos).or_default().extend(valid_drops);
+                }
             }
         }
 
         self.edits = edits;
+        self.drops = drops;
+        self.player = data.player;
         Ok(())
+    }
+
+    /// 掉落物记录的坐标是否归属指定区块，防止跨区块数据错位。
+    fn drop_belongs_to(drop: &DroppedItemRecord, pos: ChunkPos) -> bool {
+        let drop_pos = ChunkPos::from_world(
+            drop.x.floor() as i32,
+            drop.y.floor() as i32,
+            drop.z.floor() as i32,
+        );
+        drop_pos == pos
     }
 
     /// 把一条世界坐标改动迁移到区块记录；垂直越界的改动直接丢弃。
@@ -251,6 +291,41 @@ impl WorldSave {
         Ok(())
     }
 
+    /// 读取指定区块尚未恢复的掉落物记录。
+    pub fn chunk_drops(&self, pos: ChunkPos) -> &[DroppedItemRecord] {
+        self.drops.get(&pos).map_or(&[], Vec::as_slice)
+    }
+
+    /// 记录指定区块当前的掉落物快照；空列表表示该区块没有掉落物。
+    ///
+    /// 只更新内存并标记待写盘，由上层在批量处理完成后调用 `ensure_persisted`。
+    pub fn record_chunk_drops(&mut self, pos: ChunkPos, drops: Vec<DroppedItemRecord>) {
+        if drops.is_empty() {
+            self.drops.remove(&pos);
+        } else {
+            self.drops.insert(pos, drops);
+        }
+        self.unsaved = true;
+    }
+
+    /// 玩家背包存档；旧档尚未提供时为 `None`。
+    pub fn player(&self) -> Option<&SavedInventory> {
+        self.player.as_ref()
+    }
+
+    /// 更新玩家背包并立即写盘。
+    pub fn set_player(&mut self, player: SavedInventory) -> Result<()> {
+        self.player = Some(player);
+        self.unsaved = true;
+        self.persist()
+    }
+
+    /// 已记录的掉落物总数。
+    #[allow(dead_code)]
+    pub fn total_drops(&self) -> usize {
+        self.drops.values().map(Vec::len).sum()
+    }
+
     /// 已记录的改动总数。
     pub fn total_edits(&self) -> usize {
         self.edits.values().map(HashMap::len).sum()
@@ -266,37 +341,49 @@ impl WorldSave {
         }
 
         // 固定输出顺序，便于人工查看与版本比对。
-        let mut chunk_positions: Vec<ChunkPos> = self.edits.keys().copied().collect();
+        let mut chunk_positions: Vec<ChunkPos> = self
+            .edits
+            .keys()
+            .chain(self.drops.keys())
+            .copied()
+            .collect();
         chunk_positions.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+        chunk_positions.dedup();
 
         let mut chunk_edits = Vec::with_capacity(chunk_positions.len());
         let mut world_edits = Vec::with_capacity(self.total_edits());
         for pos in chunk_positions {
-            let Some(blocks) = self.edits.get(&pos) else {
-                continue;
-            };
-            let mut keys: Vec<(i32, i32, i32)> = blocks.keys().copied().collect();
-            keys.sort_unstable();
+            let mut local_edits = Vec::new();
+            if let Some(blocks) = self.edits.get(&pos) {
+                let mut keys: Vec<(i32, i32, i32)> = blocks.keys().copied().collect();
+                keys.sort_unstable();
 
-            let mut local_edits = Vec::with_capacity(keys.len());
-            for (local_x, local_y, local_z) in keys {
-                let block = blocks[&(local_x, local_y, local_z)];
-                local_edits.push(LocalEdit {
-                    x: local_x,
-                    y: local_y,
-                    z: local_z,
-                    block,
-                });
-                world_edits.push(BlockEdit {
-                    x: pos.x * CHUNK_SIZE + local_x,
-                    y: pos.y * CHUNK_SIZE + local_y,
-                    z: pos.z * CHUNK_SIZE + local_z,
-                    block,
-                });
+                local_edits.reserve(keys.len());
+                for (local_x, local_y, local_z) in keys {
+                    let block = blocks[&(local_x, local_y, local_z)];
+                    local_edits.push(LocalEdit {
+                        x: local_x,
+                        y: local_y,
+                        z: local_z,
+                        block,
+                    });
+                    world_edits.push(BlockEdit {
+                        x: pos.x * CHUNK_SIZE + local_x,
+                        y: pos.y * CHUNK_SIZE + local_y,
+                        z: pos.z * CHUNK_SIZE + local_z,
+                        block,
+                    });
+                }
+            }
+
+            let drops = self.drops.get(&pos).cloned().unwrap_or_default();
+            if local_edits.is_empty() && drops.is_empty() {
+                continue;
             }
             chunk_edits.push(ChunkEdits {
                 pos: [pos.x, pos.y, pos.z],
                 edits: local_edits,
+                drops,
             });
         }
         world_edits.sort_by_key(|edit| (edit.x, edit.y, edit.z));
@@ -306,6 +393,7 @@ impl WorldSave {
             seed: self.seed,
             edits: world_edits,
             chunk_edits,
+            player: self.player.clone(),
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
 
@@ -361,6 +449,7 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::item::inventory::SavedSlot;
 
     /// 为并行测试生成互不冲突的临时文件路径。
     fn temp_path(name: &str) -> PathBuf {
@@ -495,7 +584,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 2"));
+        assert!(text.contains("\"version\": 3"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -694,6 +783,95 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(save.total_edits(), 0);
+        remove_all(&path);
+    }
+
+    #[test]
+    fn a_v011_save_loads_with_an_empty_inventory_and_no_drops() {
+        let path = temp_path("v011");
+        remove_all(&path);
+        let legacy = r#"{
+            "version": 2,
+            "seed": 24301,
+            "edits": [],
+            "chunk_edits": [
+                {"pos": [0, 0, 0], "edits": [{"x": 2, "y": 3, "z": 4, "block": "stone"}]}
+            ]
+        }"#;
+        fs::write(&path, legacy).expect("写入 v2 存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(save.total_edits(), 1);
+        assert_eq!(save.total_drops(), 0);
+        assert!(save.player().is_none(), "旧档必须按空背包启动");
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn player_inventory_round_trips_through_the_save() {
+        let path = temp_path("player");
+        remove_all(&path);
+        let inventory = SavedInventory {
+            slots: vec![
+                Some(SavedSlot { item: 1, count: 5 }),
+                None,
+                Some(SavedSlot { item: 3, count: 2 }),
+            ],
+            selected_hotbar: 4,
+        };
+
+        WorldSave::load(&path, DEFAULT_SEED)
+            .set_player(inventory.clone())
+            .expect("保存玩家背包应成功");
+
+        let loaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(loaded.player(), Some(&inventory));
+        remove_all(&path);
+    }
+
+    #[test]
+    fn chunk_drops_round_trip_with_the_chunk_data() {
+        let path = temp_path("drops");
+        remove_all(&path);
+        let pos = ChunkPos::new(0, 0, 0);
+        let records = vec![DroppedItemRecord {
+            x: 2.5,
+            y: 5.0,
+            z: 3.5,
+            item: 1,
+            count: 2,
+        }];
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record_chunk_drops(pos, records.clone());
+        save.ensure_persisted().expect("写盘应成功");
+        assert_eq!(save.total_drops(), 1);
+
+        let loaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(loaded.chunk_drops(pos), records.as_slice());
+        assert_eq!(loaded.chunk_drops(ChunkPos::new(1, 0, 0)), &[]);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn drops_outside_their_chunk_are_ignored() {
+        let path = temp_path("drop-chunk");
+        remove_all(&path);
+        let text = r#"{
+            "version": 3,
+            "seed": 24301,
+            "chunk_edits": [
+                {"pos": [0, 0, 0], "edits": [], "drops": [
+                    {"x": 20.5, "y": 5.0, "z": 2.5, "item": 1, "count": 1}
+                ]}
+            ]
+        }"#;
+        fs::write(&path, text).expect("写入存档失败");
+
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(save.total_drops(), 0, "错位的掉落物记录必须被忽略");
         remove_all(&path);
     }
 }

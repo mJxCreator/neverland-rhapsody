@@ -50,10 +50,12 @@ const SELECTION_VERTEX_COUNT: u32 = (SELECTION_EDGE_COUNT * 2) as u32;
 /// 线框相对方块表面的外扩量，避免与方块面共面导致闪烁。
 const SELECTION_EXPAND: f32 = 0.003;
 
-/// HUD 动态顶点缓冲容量；正常布局约 200 个顶点，保留充足余量。
-const HUD_VERTEX_CAPACITY: usize = 1024;
+/// HUD 动态顶点缓冲容量；包含快捷栏、数量文字与背包面板，保留充足余量。
+const HUD_VERTEX_CAPACITY: usize = 16384;
 /// 破坏粒子动态顶点缓冲容量（约 100 个碎块）。
 const PARTICLE_VERTEX_CAPACITY: usize = 4096;
+/// 掉落物动态顶点缓冲容量（约 450 个小立方体）。
+const DROP_VERTEX_CAPACITY: usize = 16384;
 
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
@@ -89,9 +91,12 @@ pub struct Renderer {
     hud_buffer: wgpu::Buffer,
     hud_model: HudModel,
     hud_vertices: Vec<HudVertex>,
+    ui_vertices: Vec<HudVertex>,
     particle_buffer: wgpu::Buffer,
     particles: ParticleSystem,
     particle_vertices: Vec<Vertex>,
+    drop_buffer: wgpu::Buffer,
+    drop_vertices: Vec<Vertex>,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -168,6 +173,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let drop_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("dropped item vertices"),
+            size: (DROP_VERTEX_CAPACITY * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let selection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("selection vertices"),
             size: (SELECTION_VERTEX_COUNT as usize * std::mem::size_of::<[f32; 3]>())
@@ -209,9 +220,12 @@ impl Renderer {
             hud_buffer,
             hud_model: HudModel::default(),
             hud_vertices: Vec::with_capacity(HUD_VERTEX_CAPACITY),
+            ui_vertices: Vec::new(),
             particle_buffer,
             particles: ParticleSystem::new(),
             particle_vertices: Vec::with_capacity(PARTICLE_VERTEX_CAPACITY),
+            drop_buffer,
+            drop_vertices: Vec::with_capacity(DROP_VERTEX_CAPACITY),
             chunks,
             uniform_buffer,
             bind_group,
@@ -256,6 +270,21 @@ impl Renderer {
     /// 上层每帧写入 HUD 状态（快捷栏选择、挖掘进度等）。
     pub fn hud_mut(&mut self) -> &mut HudModel {
         &mut self.hud_model
+    }
+
+    /// 写入背包界面几何；关闭时传入空列表即可。
+    pub fn set_ui_vertices(&mut self, vertices: Vec<HudVertex>) {
+        self.ui_vertices = vertices;
+    }
+
+    /// 供上层直接复用的掉落物顶点缓冲。
+    pub fn drop_vertices_mut(&mut self) -> &mut Vec<Vertex> {
+        &mut self.drop_vertices
+    }
+
+    /// 当前视口尺寸（像素）。
+    pub fn viewport(&self) -> (f32, f32) {
+        (self.config.width as f32, self.config.height as f32)
     }
 
     /// 在指定方块位置生成破坏碎块。
@@ -329,11 +358,21 @@ impl Renderer {
             );
         }
 
+        let drop_count = self.drop_vertices.len().min(DROP_VERTEX_CAPACITY) as u32;
+        if drop_count > 0 {
+            self.queue.write_buffer(
+                &self.drop_buffer,
+                0,
+                bytemuck::cast_slice(&self.drop_vertices[..drop_count as usize]),
+            );
+        }
+
         self.hud_model.build(
             &mut self.hud_vertices,
             self.config.width as f32,
             self.config.height as f32,
         );
+        self.hud_vertices.extend_from_slice(&self.ui_vertices);
         let hud_count = self.hud_vertices.len().min(HUD_VERTEX_CAPACITY) as u32;
         if hud_count > 0 {
             self.queue.write_buffer(
@@ -405,6 +444,13 @@ impl Renderer {
                 render_pass.set_bind_group(0, &self.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.particle_buffer.slice(..));
                 render_pass.draw(0..particle_count, 0..1);
+            }
+
+            if drop_count > 0 {
+                render_pass.set_pipeline(&self.pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.drop_buffer.slice(..));
+                render_pass.draw(0..drop_count, 0..1);
             }
 
             if self.selection.is_some() {

@@ -1,11 +1,12 @@
-//! HUD：屏幕空间准星、挖掘进度条与方块快捷栏。
+//! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏与拾取提示。
 //!
-//! 全部内容由纯色四边形组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
+//! 全部内容由纯色四边形与内联位图字体组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
+//! 背包打开时隐藏战斗与快捷栏 HUD，使界面焦点完全交给背包面板。
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::interaction::{DEFAULT_SLOTS, HOTBAR_SLOTS};
-use crate::world::{Block, Face};
+use super::font;
+use crate::item::{icon_color, item_name, ItemId, ItemStack, HOTBAR_SLOTS};
 
 /// 一个 HUD 顶点：裁剪空间坐标与带透明度的颜色。
 #[repr(C)]
@@ -33,8 +34,14 @@ const SLOT_GAP: f32 = 8.0;
 const BOTTOM_MARGIN: f32 = 18.0;
 /// 槽位外框宽度（像素）。
 const SLOT_BORDER: f32 = 3.0;
-/// 槽位内部方块色块的留白（像素）。
+/// 槽位内部色块留白（像素）。
 const SLOT_PADDING: f32 = 7.0;
+/// 拾取提示字号（像素格）。
+const TOAST_PIXEL: f32 = 2.0;
+/// 拾取提示显示时长（秒）。
+const TOAST_DURATION: f32 = 1.2;
+/// 拾取提示淡出时长（秒）。
+const TOAST_FADE: f32 = 0.3;
 
 const CROSSHAIR_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
 const CROSSHAIR_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -44,22 +51,39 @@ const HOTBAR_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 const SLOT_BORDER_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 const SLOT_BORDER_IDLE: [f32; 4] = [0.55, 0.55, 0.55, 0.55];
 const SLOT_GLOW: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
+const SLOT_EMPTY: [f32; 4] = [0.12, 0.12, 0.12, 0.55];
+const COUNT_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const TEXT_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
+const TOAST_TEXT: [f32; 4] = [1.0, 1.0, 0.85, 1.0];
+
+/// 一条拾取提示：物品、数量与剩余显示时间。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Toast {
+    item: ItemId,
+    count: u32,
+    remaining: f32,
+}
 
 /// 每帧由上层写入的 HUD 数据。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudModel {
     pub selected_slot: usize,
-    pub slots: [Block; HOTBAR_SLOTS],
+    pub slots: [Option<ItemStack>; HOTBAR_SLOTS],
     /// 当前挖掘进度；`None` 表示不显示进度条。
     pub mining_progress: Option<f32>,
+    /// 背包界面是否打开；打开时不绘制战斗与快捷栏 HUD。
+    pub inventory_open: bool,
+    toast: Option<Toast>,
 }
 
 impl Default for HudModel {
     fn default() -> Self {
         Self {
             selected_slot: 0,
-            slots: DEFAULT_SLOTS,
+            slots: [None; HOTBAR_SLOTS],
             mining_progress: None,
+            inventory_open: false,
+            toast: None,
         }
     }
 }
@@ -69,12 +93,40 @@ impl HudModel {
     pub fn set(
         &mut self,
         selected_slot: usize,
-        slots: [Block; HOTBAR_SLOTS],
+        slots: [Option<ItemStack>; HOTBAR_SLOTS],
         mining_progress: Option<f32>,
+        inventory_open: bool,
     ) {
         self.selected_slot = selected_slot.min(HOTBAR_SLOTS - 1);
         self.slots = slots;
         self.mining_progress = mining_progress.filter(|progress| progress.is_finite());
+        self.inventory_open = inventory_open;
+    }
+
+    /// 显示一条拾取提示；重复拾取会刷新计时。
+    pub fn show_pickup(&mut self, item: ItemId, count: u32) {
+        if count == 0 || !item.is_valid() {
+            return;
+        }
+        self.toast = Some(Toast {
+            item,
+            count,
+            remaining: TOAST_DURATION,
+        });
+    }
+
+    /// 推进提示计时。
+    pub fn update(&mut self, delta_secs: f32) {
+        let Some(toast) = &mut self.toast else {
+            return;
+        };
+        if !delta_secs.is_finite() || delta_secs <= 0.0 {
+            return;
+        }
+        toast.remaining -= delta_secs;
+        if toast.remaining <= 0.0 {
+            self.toast = None;
+        }
     }
 
     /// 生成全部 HUD 四边形顶点，写入 `out`。
@@ -83,8 +135,12 @@ impl HudModel {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
             return;
         }
+        if self.inventory_open {
+            return;
+        }
 
         self.push_hotbar(out, width, height);
+        self.push_toast(out, width, height);
         self.push_progress(out, width, height);
         push_crosshair(out, width, height);
     }
@@ -95,7 +151,7 @@ impl HudModel {
         let start_x = (width - total) * 0.5;
         let y = height - BOTTOM_MARGIN - SLOT_SIZE;
 
-        for (index, block) in self.slots.iter().enumerate() {
+        for index in 0..HOTBAR_SLOTS {
             let x = start_x + index as f32 * (SLOT_SIZE + SLOT_GAP);
             let selected = index == self.selected_slot;
 
@@ -140,19 +196,57 @@ impl HudModel {
                 HOTBAR_BACKGROUND,
             );
 
-            let color = block.face_color(Face::PosY);
-            push_quad(
-                out,
-                viewport,
-                HudRect {
-                    x: x + SLOT_PADDING,
-                    y: y + SLOT_PADDING,
-                    width: SLOT_SIZE - SLOT_PADDING * 2.0,
-                    height: SLOT_SIZE - SLOT_PADDING * 2.0,
-                },
-                [color.x, color.y, color.z, 0.95],
-            );
+            let inner = HudRect {
+                x: x + SLOT_PADDING,
+                y: y + SLOT_PADDING,
+                width: SLOT_SIZE - SLOT_PADDING * 2.0,
+                height: SLOT_SIZE - SLOT_PADDING * 2.0,
+            };
+            match self.slots[index] {
+                None => push_quad(out, viewport, inner, SLOT_EMPTY),
+                Some(stack) => {
+                    let color = icon_color(stack.item());
+                    push_quad(out, viewport, inner, [color.x, color.y, color.z, 0.95]);
+                    let text = stack.count().to_string();
+                    let text_width = font::text_width(&text, 2.0);
+                    let text_y = y + SLOT_SIZE - 4.0 - font::GLYPH_HEIGHT as f32 * 2.0;
+                    let text_x = x + SLOT_SIZE - 4.0 - text_width;
+                    font::push_text(
+                        out,
+                        viewport,
+                        text_x + 1.0,
+                        text_y + 1.0,
+                        2.0,
+                        TEXT_SHADOW,
+                        &text,
+                    );
+                    font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+                }
+            }
         }
+    }
+
+    fn push_toast(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+        let Some(toast) = self.toast else {
+            return;
+        };
+        let alpha = (toast.remaining / TOAST_FADE).clamp(0.0, 1.0);
+        let text = format!("+{} {}", toast.count, item_name(toast.item));
+        let text_width = font::text_width(&text, TOAST_PIXEL);
+        let x = (width - text_width) * 0.5;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - 26.0;
+        font::push_text(
+            out,
+            (width, height),
+            x + 1.0,
+            y + 1.0,
+            TOAST_PIXEL,
+            [0.0, 0.0, 0.0, 0.85 * alpha],
+            &text,
+        );
+        let mut color = TOAST_TEXT;
+        color[3] *= alpha;
+        font::push_text(out, (width, height), x, y, TOAST_PIXEL, color, &text);
     }
 
     fn push_progress(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
@@ -244,15 +338,20 @@ fn push_crosshair_layer(
 
 /// 像素坐标的矩形，用于生成 HUD 四边形。
 #[derive(Clone, Copy, Debug)]
-struct HudRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+pub(crate) struct HudRect {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
 }
 
 /// 把像素坐标的矩形转为两个裁剪空间三角形。
-fn push_quad(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, color: [f32; 4]) {
+pub(crate) fn push_quad(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    color: [f32; 4],
+) {
     let (width, height) = viewport;
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return;
@@ -275,11 +374,18 @@ fn push_quad(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, colo
 mod tests {
     use super::*;
 
+    fn stone(count: u32) -> ItemStack {
+        ItemStack::new(ItemId::STONE, count).expect("合法堆叠")
+    }
+
     #[test]
     fn hud_geometry_stays_inside_clip_space() {
         let mut vertices = Vec::new();
+        let mut slots = [None; HOTBAR_SLOTS];
+        slots[0] = Some(stone(3));
         let model = HudModel {
             mining_progress: Some(0.5),
+            slots,
             ..HudModel::default()
         };
         model.build(&mut vertices, 1280.0, 720.0);
@@ -310,10 +416,10 @@ mod tests {
     #[test]
     fn selected_slot_is_normalized() {
         let mut model = HudModel::default();
-        model.set(100, DEFAULT_SLOTS, Some(2.0));
+        model.set(100, [None; HOTBAR_SLOTS], Some(2.0), false);
         assert_eq!(model.selected_slot, HOTBAR_SLOTS - 1);
         assert_eq!(model.mining_progress, Some(2.0));
-        model.set(0, DEFAULT_SLOTS, Some(f32::NAN));
+        model.set(0, [None; HOTBAR_SLOTS], Some(f32::NAN), false);
         assert_eq!(model.mining_progress, None);
     }
 
@@ -324,5 +430,33 @@ mod tests {
         assert!(vertices.is_empty());
         HudModel::default().build(&mut vertices, f32::NAN, 720.0);
         assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn an_open_inventory_hides_the_hud() {
+        let mut vertices = Vec::new();
+        let mut model = HudModel {
+            mining_progress: Some(0.5),
+            ..HudModel::default()
+        };
+        model.set(0, [None; HOTBAR_SLOTS], Some(0.5), true);
+        model.build(&mut vertices, 1280.0, 720.0);
+        assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn toast_expires_and_adds_geometry() {
+        let mut model = HudModel::default();
+        let mut without_toast = Vec::new();
+        model.build(&mut without_toast, 1280.0, 720.0);
+
+        model.show_pickup(ItemId::STONE, 2);
+        assert!(model.toast.is_some());
+        let mut with_toast = Vec::new();
+        model.build(&mut with_toast, 1280.0, 720.0);
+        assert!(with_toast.len() > without_toast.len());
+
+        model.update(TOAST_DURATION + 0.1);
+        assert!(model.toast.is_none());
     }
 }

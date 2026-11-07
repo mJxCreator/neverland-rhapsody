@@ -1,0 +1,172 @@
+//! 极简 5×7 位图字体：把大写字幕与数字渲染成纯色四边形，供 HUD 数量、名称与提示使用。
+//!
+//! 不引入字体文件与纹理，所有字形以位掩码内联；小写字母统一映射为大写。
+
+use super::hud::{push_quad, HudRect, HudVertex};
+
+/// 字形宽度（像素格）。
+pub const GLYPH_WIDTH: u32 = 5;
+/// 字形高度（像素格）。
+pub const GLYPH_HEIGHT: u32 = 7;
+/// 字间距（像素格）。
+const GLYPH_SPACING: u32 = 1;
+
+/// 一行文本的像素宽度。
+pub fn text_width(text: &str, pixel: f32) -> f32 {
+    let glyphs = text.chars().count() as f32;
+    if glyphs <= 0.0 {
+        return 0.0;
+    }
+    (glyphs * (GLYPH_WIDTH + GLYPH_SPACING) as f32 - GLYPH_SPACING as f32) * pixel
+}
+
+/// 把文本写入 HUD 顶点列表；`x`、`y` 是左上角像素坐标。
+pub fn push_text(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    x: f32,
+    y: f32,
+    pixel: f32,
+    color: [f32; 4],
+    text: &str,
+) {
+    if pixel <= 0.0 || !pixel.is_finite() {
+        return;
+    }
+
+    let mut cursor = x;
+    for character in text.chars() {
+        if character != ' ' {
+            if let Some(glyph) = glyph(character) {
+                push_glyph(out, viewport, cursor, y, pixel, color, &glyph);
+            }
+        }
+        cursor += (GLYPH_WIDTH + GLYPH_SPACING) as f32 * pixel;
+    }
+}
+
+fn push_glyph(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    x: f32,
+    y: f32,
+    pixel: f32,
+    color: [f32; 4],
+    glyph: &[u8; GLYPH_HEIGHT as usize],
+) {
+    for (row, bits) in glyph.iter().enumerate() {
+        let mut column = 0;
+        while column < GLYPH_WIDTH {
+            let filled = bits & (1 << (GLYPH_WIDTH - 1 - column)) != 0;
+            if !filled {
+                column += 1;
+                continue;
+            }
+            // 合并同一行连续的填充位，减少四边形数量。
+            let start = column;
+            while column < GLYPH_WIDTH && bits & (1 << (GLYPH_WIDTH - 1 - column)) != 0 {
+                column += 1;
+            }
+            push_quad(
+                out,
+                viewport,
+                HudRect {
+                    x: x + start as f32 * pixel,
+                    y: y + row as f32 * pixel,
+                    width: (column - start) as f32 * pixel,
+                    height: pixel,
+                },
+                color,
+            );
+        }
+    }
+}
+
+/// 字形位掩码；每行最高位对应最左侧像素。
+fn glyph(character: char) -> Option<[u8; GLYPH_HEIGHT as usize]> {
+    let glyph = match character.to_ascii_uppercase() {
+        ' ' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+        '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x04],
+        '2' => [0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F],
+        '3' => [0x0E, 0x11, 0x01, 0x0E, 0x01, 0x11, 0x0E],
+        '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+        '5' => [0x1F, 0x10, 0x10, 0x0E, 0x01, 0x11, 0x0E],
+        '6' => [0x06, 0x08, 0x10, 0x1F, 0x11, 0x11, 0x0E],
+        '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],
+        '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+        '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x0E],
+        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x0E],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x15, 0x1B, 0x11],
+        'N' => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'S' => [0x0E, 0x11, 0x10, 0x06, 0x01, 0x11, 0x0E],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W' => [0x11, 0x11, 0x15, 0x15, 0x15, 0x0A, 0x0A],
+        'X' => [0x11, 0x0A, 0x04, 0x04, 0x04, 0x0A, 0x11],
+        'Y' => [0x11, 0x0A, 0x04, 0x04, 0x04, 0x0A, 0x00],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        '+' => [0x00, 0x04, 0x0E, 0x1F, 0x0E, 0x04, 0x00],
+        '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00],
+        ':' => [0x00, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00],
+        '/' => [0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00],
+        _ => return None,
+    };
+    Some(glyph)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_width_matches_glyph_advance() {
+        assert_eq!(text_width("", 2.0), 0.0);
+        assert_eq!(text_width("1", 2.0), 10.0);
+        assert_eq!(text_width("12", 2.0), 22.0);
+    }
+
+    #[test]
+    fn digits_and_letters_produce_geometry() {
+        let mut vertices = Vec::new();
+        push_text(
+            &mut vertices,
+            (1280.0, 720.0),
+            100.0,
+            100.0,
+            2.0,
+            [1.0; 4],
+            "+12 STONE",
+        );
+        assert!(!vertices.is_empty());
+        assert_eq!(vertices.len() % 6, 0);
+        for vertex in &vertices {
+            assert!((-1.0..=1.0).contains(&vertex.position[0]));
+            assert!((-1.0..=1.0).contains(&vertex.position[1]));
+        }
+    }
+
+    #[test]
+    fn lowercase_is_rendered_as_uppercase() {
+        assert!(glyph('a').is_some());
+        assert_eq!(glyph('a'), glyph('A'));
+        assert!(glyph('?').is_none());
+    }
+}

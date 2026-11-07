@@ -1,9 +1,10 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.11：持续挖掘、放置规则与快捷栏 HUD。
+//! 当前里程碑 v0.12：物品系统、背包 UI、掉落物与 v3 存档。
 
 mod core;
 mod interaction;
+mod item;
 mod mesh;
 mod player;
 mod renderer;
