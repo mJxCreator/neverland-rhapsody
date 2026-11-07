@@ -1,13 +1,14 @@
 //! 世界存档：以 JSON 记录相对程序化地形的方块改动，启动时重新盖回世界。
 
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::world::{Block, World};
+use crate::world::{Block, World, DEFAULT_SEED};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
@@ -26,13 +27,22 @@ pub struct BlockEdit {
 /// 玩家改动的内存记录，并与存档文件保持同步。
 pub struct WorldSave {
     path: PathBuf,
-    edits: Vec<BlockEdit>,
+    seed: u32,
+    /// 以坐标为键，同一格只保留最后一次改动。
+    edits: HashMap<(i32, i32, i32), BlockEdit>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct SaveFile {
     version: u32,
+    /// 存档对应的世界种子；旧版存档缺少该字段时按默认种子处理。
+    #[serde(default = "default_seed")]
+    seed: u32,
     edits: Vec<BlockEdit>,
+}
+
+fn default_seed() -> u32 {
+    DEFAULT_SEED
 }
 
 impl WorldSave {
@@ -41,50 +51,84 @@ impl WorldSave {
         PathBuf::from(SAVE_PATH)
     }
 
-    /// 读取存档并应用到 `world`；文件缺失、损坏或版本不符时按新世界启动。
+    /// 读取存档并应用到 `world`；主文件不可用时回退到备份，均不可用时按新世界启动。
     pub fn load(path: impl Into<PathBuf>, world: &mut World) -> Self {
         let path = path.into();
         let mut save = Self {
             path,
-            edits: Vec::new(),
+            seed: world.seed(),
+            edits: HashMap::new(),
         };
 
-        let text = match fs::read_to_string(&save.path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return save,
-            Err(err) => {
-                warn!(error = %err, path = %save.path.display(), "读取存档失败，按新世界启动");
-                return save;
-            }
-        };
-
-        match serde_json::from_str::<SaveFile>(&text) {
-            Ok(data) if data.version == SAVE_VERSION => {
-                for edit in &data.edits {
-                    world.set_block(edit.x, edit.y, edit.z, edit.block);
+        for (index, candidate) in [save.path.clone(), save.backup_path()]
+            .into_iter()
+            .enumerate()
+        {
+            let text = match fs::read_to_string(&candidate) {
+                Ok(text) => text,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    warn!(error = %err, path = %candidate.display(), "读取存档失败，尝试下一个来源");
+                    continue;
                 }
-                info!(edits = data.edits.len(), "世界存档已读取");
-                save.edits = data.edits;
-            }
-            Ok(data) => {
-                warn!(
-                    version = data.version,
-                    expected = SAVE_VERSION,
-                    "存档版本不匹配，按新世界启动"
-                );
-            }
-            Err(err) => {
-                warn!(error = %err, "存档解析失败，按新世界启动");
+            };
+
+            match save.apply_text(&text, world) {
+                Ok(edits) => {
+                    info!(path = %candidate.display(), edits = edits.len(), "世界存档已读取");
+                    save.edits = edits;
+                    return save;
+                }
+                Err(err) => {
+                    let source = if index == 0 {
+                        "主存档"
+                    } else {
+                        "备份存档"
+                    };
+                    warn!(
+                        path = %candidate.display(),
+                        error = %format!("{err:#}"),
+                        "{source}不可用，尝试下一个来源"
+                    );
+                }
             }
         }
         save
     }
 
+    /// 解析存档文本、校验版本与种子，并把改动盖回世界。
+    fn apply_text(
+        &self,
+        text: &str,
+        world: &mut World,
+    ) -> Result<HashMap<(i32, i32, i32), BlockEdit>> {
+        let data: SaveFile = serde_json::from_str(text).context("解析存档失败")?;
+        if data.version != SAVE_VERSION {
+            bail!(
+                "存档版本 {} 与当前版本 {} 不一致",
+                data.version,
+                SAVE_VERSION
+            );
+        }
+        if data.seed != self.seed {
+            bail!("存档种子 {} 与世界种子 {} 不一致", data.seed, self.seed);
+        }
+
+        let mut edits = HashMap::with_capacity(data.edits.len());
+        for edit in data.edits {
+            if !world.contains(edit.x, edit.y, edit.z) {
+                warn!(x = edit.x, y = edit.y, z = edit.z, "忽略越界的存档改动");
+                continue;
+            }
+            world.set_block(edit.x, edit.y, edit.z, edit.block);
+            edits.insert((edit.x, edit.y, edit.z), edit);
+        }
+        Ok(edits)
+    }
+
     /// 记录一次方块改动：同一坐标只保留最后一次，并立即写盘。
     pub fn record(&mut self, edit: BlockEdit) -> Result<()> {
-        self.edits
-            .retain(|existing| (existing.x, existing.y, existing.z) != (edit.x, edit.y, edit.z));
-        self.edits.push(edit);
+        self.edits.insert((edit.x, edit.y, edit.z), edit);
         self.persist()
     }
 
@@ -97,31 +141,84 @@ impl WorldSave {
             }
         }
 
+        // 固定输出顺序，便于人工查看与版本比对。
+        let mut edits: Vec<BlockEdit> = self.edits.values().copied().collect();
+        edits.sort_by_key(|edit| (edit.x, edit.y, edit.z));
+
         let data = SaveFile {
             version: SAVE_VERSION,
-            edits: self.edits.clone(),
+            seed: self.seed,
+            edits,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
-        fs::write(&self.path, json)
-            .with_context(|| format!("写入存档失败: {}", self.path.display()))?;
+
+        // 先写临时文件再改名，避免写到一半退出留下残缺 JSON；旧文件滚动为备份。
+        let temp = self.temp_path();
+        fs::write(&temp, &json).with_context(|| format!("写入临时存档失败: {}", temp.display()))?;
+
+        if self.path.exists() {
+            let backup = self.backup_path();
+            if let Err(err) = fs::rename(&self.path, &backup) {
+                warn!(
+                    error = %err,
+                    path = %backup.display(),
+                    "备份旧存档失败，继续写入主存档"
+                );
+            }
+        }
+
+        if let Err(err) = fs::rename(&temp, &self.path) {
+            warn!(
+                error = %err,
+                path = %self.path.display(),
+                "临时存档改名失败，改为直接写入"
+            );
+            let _ = fs::remove_file(&temp);
+            fs::write(&self.path, &json)
+                .with_context(|| format!("写入存档失败: {}", self.path.display()))?;
+        }
         Ok(())
     }
+
+    /// 主存档文件。
+    fn backup_path(&self) -> PathBuf {
+        suffixed(&self.path, ".bak")
+    }
+
+    /// 写入中的临时文件。
+    fn temp_path(&self) -> PathBuf {
+        suffixed(&self.path, ".tmp")
+    }
+}
+
+/// 在文件名后追加后缀，例如 `world.json.tmp`。
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut raw = path.as_os_str().to_os_string();
+    raw.push(suffix);
+    PathBuf::from(raw)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::World;
 
     /// 为并行测试生成互不冲突的临时文件路径。
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("nr-save-{}-{name}.json", std::process::id()))
     }
 
+    /// 清理主存档、备份与临时文件。
+    fn remove_all(path: &Path) {
+        let _ = fs::remove_file(path);
+        for suffix in [".bak", ".tmp"] {
+            let _ = fs::remove_file(suffixed(path, suffix));
+        }
+    }
+
     #[test]
     fn edits_round_trip_through_the_save_file() {
         let path = temp_path("roundtrip");
-        let _ = fs::remove_file(&path);
+        remove_all(&path);
 
         let mut world = World::default();
         let height = world.height_at(10, 10);
@@ -131,7 +228,6 @@ mod tests {
             z: 10,
             block: Block::Stone,
         };
-        world.set_block(edit.x, edit.y, edit.z, edit.block);
         WorldSave::load(&path, &mut world)
             .record(edit)
             .expect("写盘应成功");
@@ -140,15 +236,15 @@ mod tests {
         let mut restored = World::default();
         let loaded = WorldSave::load(&path, &mut restored);
         assert_eq!(restored.block_at(10, height, 10), Block::Stone);
-        assert_eq!(loaded.edits.as_slice(), &[edit]);
+        assert_eq!(loaded.edits.get(&(10, height, 10)), Some(&edit));
 
-        fs::remove_file(&path).expect("清理临时存档失败");
+        remove_all(&path);
     }
 
     #[test]
     fn repeated_edits_on_one_cell_keep_only_the_last_block() {
         let path = temp_path("dedupe");
-        let _ = fs::remove_file(&path);
+        remove_all(&path);
 
         let mut save = WorldSave::load(&path, &mut World::default());
         let first = BlockEdit {
@@ -164,16 +260,18 @@ mod tests {
         };
         save.record(last).expect("写盘应成功");
 
-        assert_eq!(save.edits.as_slice(), &[last]);
+        assert_eq!(save.edits.len(), 1);
+        assert_eq!(save.edits.get(&(1, 2, 3)), Some(&last));
         let text = fs::read_to_string(&path).expect("读取临时存档失败");
         assert!(text.contains("\"air\""));
 
-        fs::remove_file(&path).expect("清理临时存档失败");
+        remove_all(&path);
     }
 
     #[test]
     fn broken_save_file_is_ignored() {
         let path = temp_path("broken");
+        remove_all(&path);
         fs::write(&path, "not json").expect("写入临时存档失败");
 
         let mut world = World::default();
@@ -184,6 +282,64 @@ mod tests {
         let height = world.height_at(10, 10);
         assert_eq!(world.block_at(10, height - 1, 10), Block::Grass);
 
-        fs::remove_file(&path).expect("清理临时存档失败");
+        remove_all(&path);
+    }
+
+    #[test]
+    fn corrupted_primary_falls_back_to_backup() {
+        let path = temp_path("backup");
+        remove_all(&path);
+
+        let mut world = World::default();
+        let height = world.height_at(5, 5);
+        let first = BlockEdit {
+            x: 5,
+            y: height,
+            z: 5,
+            block: Block::Stone,
+        };
+        let mut save = WorldSave::load(&path, &mut world);
+        save.record(first).expect("写盘应成功");
+        // 第二次写盘会把第一次的存档滚动成备份。
+        save.record(BlockEdit {
+            x: 6,
+            y: height,
+            z: 6,
+            block: Block::Dirt,
+        })
+        .expect("写盘应成功");
+        assert!(suffixed(&path, ".bak").exists());
+
+        fs::write(&path, "not json").expect("破坏主存档失败");
+
+        let mut restored = World::default();
+        let loaded = WorldSave::load(&path, &mut restored);
+        assert_eq!(loaded.edits.get(&(5, height, 5)), Some(&first));
+        assert_eq!(restored.block_at(5, height, 5), Block::Stone);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn edits_from_another_seed_are_ignored() {
+        let path = temp_path("seed");
+        remove_all(&path);
+
+        let mut writer = World::new(DEFAULT_SEED);
+        let height = writer.height_at(10, 10);
+        WorldSave::load(&path, &mut writer)
+            .record(BlockEdit {
+                x: 10,
+                y: height,
+                z: 10,
+                block: Block::Stone,
+            })
+            .expect("写盘应成功");
+
+        let mut other = World::new(DEFAULT_SEED + 1);
+        let loaded = WorldSave::load(&path, &mut other);
+        assert!(loaded.edits.is_empty());
+
+        remove_all(&path);
     }
 }

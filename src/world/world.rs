@@ -17,6 +17,7 @@ pub const DEFAULT_SEED: u32 = 0x5EED;
 
 /// 世界：持有地形生成器与已生成的区块集合。
 pub struct World {
+    seed: u32,
     terrain: TerrainGenerator,
     chunks: Vec<Chunk>,
 }
@@ -34,7 +35,16 @@ impl World {
                 }
             }
         }
-        Self { terrain, chunks }
+        Self {
+            seed,
+            terrain,
+            chunks,
+        }
+    }
+
+    /// 生成世界所用的种子，存档据此判断改动属于哪张地图。
+    pub fn seed(&self) -> u32 {
+        self.seed
     }
 
     /// 当前已生成的全部区块。
@@ -66,6 +76,11 @@ impl World {
             y - pos.y * CHUNK_SIZE,
             z - pos.z * CHUNK_SIZE,
         )
+    }
+
+    /// 坐标是否落在世界方块范围内；范围外（含世界底面以下）不可选中或修改。
+    pub fn contains(&self, x: i32, y: i32, z: i32) -> bool {
+        Self::chunk_index(ChunkPos::from_world(x, y, z)).is_some()
     }
 
     /// 写入世界坐标下的方块，返回需要重建网格的区块：自身以及与该方块相邻的区块。
@@ -221,5 +236,16 @@ mod tests {
         assert!(world.set_block(10, 0, 10, Block::Stone).is_empty());
         assert!(world.set_block(200, 10, 10, Block::Air).is_empty());
         assert!(world.set_block(10, -5, 10, Block::Air).is_empty());
+    }
+
+    #[test]
+    fn contains_covers_only_world_blocks() {
+        let world = World::new(DEFAULT_SEED);
+        assert!(world.contains(0, 0, 0));
+        assert!(world.contains(95, WORLD_HEIGHT - 1, 95));
+        assert!(!world.contains(96, 0, 0));
+        assert!(!world.contains(-1, 0, 0));
+        assert!(!world.contains(0, -1, 0));
+        assert!(!world.contains(0, WORLD_HEIGHT, 0));
     }
 }

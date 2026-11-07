@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use glam::{IVec3, Mat4, Vec3};
-use tracing::info;
+use tracing::{debug, info};
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -199,6 +199,11 @@ impl Renderer {
         &mut self.camera
     }
 
+    /// 供上层读取摄像机位置与朝向。
+    pub fn camera(&self) -> &Camera {
+        &self.camera
+    }
+
     /// 更新准星选中的方块，`None` 表示当前没有可高亮的方块。
     pub fn set_selection(&mut self, block: Option<IVec3>) {
         self.selection = block;
@@ -324,13 +329,12 @@ fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> HashMap<ChunkPos
             let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
             let buffers = chunk_buffers(device, &mesh)?;
 
-            info!(
+            debug!(
                 chunk = ?chunk.pos(),
                 vertices = mesh.vertices.len(),
                 triangles = mesh.indices.len() / 3,
                 "区块网格已上传"
             );
-
             Some((chunk.pos(), buffers))
         })
         .collect()

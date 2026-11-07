@@ -9,4 +9,4 @@ pub mod world;
 
 pub use self::block::{Block, Face};
 pub use self::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
-pub use self::world::World;
+pub use self::world::{World, DEFAULT_SEED};

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use glam::IVec3;
 use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -140,15 +141,25 @@ impl App {
     }
 
     /// 当前准星命中的方块。
-    fn targeted_block(&mut self) -> Option<RayHit> {
-        let renderer = self.renderer.as_mut()?;
-        let camera = renderer.camera_mut();
+    fn targeted_block(&self) -> Option<RayHit> {
+        let renderer = self.renderer.as_ref()?;
+        let camera = renderer.camera();
         raycast(
             &self.world,
             camera.position(),
             camera.forward(),
             SELECTION_REACH,
         )
+    }
+
+    /// 摄像机所在方块坐标，用于阻止把方块放进自己所在的位置。
+    fn camera_cell(&self) -> Option<IVec3> {
+        let position = self.renderer.as_ref()?.camera().position();
+        Some(IVec3::new(
+            position.x.floor() as i32,
+            position.y.floor() as i32,
+            position.z.floor() as i32,
+        ))
     }
 
     /// 左键破坏：把准星选中的方块变成空气。
@@ -177,7 +188,13 @@ impl App {
             return;
         };
         let target = placement_target(&hit);
+        if !self.world.contains(target.x, target.y, target.z) {
+            return;
+        }
         if self.world.block_at(target.x, target.y, target.z).is_solid() {
+            return;
+        }
+        if self.camera_cell() == Some(target) {
             return;
         }
         let affected = self
@@ -213,19 +230,13 @@ impl App {
     }
 
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
+        let delta_secs = delta.as_secs_f32().min(MAX_CAMERA_DELTA);
         if let Some(renderer) = self.renderer.as_mut() {
-            self.controller.update(
-                renderer.camera_mut(),
-                delta.as_secs_f32().min(MAX_CAMERA_DELTA),
-            );
+            self.controller.update(renderer.camera_mut(), delta_secs);
+        }
 
-            let camera = renderer.camera_mut();
-            let hit = raycast(
-                &self.world,
-                camera.position(),
-                camera.forward(),
-                SELECTION_REACH,
-            );
+        let hit = self.targeted_block();
+        if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_selection(hit.map(|hit| hit.block));
         }
 
@@ -282,6 +293,10 @@ impl ApplicationHandler for App {
                             event_loop.exit();
                         }
                     }
+                    return;
+                }
+                // 未捕获鼠标时键盘不驱动相机，避免释放鼠标后误移动。
+                if !self.cursor_grabbed {
                     return;
                 }
                 self.controller.handle_key(code, pressed);

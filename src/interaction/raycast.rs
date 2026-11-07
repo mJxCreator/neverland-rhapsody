@@ -16,6 +16,7 @@ pub struct RayHit {
 /// 从 `origin` 沿 `direction` 步进最多 `max_distance`，返回第一个实体方块。
 ///
 /// 采用 Amanatides–Woo 体素遍历，每次只跨越最近的网格边界，因此不会漏掉擦角方块。
+/// 世界范围外的格子一律视为空气，不参与选中。
 pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) -> Option<RayHit> {
     let direction = direction.normalize_or_zero();
     if direction == Vec3::ZERO || max_distance <= 0.0 || !max_distance.is_finite() {
@@ -28,6 +29,13 @@ pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) 
         origin.z.floor() as i32,
     ];
     let (step, mut next, delta) = axis_steps(origin, direction, voxel)?;
+
+    // 视线起点位于实体方块内部时不选中任何方块，避免射线穿过实体后选到后方方块。
+    if world.contains(voxel[0], voxel[1], voxel[2])
+        && world.block_at(voxel[0], voxel[1], voxel[2]).is_solid()
+    {
+        return None;
+    }
 
     let enter_faces = [Face::NegX, Face::NegY, Face::NegZ];
     let leave_faces = [Face::PosX, Face::PosY, Face::PosZ];
@@ -55,9 +63,10 @@ pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) 
             leave_faces[axis]
         };
 
-        if world.block_at(voxel[0], voxel[1], voxel[2]).is_solid() {
+        let (x, y, z) = (voxel[0], voxel[1], voxel[2]);
+        if world.contains(x, y, z) && world.block_at(x, y, z).is_solid() {
             return Some(RayHit {
-                block: IVec3::new(voxel[0], voxel[1], voxel[2]),
+                block: IVec3::new(x, y, z),
                 face,
             });
         }
@@ -161,6 +170,24 @@ mod tests {
         let hit = raycast(&world, origin, Vec3::new(0.0, -3.0, 0.0), 5.0).expect("应命中地表");
         assert_eq!(hit.block, IVec3::new(x, height - 1, z));
         assert_eq!(hit.face, Face::PosY);
+    }
+
+    #[test]
+    fn ray_starting_inside_a_solid_block_selects_nothing() {
+        let world = World::default();
+        let (x, z) = (10, 10);
+        let y = world.height_at(x, z) - 1;
+        let origin = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+
+        assert_eq!(raycast(&world, origin, Vec3::NEG_Y, MAX_DISTANCE), None);
+    }
+
+    #[test]
+    fn ray_below_the_world_does_not_hit_phantom_stone() {
+        let world = World::default();
+        let origin = Vec3::new(10.5, -1.5, 10.5);
+
+        assert_eq!(raycast(&world, origin, Vec3::NEG_Y, MAX_DISTANCE), None);
     }
 
     #[test]
