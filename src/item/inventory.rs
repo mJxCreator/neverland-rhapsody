@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::item::{ItemId, ItemStack};
 use super::item_registry::max_stack_size;
+use super::tool::{self, Wear};
 
 /// 主背包槽位数。
 pub const MAIN_SLOTS: usize = 27;
@@ -27,10 +28,15 @@ pub struct AddOutcome {
 }
 
 /// 存档中的单个物品槽位；空槽位在外层用 `None` 表示。
+///
+/// `durability` 是工具实例的剩余耐久：普通物品为 `None`，缺失时按
+/// “满耐久”兼容旧存档。该字段带 `serde(default)`，v1–v3 存档可直接读取。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedSlot {
     pub item: u16,
     pub count: u32,
+    #[serde(default)]
+    pub durability: Option<u32>,
 }
 
 /// 存档中的玩家背包与快捷栏选择。
@@ -130,11 +136,13 @@ impl Inventory {
     }
 
     /// 从指定槽位分出一半（向上取整）的物品，剩余部分留在原槽位。
+    ///
+    /// 使用 [`ItemStack::with_count`] 保留耐久，避免拆分工具时耐久被重置。
     pub fn split_half(&mut self, index: usize) -> Option<ItemStack> {
         let stack = self.slots.get(index).copied().flatten()?;
         let taken = stack.count().div_ceil(2);
         *self.slots.get_mut(index)? = stack.with_count(stack.count() - taken);
-        ItemStack::new(stack.item(), taken)
+        stack.with_count(taken)
     }
 
     /// 向背包添加物品：先合并同类堆叠，再填充空槽位，超过上限自动拆分。
@@ -190,6 +198,50 @@ impl Inventory {
         }
     }
 
+    /// 把一整组物品放入背包，保留工具实例耐久；返回未能放入的剩余堆叠。
+    ///
+    /// 与 [`Inventory::add_item`] 的区别是本接口接收完整堆叠，因此不会把工具的
+    /// 剩余耐久重置为满耐久；背包界面关闭、拾取回滚等场景必须使用本接口。
+    pub fn add_stack(&mut self, stack: ItemStack) -> Option<ItemStack> {
+        if !stack.item().is_valid() || stack.count() == 0 {
+            return Some(stack);
+        }
+
+        let mut remaining = stack;
+
+        // 优先合并到相同物品、相同耐久的已有堆叠。
+        for index in 0..TOTAL_SLOTS {
+            if remaining.count() == 0 {
+                return None;
+            }
+            let Some(existing) = self.slots[index] else {
+                continue;
+            };
+            if !existing.can_merge_with(remaining) {
+                continue;
+            }
+            let moved = existing.room().min(remaining.count());
+            if moved > 0 {
+                self.slots[index] = existing.with_count(existing.count() + moved);
+                let left = remaining.count() - moved;
+                if left == 0 {
+                    return None;
+                }
+                remaining = remaining.with_count(left)?;
+            }
+        }
+
+        // 再放入空槽位：优先 1→9 号快捷栏，随后主背包。
+        for index in (HOTBAR_OFFSET..TOTAL_SLOTS).chain(0..HOTBAR_OFFSET) {
+            if self.slots[index].is_none() {
+                self.slots[index] = Some(remaining);
+                return None;
+            }
+        }
+
+        Some(remaining)
+    }
+
     /// 从背包移除指定数量的物品，返回实际移除数量。
     pub fn remove_item(&mut self, item: ItemId, count: u32) -> u32 {
         let mut remaining = count;
@@ -240,6 +292,30 @@ impl Inventory {
         self.slots.iter().all(Option::is_none)
     }
 
+    /// 对指定槽位的工具施加耐久消耗；普通物品不受影响。
+    ///
+    /// 所有工具耐久变化都必须经过该接口或 [`super::tool::apply_wear`]，
+    /// 避免多个系统各自扣减导致同一次挖掘被重复结算。
+    pub fn damage_slot(&mut self, index: usize, amount: u32) -> Wear {
+        let Some(stack) = self.slots.get(index).copied().flatten() else {
+            return Wear::NotATool;
+        };
+        let mut damaged = stack;
+        let wear = tool::apply_wear(&mut damaged, amount);
+        if wear != Wear::NotATool {
+            self.slots[index] = Some(damaged);
+        }
+        wear
+    }
+
+    /// 对快捷栏指定下标（0..9）施加工具耐久消耗。
+    pub fn damage_hotbar_tool(&mut self, hotbar_index: usize, amount: u32) -> Wear {
+        if hotbar_index >= HOTBAR_SLOTS {
+            return Wear::NotATool;
+        }
+        self.damage_slot(HOTBAR_OFFSET + hotbar_index, amount)
+    }
+
     /// 导出为存档结构。
     pub fn to_saved(self, selected_hotbar: usize) -> SavedInventory {
         SavedInventory {
@@ -250,6 +326,7 @@ impl Inventory {
                     slot.map(|stack| SavedSlot {
                         item: stack.item().raw(),
                         count: stack.count(),
+                        durability: stack.durability(),
                     })
                 })
                 .collect(),
@@ -258,6 +335,9 @@ impl Inventory {
     }
 
     /// 从存档结构恢复背包；无效物品 ID、非法数量与越界槽位会被忽略。
+    ///
+    /// 工具缺少耐久字段（v1–v3 旧档或普通物品）时按满耐久恢复；
+    /// 超出上限的耐久会被限制到工具定义的合法范围。
     pub fn from_saved(saved: &SavedInventory) -> (Self, usize) {
         let mut inventory = Self::default();
         for (index, slot) in saved.slots.iter().take(TOTAL_SLOTS).enumerate() {
@@ -267,7 +347,17 @@ impl Inventory {
             let Some(item) = ItemId::from_raw(entry.item) else {
                 continue;
             };
-            inventory.slots[index] = ItemStack::new(item, entry.count);
+            let mut stack = ItemStack::new(item, entry.count);
+            if let Some(durability) = entry.durability {
+                stack = stack.map(|restored| {
+                    if restored.is_tool() {
+                        restored.with_durability(durability)
+                    } else {
+                        restored
+                    }
+                });
+            }
+            inventory.slots[index] = stack;
         }
         (inventory, saved.selected_hotbar.min(HOTBAR_SLOTS - 1))
     }
@@ -419,9 +509,21 @@ mod tests {
         // 存档中的非法数据必须被忽略。
         let saved = SavedInventory {
             slots: vec![
-                Some(SavedSlot { item: 1, count: 0 }),
-                Some(SavedSlot { item: 99, count: 1 }),
-                Some(SavedSlot { item: 2, count: 5 }),
+                Some(SavedSlot {
+                    item: 1,
+                    count: 0,
+                    durability: None,
+                }),
+                Some(SavedSlot {
+                    item: 99,
+                    count: 1,
+                    durability: None,
+                }),
+                Some(SavedSlot {
+                    item: 2,
+                    count: 5,
+                    durability: None,
+                }),
             ],
             selected_hotbar: 100,
         };
@@ -441,5 +543,111 @@ mod tests {
         let (restored, selected) = Inventory::from_saved(&saved);
         assert_eq!(restored, inventory);
         assert_eq!(selected, 4);
+    }
+
+    #[test]
+    fn tool_durability_survives_slot_moves_and_saving() {
+        let mut inventory = Inventory::new();
+        let pickaxe = ItemStack::new(ItemId::IRON_PICKAXE, 1)
+            .expect("工具堆叠合法")
+            .with_durability(77);
+        inventory.set_slot(HOTBAR_OFFSET + 2, Some(pickaxe));
+        assert!(inventory.swap_slots(HOTBAR_OFFSET + 2, 0));
+        assert_eq!(inventory.slot(0).and_then(ItemStack::durability), Some(77));
+
+        let saved = inventory.to_saved(2);
+        let (restored, selected) = Inventory::from_saved(&saved);
+        assert_eq!(restored, inventory);
+        assert_eq!(selected, 2);
+        assert_eq!(restored.slot(0).and_then(ItemStack::durability), Some(77));
+    }
+
+    #[test]
+    fn old_saves_restore_tools_at_full_durability() {
+        let saved = SavedInventory {
+            slots: vec![Some(SavedSlot {
+                item: ItemId::IRON_PICKAXE.raw(),
+                count: 1,
+                durability: None,
+            })],
+            selected_hotbar: 0,
+        };
+        let (restored, _) = Inventory::from_saved(&saved);
+        assert_eq!(
+            restored.slot(0).and_then(ItemStack::durability),
+            Some(251),
+            "缺失耐久字段的旧档按满耐久恢复"
+        );
+    }
+
+    #[test]
+    fn saved_durability_is_clamped_to_the_tool_maximum() {
+        let saved = SavedInventory {
+            slots: vec![Some(SavedSlot {
+                item: ItemId::WOODEN_PICKAXE.raw(),
+                count: 1,
+                durability: Some(999),
+            })],
+            selected_hotbar: 0,
+        };
+        let (restored, _) = Inventory::from_saved(&saved);
+        assert_eq!(restored.slot(0).and_then(ItemStack::durability), Some(60));
+    }
+
+    #[test]
+    fn durability_damage_only_touches_tools() {
+        let mut inventory = Inventory::new();
+        inventory.set_slot(
+            HOTBAR_OFFSET,
+            Some(ItemStack::new(ItemId::WOODEN_PICKAXE, 1).expect("工具堆叠合法")),
+        );
+        inventory.set_slot(
+            HOTBAR_OFFSET + 1,
+            Some(ItemStack::new(ItemId::STONE, 3).expect("合法堆叠")),
+        );
+
+        assert_eq!(
+            inventory.damage_hotbar_tool(0, 1),
+            Wear::Damaged { remaining: 59 }
+        );
+        assert_eq!(inventory.damage_hotbar_tool(1, 1), Wear::NotATool);
+        assert_eq!(
+            inventory.slot(HOTBAR_OFFSET + 1).map(ItemStack::count),
+            Some(3)
+        );
+        assert_eq!(inventory.damage_hotbar_tool(9, 1), Wear::NotATool);
+    }
+
+    #[test]
+    fn splitting_a_tool_keeps_its_durability() {
+        let mut inventory = Inventory::new();
+        inventory.set_slot(
+            0,
+            Some(
+                ItemStack::new(ItemId::WOODEN_AXE, 1)
+                    .expect("工具堆叠合法")
+                    .with_durability(12),
+            ),
+        );
+
+        let half = inventory.split_half(0).expect("应有可分出的物品");
+        assert_eq!(half.durability(), Some(12));
+        assert_eq!(inventory.slot(0), None);
+    }
+
+    #[test]
+    fn add_stack_preserves_tool_durability() {
+        let mut inventory = Inventory::new();
+        let pickaxe = ItemStack::new(ItemId::IRON_PICKAXE, 1)
+            .expect("工具堆叠合法")
+            .with_durability(9);
+
+        assert_eq!(inventory.add_stack(pickaxe), None);
+        assert_eq!(
+            inventory
+                .slot(HOTBAR_OFFSET)
+                .and_then(ItemStack::durability),
+            Some(9)
+        );
     }
 }

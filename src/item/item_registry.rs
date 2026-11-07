@@ -53,8 +53,124 @@ const GRASS: ItemDefinition = ItemDefinition {
     item_type: ItemType::Block,
 };
 
+/// 工具的统一堆叠上限：带独立耐久的工具不能堆叠。
+pub const TOOL_MAX_STACK_SIZE: u32 = 1;
+
+const WOODEN_PICKAXE: ItemDefinition = ItemDefinition {
+    id: ItemId::WOODEN_PICKAXE,
+    name: "Wooden Pickaxe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.62, 0.43, 0.24),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const STONE_PICKAXE: ItemDefinition = ItemDefinition {
+    id: ItemId::STONE_PICKAXE,
+    name: "Stone Pickaxe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.58, 0.58, 0.62),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const IRON_PICKAXE: ItemDefinition = ItemDefinition {
+    id: ItemId::IRON_PICKAXE,
+    name: "Iron Pickaxe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.80, 0.82, 0.88),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const WOODEN_AXE: ItemDefinition = ItemDefinition {
+    id: ItemId::WOODEN_AXE,
+    name: "Wooden Axe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.68, 0.42, 0.20),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const STONE_AXE: ItemDefinition = ItemDefinition {
+    id: ItemId::STONE_AXE,
+    name: "Stone Axe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.60, 0.57, 0.50),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const IRON_AXE: ItemDefinition = ItemDefinition {
+    id: ItemId::IRON_AXE,
+    name: "Iron Axe",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.85, 0.82, 0.74),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const WOODEN_SHOVEL: ItemDefinition = ItemDefinition {
+    id: ItemId::WOODEN_SHOVEL,
+    name: "Wooden Shovel",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.55, 0.55, 0.35),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const STONE_SHOVEL: ItemDefinition = ItemDefinition {
+    id: ItemId::STONE_SHOVEL,
+    name: "Stone Shovel",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.52, 0.58, 0.58),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
+const IRON_SHOVEL: ItemDefinition = ItemDefinition {
+    id: ItemId::IRON_SHOVEL,
+    name: "Iron Shovel",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.78, 0.86, 0.88),
+    },
+    associated_block: None,
+    item_type: ItemType::Tool,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 4] = [INVALID, STONE, DIRT, GRASS];
+const DEFINITIONS: [ItemDefinition; 13] = [
+    INVALID,
+    STONE,
+    DIRT,
+    GRASS,
+    WOODEN_PICKAXE,
+    STONE_PICKAXE,
+    IRON_PICKAXE,
+    WOODEN_AXE,
+    STONE_AXE,
+    IRON_AXE,
+    WOODEN_SHOVEL,
+    STONE_SHOVEL,
+    IRON_SHOVEL,
+];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。
 pub fn definition(item: ItemId) -> Option<&'static ItemDefinition> {
@@ -104,25 +220,27 @@ mod tests {
 
     #[test]
     fn ids_are_unique_and_match_table_order() {
-        let definitions = [STONE, DIRT, GRASS];
-        for definition in definitions {
+        let definitions: Vec<ItemDefinition> = DEFINITIONS
+            .iter()
+            .copied()
+            .filter(|definition| definition.id != ItemId::INVALID)
+            .collect();
+        for definition in &definitions {
             assert_eq!(
                 DEFINITIONS.get(definition.id.raw() as usize),
-                Some(&definition)
+                Some(definition)
             );
-            assert_eq!(
-                definition.id,
-                item_for_block(definition.associated_block.expect("方块物品必须关联方块"))
-                    .expect("方块必须有对应物品")
-            );
+            if let Some(block) = definition.associated_block {
+                assert_eq!(item_for_block(block), Some(definition.id));
+            }
         }
-        let mut ids: Vec<u16> = DEFINITIONS
+        let mut ids: Vec<u16> = definitions
             .iter()
             .map(|definition| definition.id.raw())
             .collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), DEFINITIONS.len(), "物品 ID 必须唯一");
+        assert_eq!(ids.len(), definitions.len(), "物品 ID 必须唯一");
     }
 
     #[test]
@@ -148,6 +266,17 @@ mod tests {
             let definition = definition(item).expect("物品应存在");
             assert_eq!(definition.max_stack_size, DEFAULT_MAX_STACK_SIZE);
             assert!(definition.is_placeable());
+        }
+    }
+
+    #[test]
+    fn tool_items_cannot_stack_and_are_not_placeable() {
+        for tool in crate::item::tool_registry::definitions() {
+            let definition = definition(tool.id).expect("工具必须有物品定义");
+            assert_eq!(definition.max_stack_size, TOOL_MAX_STACK_SIZE);
+            assert_eq!(definition.item_type, ItemType::Tool);
+            assert!(!definition.is_placeable());
+            assert_eq!(block_for_item(tool.id), None);
         }
     }
 }

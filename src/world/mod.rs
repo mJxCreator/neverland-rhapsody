@@ -10,6 +10,7 @@ pub mod terrain;
 pub mod world;
 
 pub use self::block::{Block, Face};
+pub use self::block_registry::{DropRule, MiningCategory};
 pub use self::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
 pub use self::chunk_manager::{ChunkConfig, ChunkManager};
 pub use self::terrain::WORLD_HEIGHT;

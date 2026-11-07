@@ -91,16 +91,6 @@ impl Block {
         self.properties().selectable
     }
 
-    /// 挖掘所需时间（秒）；不可挖掘方块返回 0。
-    pub fn mining_time(self, seconds_per_hardness: f32) -> f32 {
-        let properties = self.properties();
-        if properties.breakable {
-            properties.hardness * seconds_per_hardness
-        } else {
-            0.0
-        }
-    }
-
     /// 该方块某个面的基础颜色（未叠加朝向明暗）。
     pub fn face_color(self, face: Face) -> Vec3 {
         self.properties().face_color(face)

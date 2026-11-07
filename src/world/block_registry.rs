@@ -6,6 +6,7 @@
 use glam::Vec3;
 
 use super::block::{Block, Face};
+use crate::item::tool::ToolType;
 
 /// 方块渲染方式；当前只有不透明实体方块，为后续透明/交叉渲染预留。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,6 +15,32 @@ pub enum RenderType {
     None,
     /// 不透明实体方块。
     Opaque,
+}
+
+/// 挖掘类别；决定哪一类工具能对该方块提供效率加成。
+///
+/// 类别与工具等级相互独立：类别匹配只影响速度，能否获得掉落由采集等级判定。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MiningCategory {
+    /// 不属于任何可工具加速的类别。
+    None,
+    /// 泥土、草方块等，铲子适用。
+    Dirt,
+    /// 石头类，镐适用。
+    Stone,
+    /// 木质类，斧适用；本版本暂无对应方块。
+    Wood,
+}
+
+/// 方块被破坏后的掉落规则。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropRule {
+    /// 任何情况下都按掉落表生成。
+    Always,
+    /// 只有满足采集条件（工具类别与等级）才生成正常掉落，否则无掉落。
+    RequiresCorrectTool,
+    /// 永不掉落。
+    Never,
 }
 
 /// 方块各朝向的基础颜色；当前用顶点色代替纹理。
@@ -68,6 +95,14 @@ pub struct BlockProperties {
     pub name: &'static str,
     /// 硬度；0 表示不可挖掘。挖掘时间 = 硬度 × 基础系数。
     pub hardness: f32,
+    /// 该方块所属的挖掘类别，决定哪类工具能获得效率加成。
+    pub mining_category: MiningCategory,
+    /// 推荐或要求的工具类别；`None` 表示徒手与任意工具都可正常采集。
+    pub required_tool: Option<ToolType>,
+    /// 采集等级要求；工具等级低于该值时无法获得正常掉落。
+    pub harvest_level: u8,
+    /// 破坏后的掉落规则。
+    pub drop_rule: DropRule,
     /// 是否具有实体碰撞。
     pub solid: bool,
     /// 是否允许被破坏。
@@ -93,6 +128,10 @@ pub const AIR: BlockProperties = BlockProperties {
     id: 0,
     name: "Air",
     hardness: 0.0,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
     solid: false,
     breakable: false,
     placeable: false,
@@ -105,6 +144,11 @@ pub const STONE: BlockProperties = BlockProperties {
     id: 1,
     name: "Stone",
     hardness: 1.5,
+    mining_category: MiningCategory::Stone,
+    // 石制及以上镐才能获得石头掉落；徒手与木镐可破坏但无掉落。
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 1,
+    drop_rule: DropRule::RequiresCorrectTool,
     solid: true,
     breakable: true,
     placeable: true,
@@ -117,6 +161,11 @@ pub const DIRT: BlockProperties = BlockProperties {
     id: 2,
     name: "Dirt",
     hardness: 0.5,
+    mining_category: MiningCategory::Dirt,
+    // 铲子只是推荐工具：通过挖掘类别带来速度加成，但徒手也能正常采集。
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
     solid: true,
     breakable: true,
     placeable: true,
@@ -129,6 +178,11 @@ pub const GRASS: BlockProperties = BlockProperties {
     id: 3,
     name: "Grass",
     hardness: 0.6,
+    mining_category: MiningCategory::Dirt,
+    // 铲子只是推荐工具：通过挖掘类别带来速度加成，但徒手也能正常采集。
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
     solid: true,
     breakable: true,
     placeable: true,
@@ -173,6 +227,32 @@ mod tests {
         assert_eq!(properties(Block::Grass).hardness, 0.6);
         assert_eq!(properties(Block::Dirt).hardness, 0.5);
         assert_eq!(properties(Block::Stone).hardness, 1.5);
+    }
+
+    #[test]
+    fn mining_properties_separate_category_from_harvest_level() {
+        let stone = properties(Block::Stone);
+        assert_eq!(stone.mining_category, MiningCategory::Stone);
+        assert_eq!(stone.required_tool, Some(ToolType::Pickaxe));
+        assert_eq!(stone.harvest_level, 1);
+        assert_eq!(stone.drop_rule, DropRule::RequiresCorrectTool);
+
+        let dirt = properties(Block::Dirt);
+        assert_eq!(dirt.mining_category, MiningCategory::Dirt);
+        assert_eq!(
+            dirt.required_tool, None,
+            "铲子只是推荐工具，不能成为强制要求"
+        );
+        assert_eq!(dirt.harvest_level, 0);
+        assert_eq!(dirt.drop_rule, DropRule::Always, "泥土徒手也应掉落");
+    }
+
+    #[test]
+    fn air_never_drops_and_has_no_requirements() {
+        let air = properties(Block::Air);
+        assert_eq!(air.mining_category, MiningCategory::None);
+        assert_eq!(air.required_tool, None);
+        assert_eq!(air.drop_rule, DropRule::Never);
     }
 
     #[test]

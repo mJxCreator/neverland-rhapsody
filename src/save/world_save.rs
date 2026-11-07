@@ -1,5 +1,8 @@
 //! 世界存档：按区块记录玩家对程序化地形的改动、区块掉落物与玩家背包，
-//! 并兼容 v0.8（version 1）与 v0.11（version 2）旧档。
+//! 并兼容 v0.8（version 1）、v0.11（version 2）与 v0.12（version 3）旧档。
+//!
+//! v0.13（version 4）在玩家背包槽位中新增工具耐久字段；该字段带默认值，
+//! 旧档读取时按“满耐久或普通物品”补全，写入时统一升级为 version 4。
 
 use std::collections::HashMap;
 use std::fs;
@@ -14,8 +17,8 @@ use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGH
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 玩家背包 + 区块掉落物。
-const SAVE_VERSION: u32 = 3;
+/// 当前存档格式版本：区块数据 + 玩家背包（含工具耐久）+ 区块掉落物。
+const SAVE_VERSION: u32 = 4;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -584,7 +587,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 3"));
+        assert!(text.contains("\"version\": 4"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -814,9 +817,17 @@ mod tests {
         remove_all(&path);
         let inventory = SavedInventory {
             slots: vec![
-                Some(SavedSlot { item: 1, count: 5 }),
+                Some(SavedSlot {
+                    item: 1,
+                    count: 5,
+                    durability: None,
+                }),
                 None,
-                Some(SavedSlot { item: 3, count: 2 }),
+                Some(SavedSlot {
+                    item: 3,
+                    count: 2,
+                    durability: None,
+                }),
             ],
             selected_hotbar: 4,
         };
@@ -872,6 +883,51 @@ mod tests {
 
         let save = WorldSave::load(&path, DEFAULT_SEED);
         assert_eq!(save.total_drops(), 0, "错位的掉落物记录必须被忽略");
+        remove_all(&path);
+    }
+
+    #[test]
+    fn a_v012_save_restores_tools_and_upgrades_to_version_4() {
+        let path = temp_path("v012");
+        remove_all(&path);
+        let legacy = r#"{
+            "version": 3,
+            "seed": 24301,
+            "player": {
+                "slots": [{"item": 5, "count": 1}, {"item": 1, "count": 4}],
+                "selected_hotbar": 0
+            }
+        }"#;
+        fs::write(&path, legacy).expect("写入 v3 存档失败");
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        let player = save.player().expect("v3 存档必须保留玩家背包");
+        assert_eq!(
+            player.slots[0].and_then(|slot| slot.durability),
+            None,
+            "v3 槽位本身不含耐久字段"
+        );
+
+        let (inventory, selected) = crate::item::Inventory::from_saved(player);
+        assert_eq!(selected, 0);
+        assert_eq!(
+            inventory.slot(0).and_then(|stack| stack.durability()),
+            Some(132),
+            "石镐按满耐久恢复"
+        );
+        assert_eq!(
+            inventory.slot(1).and_then(|stack| stack.durability()),
+            None,
+            "普通物品没有耐久"
+        );
+
+        // 首次写盘把格式升级到 version 4，且保留玩家数据。
+        let player = save.player().expect("玩家数据仍在").clone();
+        save.set_player(player).expect("写盘应成功");
+        let text = fs::read_to_string(&path).expect("读取新存档失败");
+        let data: SaveFile = serde_json::from_str(&text).expect("解析新存档失败");
+        assert_eq!(data.version, 4);
+
         remove_all(&path);
     }
 }

@@ -1,11 +1,14 @@
-//! 背包界面：27 格主背包 + 9 格快捷栏面板、左右键移动/拆分堆叠与悬停名称。
+//! 背包界面：27 格主背包 + 9 格快捷栏面板、左右键移动/拆分堆叠与悬停详情。
 //!
 //! 本模块只负责界面状态、布局与点击语义，不直接修改世界或存档；
 //! 所有槽位变更都通过 [`Inventory`] 接口完成，因此不会产生重复或丢失物品。
+//! 工具槽位额外显示耐久条，悬停信息包含类别、等级与当前/最大耐久。
 
 use super::font;
-use super::hud::{push_quad, HudRect, HudVertex};
-use crate::item::{icon_color, item_name, Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
+use super::hud::{durability_color, push_quad, HudRect, HudVertex};
+use crate::item::{
+    icon_color, item_name, tool_registry, Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS,
+};
 
 /// 鼠标按键语义，避免界面层依赖具体输入框架。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +60,11 @@ impl InventoryUi {
     }
 
     /// 尝试关闭界面：拖动中的物品先放回背包，放不下时保持界面开启，避免丢失。
+    /// 回放必须通过 [`Inventory::add_stack`]，否则工具耐久会被重置。
     pub fn try_close(&mut self, inventory: &mut Inventory) -> bool {
         if let Some(held) = self.held {
-            let outcome = inventory.add_item(held.item(), held.count());
-            if outcome.remaining > 0 {
-                self.held = held.with_count(outcome.remaining);
+            if let Some(remaining) = inventory.add_stack(held) {
+                self.held = Some(remaining);
                 return false;
             }
         }
@@ -259,12 +262,13 @@ impl InventoryUi {
 
             if let Some(stack) = inventory.slot(index) {
                 push_item_icon(out, viewport, rect, stack);
+                push_slot_durability(out, viewport, rect, stack);
                 push_count(out, viewport, rect, stack);
             }
         }
 
         if let Some(stack) = hovered.and_then(|index| inventory.slot(index)) {
-            push_tooltip(out, viewport, layout, item_name(stack.item()));
+            push_tooltip(out, viewport, layout, stack);
         }
 
         if let Some(held) = self.held {
@@ -276,20 +280,23 @@ impl InventoryUi {
                 height: size,
             };
             push_item_icon(out, viewport, rect, held);
-            let text = held.count().to_string();
-            let text_width = font::text_width(&text, 2.0);
-            let text_x = rect.x + rect.width - 2.0 - text_width;
-            let text_y = rect.y + rect.height - 2.0 - font::GLYPH_HEIGHT as f32 * 2.0;
-            font::push_text(
-                out,
-                viewport,
-                text_x + 1.0,
-                text_y + 1.0,
-                2.0,
-                TEXT_SHADOW,
-                &text,
-            );
-            font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+            push_slot_durability(out, viewport, rect, held);
+            if held.count() > 1 {
+                let text = held.count().to_string();
+                let text_width = font::text_width(&text, 2.0);
+                let text_x = rect.x + rect.width - 2.0 - text_width;
+                let text_y = rect.y + rect.height - 2.0 - font::GLYPH_HEIGHT as f32 * 2.0;
+                font::push_text(
+                    out,
+                    viewport,
+                    text_x + 1.0,
+                    text_y + 1.0,
+                    2.0,
+                    TEXT_SHADOW,
+                    &text,
+                );
+                font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+            }
         }
     }
 }
@@ -311,6 +318,9 @@ fn push_item_icon(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect,
 }
 
 fn push_count(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, stack: ItemStack) {
+    if stack.count() <= 1 {
+        return;
+    }
     let text = stack.count().to_string();
     let text_width = font::text_width(&text, 2.0);
     let text_x = rect.x + rect.width - 3.0 - text_width;
@@ -327,12 +337,80 @@ fn push_count(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, sta
     font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
 }
 
-fn push_tooltip(out: &mut Vec<HudVertex>, viewport: (f32, f32), layout: Layout, name: &str) {
-    let text_width = font::text_width(name, 2.0);
+/// 槽位底部的耐久条；只有带独立耐久的工具绘制。
+fn push_slot_durability(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    stack: ItemStack,
+) {
+    let Some(max) = stack.max_durability() else {
+        return;
+    };
+    if max == 0 {
+        return;
+    }
+
+    let current = stack.durability().unwrap_or(max);
+    let ratio = (current as f32 / max as f32).clamp(0.0, 1.0);
+    let bar_height = (rect.height * 0.08).max(3.0);
+    let inset = rect.width * 0.12;
+    let bar = HudRect {
+        x: rect.x + inset,
+        y: rect.y + rect.height - inset - bar_height,
+        width: rect.width - inset * 2.0,
+        height: bar_height,
+    };
+    let background = if current == 0 {
+        [0.55, 0.12, 0.12, 0.9]
+    } else {
+        [0.0, 0.0, 0.0, 0.75]
+    };
+    push_quad(out, viewport, bar, background);
+    if ratio > 0.0 {
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                width: bar.width * ratio,
+                ..bar
+            },
+            durability_color(ratio),
+        );
+    }
+}
+
+/// 悬停详情：物品名；工具额外显示类别/等级与当前、最大耐久。
+fn tooltip_lines(stack: ItemStack) -> Vec<String> {
+    let mut lines = vec![item_name(stack.item()).to_string()];
+    if let Some(definition) = tool_registry::definition(stack.item()) {
+        lines.push(format!(
+            "{} / {}",
+            definition.tool_type.name(),
+            definition.tier.name()
+        ));
+        let max = definition.max_durability;
+        let current = stack.durability().unwrap_or(max);
+        if current == 0 {
+            lines.push("BROKEN".to_string());
+        } else {
+            lines.push(format!("DURABILITY {}/{}", current, max));
+        }
+    }
+    lines
+}
+
+fn push_tooltip(out: &mut Vec<HudVertex>, viewport: (f32, f32), layout: Layout, stack: ItemStack) {
+    let lines = tooltip_lines(stack);
+    let line_height = font::GLYPH_HEIGHT as f32 * 2.0 + 4.0;
+    let text_width = lines
+        .iter()
+        .map(|line| font::text_width(line, 2.0))
+        .fold(0.0_f32, f32::max);
     let width = text_width + 16.0;
-    let height = font::GLYPH_HEIGHT as f32 * 2.0 + 8.0;
+    let height = line_height * lines.len() as f32 + 8.0;
     let x = layout.x + (layout.width - width) * 0.5;
-    let y = layout.y - height - 8.0;
+    let y = (layout.y - height - 8.0).max(4.0);
     push_quad(
         out,
         viewport,
@@ -344,7 +422,17 @@ fn push_tooltip(out: &mut Vec<HudVertex>, viewport: (f32, f32), layout: Layout, 
         },
         TOOLTIP_BACKGROUND,
     );
-    font::push_text(out, viewport, x + 8.0, y + 4.0, 2.0, TEXT_COLOR, name);
+    for (index, line) in lines.iter().enumerate() {
+        font::push_text(
+            out,
+            viewport,
+            x + 8.0,
+            y + 4.0 + index as f32 * line_height,
+            2.0,
+            TEXT_COLOR,
+            line,
+        );
+    }
 }
 
 /// 当前视口下的面板布局。
@@ -612,5 +700,79 @@ mod tests {
             assert_eq!(slot_at(layout, cursor_on(index)), Some(index));
         }
         assert_eq!(slot_at(layout, (0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn tooltip_details_appear_only_for_tools() {
+        let stone_lines = tooltip_lines(stone(1));
+        assert_eq!(stone_lines, vec![item_name(ItemId::STONE).to_string()]);
+
+        let pickaxe = ItemStack::new(ItemId::STONE_PICKAXE, 1)
+            .expect("工具堆叠合法")
+            .with_durability(100);
+        let lines = tooltip_lines(pickaxe);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], "PICKAXE / STONE");
+        assert_eq!(lines[2], "DURABILITY 100/132");
+
+        let broken = pickaxe.with_durability(0);
+        assert_eq!(tooltip_lines(broken)[2], "BROKEN");
+    }
+
+    #[test]
+    fn closing_preserves_the_held_tool_durability() {
+        let mut inventory = Inventory::new();
+        let pickaxe = ItemStack::new(ItemId::WOODEN_PICKAXE, 1)
+            .expect("工具堆叠合法")
+            .with_durability(17);
+        inventory.set_slot(0, Some(pickaxe));
+
+        let mut ui = InventoryUi::new();
+        ui.open();
+        ui.click_at(
+            &mut inventory,
+            ClickButton::Left,
+            cursor_on(0),
+            (1280.0, 720.0),
+        );
+        assert_eq!(ui.held().and_then(ItemStack::durability), Some(17));
+
+        assert!(ui.try_close(&mut inventory));
+        assert_eq!(
+            inventory
+                .slot(HOTBAR_OFFSET)
+                .and_then(ItemStack::durability),
+            Some(17),
+            "回放背包后耐久不能被重置"
+        );
+    }
+
+    #[test]
+    fn tool_slots_draw_extra_durability_geometry() {
+        let viewport = (1280.0, 720.0);
+        let mut ui = InventoryUi::new();
+        ui.open();
+
+        let mut inventory = Inventory::new();
+        inventory.set_slot(0, Some(stone(1)));
+        let mut block_vertices = Vec::new();
+        ui.build(&mut block_vertices, &inventory, 0, viewport);
+
+        inventory.set_slot(
+            0,
+            Some(
+                ItemStack::new(ItemId::WOODEN_PICKAXE, 1)
+                    .expect("工具堆叠合法")
+                    .with_durability(30),
+            ),
+        );
+        let mut tool_vertices = Vec::new();
+        ui.build(&mut tool_vertices, &inventory, 0, viewport);
+
+        assert_eq!(
+            tool_vertices.len(),
+            block_vertices.len() + 12,
+            "工具槽位额外绘制耐久条背景与填充"
+        );
     }
 }

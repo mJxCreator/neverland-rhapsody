@@ -18,6 +18,15 @@ impl ItemId {
     pub const STONE: Self = Self(1);
     pub const DIRT: Self = Self(2);
     pub const GRASS: Self = Self(3);
+    pub const WOODEN_PICKAXE: Self = Self(4);
+    pub const STONE_PICKAXE: Self = Self(5);
+    pub const IRON_PICKAXE: Self = Self(6);
+    pub const WOODEN_AXE: Self = Self(7);
+    pub const STONE_AXE: Self = Self(8);
+    pub const IRON_AXE: Self = Self(9);
+    pub const WOODEN_SHOVEL: Self = Self(10);
+    pub const STONE_SHOVEL: Self = Self(11);
+    pub const IRON_SHOVEL: Self = Self(12);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {
@@ -36,7 +45,7 @@ impl ItemId {
     }
 }
 
-/// 物品类别；当前只实现方块物品，`Tool` 与 `Consumable` 为后续版本预留。
+/// 物品类别；工具与方块为当前实现，`Material` 与 `Consumable` 为后续版本预留。
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemType {
@@ -81,25 +90,53 @@ impl ItemDefinition {
 }
 
 /// 某一物品及其数量；构造后数量始终位于 `1..=max_stack_size`。
+///
+/// 工具在 [`ItemStack`] 上携带独立耐久度：`durability` 为 `None` 表示普通物品，
+/// `Some(n)` 表示工具实例的剩余耐久，`Some(0)` 表示已损坏。耐久属于实例状态，
+/// 不会写入物品注册表。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemStack {
     item: ItemId,
     count: u32,
+    durability: Option<u32>,
 }
 
 impl ItemStack {
     /// 创建物品堆叠；无效物品 ID、数量为 0 或超过堆叠上限时返回 `None`。
+    ///
+    /// 工具按最大耐久初始化；普通物品不携带耐久字段。
     pub fn new(item: ItemId, count: u32) -> Option<Self> {
         let max = item_registry::max_stack_size(item)?;
         if count == 0 || count > max {
             return None;
         }
-        Some(Self { item, count })
+        let durability =
+            super::tool_registry::definition(item).map(|definition| definition.max_durability);
+        Some(Self {
+            item,
+            count,
+            durability,
+        })
     }
 
-    /// 以相同物品生成指定数量的堆叠；数量非法时返回 `None`。
+    /// 以相同物品生成指定数量的堆叠；数量非法时返回 `None`，耐久保持不变。
     pub fn with_count(self, count: u32) -> Option<Self> {
-        Self::new(self.item, count)
+        let max = item_registry::max_stack_size(self.item)?;
+        if count == 0 || count > max {
+            return None;
+        }
+        Some(Self { count, ..self })
+    }
+
+    /// 返回带指定耐久的副本；普通物品原样返回，数值会被限制在 `0..=最大耐久`。
+    pub fn with_durability(self, durability: u32) -> Self {
+        match self.max_durability() {
+            Some(max) => Self {
+                durability: Some(durability.min(max)),
+                ..self
+            },
+            None => self,
+        }
     }
 
     pub fn item(self) -> ItemId {
@@ -108,6 +145,26 @@ impl ItemStack {
 
     pub fn count(self) -> u32 {
         self.count
+    }
+
+    /// 工具实例的剩余耐久；普通物品返回 `None`。
+    pub fn durability(self) -> Option<u32> {
+        self.durability
+    }
+
+    /// 该物品是否为工具。
+    pub fn is_tool(self) -> bool {
+        self.durability.is_some()
+    }
+
+    /// 工具的最大耐久；普通物品返回 `None`。
+    pub fn max_durability(self) -> Option<u32> {
+        super::tool_registry::definition(self.item).map(|definition| definition.max_durability)
+    }
+
+    /// 工具是否已经损坏；普通物品始终为 `false`。
+    pub fn is_broken(self) -> bool {
+        self.durability == Some(0)
     }
 
     /// 该物品的最大堆叠数量。
@@ -120,9 +177,9 @@ impl ItemStack {
         self.max_stack_size().saturating_sub(self.count)
     }
 
-    /// 两种物品能否堆叠到同一槽位。
+    /// 两种物品能否堆叠到同一槽位；工具还要求耐久完全一致。
     pub fn can_merge_with(self, other: Self) -> bool {
-        self.item == other.item
+        self.item == other.item && self.durability == other.durability
     }
 }
 
@@ -166,5 +223,35 @@ mod tests {
         assert_eq!(definition.associated_block, Some(Block::Grass));
         assert!(definition.is_placeable());
         assert_eq!(definition.item_type, ItemType::Block);
+    }
+
+    #[test]
+    fn tools_carry_instance_durability_without_stacking() {
+        let pickaxe = ItemStack::new(ItemId::IRON_PICKAXE, 1).expect("工具堆叠合法");
+        assert!(pickaxe.is_tool());
+        assert_eq!(pickaxe.durability(), Some(251));
+        assert_eq!(pickaxe.max_durability(), Some(251));
+        assert!(
+            ItemStack::new(ItemId::IRON_PICKAXE, 2).is_none(),
+            "工具不能堆叠"
+        );
+
+        let worn = pickaxe.with_durability(100);
+        assert_eq!(worn.durability(), Some(100));
+        assert!(!worn.can_merge_with(pickaxe), "不同耐久的工具不能合并");
+        assert!(worn.can_merge_with(worn));
+
+        let normal = ItemStack::new(ItemId::STONE, 3).expect("合法堆叠");
+        assert!(!normal.is_tool());
+        assert_eq!(normal.durability(), None);
+        assert_eq!(normal.with_durability(5).durability(), None);
+    }
+
+    #[test]
+    fn durability_is_clamped_to_the_maximum() {
+        let pickaxe = ItemStack::new(ItemId::WOODEN_PICKAXE, 1).expect("工具堆叠合法");
+        assert_eq!(pickaxe.with_durability(999).durability(), Some(60));
+        assert!(pickaxe.with_durability(0).is_broken());
+        assert!(!pickaxe.is_broken());
     }
 }

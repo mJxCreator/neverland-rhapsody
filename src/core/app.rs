@@ -17,11 +17,12 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use super::config::AppConfig;
 use super::time::FrameTimer;
 use crate::interaction::{
-    placement_cell, raycast, Hotbar, MiningOutcome, MiningState, MiningTarget, RayHit,
+    drops_for_harvest, placement_cell, primary_use, raycast, secondary_use, HarvestTool, Hotbar,
+    ItemUse, MiningOutcome, MiningState, MiningTarget, RayHit,
 };
 use crate::item::{
-    block_for_item, collect_pickups, drops_for_block, DroppedItemConfig, DroppedItemStore,
-    Inventory, ItemStack,
+    collect_pickups, tool, DroppedItemConfig, DroppedItemStore, Inventory, ItemStack, Wear,
+    HOTBAR_OFFSET, STARTER_TOOLS,
 };
 use crate::player::{PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController};
 use crate::renderer::{spawn_pose, ClickButton, InventoryUi, RenderOutcome, Renderer};
@@ -83,11 +84,11 @@ impl App {
         let mut player = Player::new(spawn, physics.config().dimensions);
         player.rotate_look(yaw, pitch);
 
-        // 旧档没有玩家数据时按空背包启动（v0.12 迁移策略）。
+        // 旧档沿用已有背包；没有玩家数据的新世界发放示例工具，便于直接验收。
         let (inventory, selected_hotbar) = save
             .player()
             .map(Inventory::from_saved)
-            .unwrap_or((Inventory::new(), 0));
+            .unwrap_or_else(|| (Self::starter_inventory(), 0));
         let mut hotbar = Hotbar::new();
         hotbar.set_selected(selected_hotbar);
 
@@ -116,6 +117,17 @@ impl App {
             mesh_ms: 0.0,
             next_save_retry: Instant::now(),
         }
+    }
+
+    /// 新建世界的示例工具：按快捷栏 1→9 号槽位依次放入木/石/铁镐、斧、铲。
+    ///
+    /// 本版本没有合成系统，示例工具让工具与耐久系统可以直接实机验收。
+    fn starter_inventory() -> Inventory {
+        let mut inventory = Inventory::new();
+        for (index, item) in STARTER_TOOLS.iter().copied().enumerate() {
+            inventory.set_slot(HOTBAR_OFFSET + index, ItemStack::new(item, 1));
+        }
+        inventory
     }
 
     /// 创建事件循环并进入主循环，窗口关闭或按下 Esc 时返回。
@@ -268,20 +280,29 @@ impl App {
     }
 
     /// 当前命中方块对应的挖掘目标；空气不可挖掘，因此无需进入状态机。
+    ///
+    /// 工具速度倍率在这里根据快捷栏当前物品解析：徒手、普通物品、损坏工具
+    /// 或类别不适用时都回退为徒手基准。
     fn mining_target(&self, hit: Option<RayHit>) -> Option<MiningTarget> {
         let hit = hit?;
         let block_type = self.world.block_at(hit.block.x, hit.block.y, hit.block.z);
         if block_type == Block::Air {
             return None;
         }
+        let stack = self.inventory.hotbar_stack(self.hotbar.selected_index());
+        let tool_speed = tool::mining_speed(stack, block_type);
         Some(MiningTarget {
             block: hit.block,
             block_type,
+            tool_speed,
         })
     }
 
     /// 破坏指定方块：写世界、存存档、重建网格并生成碎块。
-    fn break_block(&mut self, block: IVec3, block_type: Block) {
+    ///
+    /// `harvest_tool` 决定掉落是否满足采集条件；耐久消耗由调用方在挖掘完成时
+    /// 统一结算，本函数不会重复扣减。
+    fn break_block(&mut self, block: IVec3, block_type: Block, harvest_tool: HarvestTool) {
         let affected = self.world.set_block(block.x, block.y, block.z, Block::Air);
         if affected.is_empty() {
             return;
@@ -294,7 +315,7 @@ impl App {
             z: block.z,
             block: Block::Air,
         });
-        self.spawn_block_drops(block, block_type);
+        self.spawn_block_drops(block, block_type, harvest_tool);
         self.rebuild_chunks(affected);
         self.mining.cancel();
         if let Some(renderer) = self.renderer.as_mut() {
@@ -303,14 +324,17 @@ impl App {
         }
     }
 
-    /// 按方块掉落表生成掉落物；初始速度带轻微抛出效果。
-    fn spawn_block_drops(&mut self, block: IVec3, block_type: Block) {
+    /// 按采集规则生成掉落物；初始速度带轻微抛出效果。
+    fn spawn_block_drops(&mut self, block: IVec3, block_type: Block, harvest_tool: HarvestTool) {
         let center = Vec3::new(
             block.x as f32 + 0.5,
             block.y as f32 + 0.5,
             block.z as f32 + 0.5,
         );
-        for (index, drop) in drops_for_block(block_type).iter().enumerate() {
+        for (index, drop) in drops_for_harvest(block_type, harvest_tool)
+            .iter()
+            .enumerate()
+        {
             let Some(stack) = ItemStack::new(drop.item, drop.count) else {
                 continue;
             };
@@ -321,7 +345,7 @@ impl App {
         }
     }
 
-    /// 右键放置：在命中面外侧的空格放下快捷栏当前选中的方块物品。
+    /// 右键放置：通过统一的次要使用入口，把可放置方块放到命中面外侧的空格。
     fn place_block(&mut self) {
         let Some(hit) = self.targeted_block() else {
             return;
@@ -330,9 +354,12 @@ impl App {
             debug!("当前快捷栏槽位为空，无法放置");
             return;
         };
-        let Some(block) = block_for_item(stack.item()) else {
-            debug!(item = ?stack.item(), "该物品不能放置为方块");
-            return;
+        let block = match secondary_use(Some(stack)) {
+            ItemUse::PlaceBlock(block) => block,
+            _ => {
+                debug!(item = ?stack.item(), "该物品没有放置行为");
+                return;
+            }
         };
         let target = match placement_cell(&self.world, &hit, &self.player, block) {
             Ok(target) => target,
@@ -545,7 +572,26 @@ impl App {
         let mut selection = hit.map(|hit| hit.block);
         if let MiningOutcome::Completed { block } = outcome {
             let block_type = self.world.block_at(block.x, block.y, block.z);
-            self.break_block(block, block_type);
+            let selected = self.hotbar.selected_index();
+            let tool_stack = self.inventory.hotbar_stack(selected);
+            let harvest_tool = HarvestTool::from_stack(tool_stack);
+
+            // 一次成功挖掘只结算一次耐久；普通物品与损坏工具不参与扣减。
+            let wear = if tool_stack.is_some_and(|stack| stack.is_tool() && !stack.is_broken()) {
+                self.inventory.damage_hotbar_tool(selected, 1)
+            } else {
+                Wear::NotATool
+            };
+            self.break_block(block, block_type, harvest_tool);
+            if wear != Wear::NotATool {
+                self.persist_player();
+            }
+            if wear == Wear::Broken {
+                info!(item = ?tool_stack.map(ItemStack::item), "工具已损坏");
+                if let (Some(renderer), Some(stack)) = (self.renderer.as_mut(), tool_stack) {
+                    renderer.hud_mut().show_tool_broken(stack.item());
+                }
+            }
             // 方块已变成空气，本帧不应再高亮旧目标。
             selection = None;
         }
@@ -708,12 +754,18 @@ impl ApplicationHandler for App {
                 }
                 match (button, state) {
                     // 左键按住持续挖掘，松开立即中断并清空进度。
-                    (MouseButton::Left, ElementState::Pressed) => self.mining_held = true,
+                    // 主要使用入口只用于识别物品语义；徒手与方块物品仍可徒手挖掘，
+                    // 实际效率由 Mining 依据当前工具倍率计算。
+                    (MouseButton::Left, ElementState::Pressed) => {
+                        let stack = self.inventory.hotbar_stack(self.hotbar.selected_index());
+                        debug!(primary = ?primary_use(stack), "主要使用");
+                        self.mining_held = true;
+                    }
                     (MouseButton::Left, ElementState::Released) => {
                         self.mining_held = false;
                         self.mining.cancel();
                     }
-                    // 右键只在按下瞬间放置一块，避免长按连续刷方块。
+                    // 右键只在按下瞬间触发一次物品使用，避免长按连续放置。
                     (MouseButton::Right, ElementState::Pressed) => self.place_block(),
                     _ => {}
                 }
@@ -782,11 +834,22 @@ impl ApplicationHandler for App {
                         generation_ms = self.generation_ms,
                         mesh_ms = self.mesh_ms,
                         selected_hotbar = self.hotbar.selected_index(),
+                        selected_tool_durability = ?self
+                            .inventory
+                            .hotbar_stack(self.hotbar.selected_index())
+                            .and_then(ItemStack::durability),
                         inventory_open = self.inventory_ui.is_open(),
                         dropped_items = self.dropped.len(),
                         mining_active = self.mining.is_mining(),
                         mining_target = ?self.mining.target(),
                         mining_progress = self.mining.progress(),
+                        tool_speed = ?self.mining.target().map(|block| {
+                            let block_type = self.world.block_at(block.x, block.y, block.z);
+                            tool::mining_speed(
+                                self.inventory.hotbar_stack(self.hotbar.selected_index()),
+                                block_type,
+                            )
+                        }),
                         mining_elapsed = self.mining.elapsed_time(),
                         mining_required = self.mining.required_time(),
                         "帧率统计"

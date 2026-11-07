@@ -1,4 +1,4 @@
-//! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏与拾取提示。
+//! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏、选中工具名称/耐久与提示。
 //!
 //! 全部内容由纯色四边形与内联位图字体组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
 //! 背包打开时隐藏战斗与快捷栏 HUD，使界面焦点完全交给背包面板。
@@ -38,10 +38,20 @@ const SLOT_BORDER: f32 = 3.0;
 const SLOT_PADDING: f32 = 7.0;
 /// 拾取提示字号（像素格）。
 const TOAST_PIXEL: f32 = 2.0;
-/// 拾取提示显示时长（秒）。
+/// 提示显示时长（秒）。
 const TOAST_DURATION: f32 = 1.2;
-/// 拾取提示淡出时长（秒）。
+/// 提示淡出时长（秒）。
 const TOAST_FADE: f32 = 0.3;
+/// 选中工具名称与快捷栏的距离（像素）。
+const TOOL_LABEL_OFFSET: f32 = 24.0;
+/// 提示文字与快捷栏的距离（像素）。
+const TOAST_OFFSET: f32 = 46.0;
+/// 槽位耐久条高度（像素）。
+const DURABILITY_BAR_HEIGHT: f32 = 4.0;
+/// 耐久低于该比例时显示警示色。
+const DURABILITY_LOW_THRESHOLD: f32 = 0.25;
+/// 耐久低于该比例时显示中间过渡色。
+const DURABILITY_MID_THRESHOLD: f32 = 0.5;
 
 const CROSSHAIR_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
 const CROSSHAIR_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -55,12 +65,27 @@ const SLOT_EMPTY: [f32; 4] = [0.12, 0.12, 0.12, 0.55];
 const COUNT_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const TEXT_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 const TOAST_TEXT: [f32; 4] = [1.0, 1.0, 0.85, 1.0];
+const TOOL_LABEL_COLOR: [f32; 4] = [0.92, 0.94, 1.0, 1.0];
+const TOOL_BROKEN_COLOR: [f32; 4] = [1.0, 0.42, 0.36, 1.0];
+const DURABILITY_BAR_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.72];
+const DURABILITY_BAR_BROKEN: [f32; 4] = [0.55, 0.12, 0.12, 0.85];
+const DURABILITY_HIGH: [f32; 4] = [0.38, 0.86, 0.42, 0.95];
+const DURABILITY_MID: [f32; 4] = [0.95, 0.80, 0.28, 0.95];
+const DURABILITY_LOW: [f32; 4] = [0.95, 0.32, 0.26, 0.95];
 
-/// 一条拾取提示：物品、数量与剩余显示时间。
+/// 提示类型；决定绘制时的文案与颜色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToastKind {
+    Pickup,
+    ToolBroken,
+}
+
+/// 一条提示：物品、数量、类型与剩余显示时间。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Toast {
     item: ItemId,
     count: u32,
+    kind: ToastKind,
     remaining: f32,
 }
 
@@ -111,6 +136,20 @@ impl HudModel {
         self.toast = Some(Toast {
             item,
             count,
+            kind: ToastKind::Pickup,
+            remaining: TOAST_DURATION,
+        });
+    }
+
+    /// 显示工具损坏提示；这是耐久归零后的即时反馈。
+    pub fn show_tool_broken(&mut self, item: ItemId) {
+        if !item.is_valid() {
+            return;
+        }
+        self.toast = Some(Toast {
+            item,
+            count: 0,
+            kind: ToastKind::ToolBroken,
             remaining: TOAST_DURATION,
         });
     }
@@ -140,6 +179,7 @@ impl HudModel {
         }
 
         self.push_hotbar(out, width, height);
+        self.push_tool_label(out, width, height);
         self.push_toast(out, width, height);
         self.push_progress(out, width, height);
         push_crosshair(out, width, height);
@@ -207,23 +247,60 @@ impl HudModel {
                 Some(stack) => {
                     let color = icon_color(stack.item());
                     push_quad(out, viewport, inner, [color.x, color.y, color.z, 0.95]);
-                    let text = stack.count().to_string();
-                    let text_width = font::text_width(&text, 2.0);
-                    let text_y = y + SLOT_SIZE - 4.0 - font::GLYPH_HEIGHT as f32 * 2.0;
-                    let text_x = x + SLOT_SIZE - 4.0 - text_width;
-                    font::push_text(
-                        out,
-                        viewport,
-                        text_x + 1.0,
-                        text_y + 1.0,
-                        2.0,
-                        TEXT_SHADOW,
-                        &text,
-                    );
-                    font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+                    push_slot_durability(out, viewport, x, y, stack);
+                    if stack.count() > 1 {
+                        let text = stack.count().to_string();
+                        let text_width = font::text_width(&text, 2.0);
+                        let text_y = y + SLOT_SIZE - 4.0 - font::GLYPH_HEIGHT as f32 * 2.0;
+                        let text_x = x + SLOT_SIZE - 4.0 - text_width;
+                        font::push_text(
+                            out,
+                            viewport,
+                            text_x + 1.0,
+                            text_y + 1.0,
+                            2.0,
+                            TEXT_SHADOW,
+                            &text,
+                        );
+                        font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+                    }
                 }
             }
         }
+    }
+
+    /// 选中工具的名称与损坏状态；普通方块物品不显示。
+    fn push_tool_label(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+        let Some(stack) = self.slots[self.selected_slot] else {
+            return;
+        };
+        if !stack.is_tool() {
+            return;
+        }
+
+        let text = if stack.is_broken() {
+            format!("BROKEN {}", item_name(stack.item()))
+        } else {
+            item_name(stack.item()).to_string()
+        };
+        let color = if stack.is_broken() {
+            TOOL_BROKEN_COLOR
+        } else {
+            TOOL_LABEL_COLOR
+        };
+        let text_width = font::text_width(&text, TOAST_PIXEL);
+        let x = (width - text_width) * 0.5;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - TOOL_LABEL_OFFSET;
+        font::push_text(
+            out,
+            (width, height),
+            x + 1.0,
+            y + 1.0,
+            TOAST_PIXEL,
+            [0.0, 0.0, 0.0, 0.85],
+            &text,
+        );
+        font::push_text(out, (width, height), x, y, TOAST_PIXEL, color, &text);
     }
 
     fn push_toast(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
@@ -231,10 +308,19 @@ impl HudModel {
             return;
         };
         let alpha = (toast.remaining / TOAST_FADE).clamp(0.0, 1.0);
-        let text = format!("+{} {}", toast.count, item_name(toast.item));
+        let (text, base_color) = match toast.kind {
+            ToastKind::Pickup => (
+                format!("+{} {}", toast.count, item_name(toast.item)),
+                TOAST_TEXT,
+            ),
+            ToastKind::ToolBroken => (
+                format!("{} BROKEN", item_name(toast.item)),
+                TOOL_BROKEN_COLOR,
+            ),
+        };
         let text_width = font::text_width(&text, TOAST_PIXEL);
         let x = (width - text_width) * 0.5;
-        let y = height - BOTTOM_MARGIN - SLOT_SIZE - 26.0;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - TOAST_OFFSET;
         font::push_text(
             out,
             (width, height),
@@ -244,7 +330,7 @@ impl HudModel {
             [0.0, 0.0, 0.0, 0.85 * alpha],
             &text,
         );
-        let mut color = TOAST_TEXT;
+        let mut color = base_color;
         color[3] *= alpha;
         font::push_text(out, (width, height), x, y, TOAST_PIXEL, color, &text);
     }
@@ -280,6 +366,59 @@ impl HudModel {
             },
             PROGRESS_FILL,
         );
+    }
+}
+
+/// 快捷栏槽位底部的耐久条；普通方块物品不绘制。
+fn push_slot_durability(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    x: f32,
+    y: f32,
+    stack: ItemStack,
+) {
+    let Some(max) = stack.max_durability() else {
+        return;
+    };
+    if max == 0 {
+        return;
+    }
+
+    let current = stack.durability().unwrap_or(max);
+    let ratio = (current as f32 / max as f32).clamp(0.0, 1.0);
+    let bar = HudRect {
+        x: x + SLOT_PADDING,
+        y: y + SLOT_SIZE - SLOT_PADDING - DURABILITY_BAR_HEIGHT,
+        width: SLOT_SIZE - SLOT_PADDING * 2.0,
+        height: DURABILITY_BAR_HEIGHT,
+    };
+    let background = if current == 0 {
+        DURABILITY_BAR_BROKEN
+    } else {
+        DURABILITY_BAR_BACKGROUND
+    };
+    push_quad(out, viewport, bar, background);
+    if ratio > 0.0 {
+        push_quad(
+            out,
+            viewport,
+            HudRect {
+                width: bar.width * ratio,
+                ..bar
+            },
+            durability_color(ratio),
+        );
+    }
+}
+
+/// 按剩余耐久比例选择颜色：低于 25% 警示，低于 50% 过渡。
+pub(crate) fn durability_color(ratio: f32) -> [f32; 4] {
+    if ratio <= DURABILITY_LOW_THRESHOLD {
+        DURABILITY_LOW
+    } else if ratio <= DURABILITY_MID_THRESHOLD {
+        DURABILITY_MID
+    } else {
+        DURABILITY_HIGH
     }
 }
 
@@ -378,6 +517,12 @@ mod tests {
         ItemStack::new(ItemId::STONE, count).expect("合法堆叠")
     }
 
+    fn pickaxe(durability: u32) -> ItemStack {
+        ItemStack::new(ItemId::WOODEN_PICKAXE, 1)
+            .expect("工具堆叠合法")
+            .with_durability(durability)
+    }
+
     #[test]
     fn hud_geometry_stays_inside_clip_space() {
         let mut vertices = Vec::new();
@@ -455,6 +600,83 @@ mod tests {
         let mut with_toast = Vec::new();
         model.build(&mut with_toast, 1280.0, 720.0);
         assert!(with_toast.len() > without_toast.len());
+
+        model.update(TOAST_DURATION + 0.1);
+        assert!(model.toast.is_none());
+    }
+
+    #[test]
+    fn durability_bars_only_apply_to_tools() {
+        let viewport = (1280.0, 720.0);
+
+        let mut block_vertices = Vec::new();
+        push_slot_durability(&mut block_vertices, viewport, 0.0, 0.0, stone(1));
+        assert!(block_vertices.is_empty(), "普通方块物品没有耐久条");
+
+        let mut tool_vertices = Vec::new();
+        push_slot_durability(&mut tool_vertices, viewport, 0.0, 0.0, pickaxe(30));
+        assert_eq!(tool_vertices.len(), 12, "耐久条背景 + 填充");
+
+        let mut broken_vertices = Vec::new();
+        push_slot_durability(&mut broken_vertices, viewport, 0.0, 0.0, pickaxe(0));
+        assert_eq!(broken_vertices.len(), 6, "损坏工具只绘制警示背景，没有填充");
+    }
+
+    #[test]
+    fn durability_color_warns_at_low_and_medium_levels() {
+        assert_eq!(durability_color(1.0), DURABILITY_HIGH);
+        assert_eq!(durability_color(0.6), DURABILITY_HIGH);
+        assert_eq!(durability_color(0.4), DURABILITY_MID);
+        assert_eq!(durability_color(0.2), DURABILITY_LOW);
+        assert_eq!(durability_color(0.0), DURABILITY_LOW);
+    }
+
+    #[test]
+    fn the_selected_tool_shows_its_name_and_broken_state() {
+        let mut slots = [None; HOTBAR_SLOTS];
+        slots[0] = Some(pickaxe(60));
+        let mut vertices = Vec::new();
+        HudModel {
+            slots,
+            ..HudModel::default()
+        }
+        .build(&mut vertices, 1280.0, 720.0);
+
+        let mut empty_vertices = Vec::new();
+        HudModel::default().build(&mut empty_vertices, 1280.0, 720.0);
+        assert!(
+            vertices.len() > empty_vertices.len(),
+            "选中工具必须显示名称"
+        );
+
+        let mut broken_slots = [None; HOTBAR_SLOTS];
+        broken_slots[0] = Some(pickaxe(0));
+        let mut broken_vertices = Vec::new();
+        HudModel {
+            slots: broken_slots,
+            ..HudModel::default()
+        }
+        .build(&mut broken_vertices, 1280.0, 720.0);
+        assert!(
+            broken_vertices.len() >= vertices.len(),
+            "损坏状态仍显示名称与警示"
+        );
+    }
+
+    #[test]
+    fn breaking_a_tool_shows_a_warning_notice() {
+        let mut model = HudModel::default();
+        let mut before = Vec::new();
+        model.build(&mut before, 1280.0, 720.0);
+
+        model.show_tool_broken(ItemId::WOODEN_PICKAXE);
+        assert_eq!(
+            model.toast.map(|toast| toast.kind),
+            Some(ToastKind::ToolBroken)
+        );
+        let mut after = Vec::new();
+        model.build(&mut after, 1280.0, 720.0);
+        assert!(after.len() > before.len());
 
         model.update(TOAST_DURATION + 0.1);
         assert!(model.toast.is_none());
