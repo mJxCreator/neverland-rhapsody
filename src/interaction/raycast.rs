@@ -30,9 +30,9 @@ pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) 
     ];
     let (step, mut next, delta) = axis_steps(origin, direction, voxel)?;
 
-    // 视线起点位于实体方块内部时不选中任何方块，避免射线穿过实体后选到后方方块。
+    // 视线起点位于可选中方块内部时不选中任何方块，避免射线穿过实体后选到后方方块。
     if world.contains(voxel[0], voxel[1], voxel[2])
-        && world.block_at(voxel[0], voxel[1], voxel[2]).is_solid()
+        && world.block_at(voxel[0], voxel[1], voxel[2]).is_selectable()
     {
         return None;
     }
@@ -64,7 +64,7 @@ pub fn raycast(world: &World, origin: Vec3, direction: Vec3, max_distance: f32) 
         };
 
         let (x, y, z) = (voxel[0], voxel[1], voxel[2]);
-        if world.contains(x, y, z) && world.block_at(x, y, z).is_solid() {
+        if world.contains(x, y, z) && world.block_at(x, y, z).is_selectable() {
             return Some(RayHit {
                 block: IVec3::new(x, y, z),
                 face,

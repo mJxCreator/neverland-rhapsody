@@ -1,4 +1,4 @@
-//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制区块网格与选中线框。
+//! wgpu 渲染器：初始化 GPU 资源并逐帧绘制区块网格、破坏粒子、选中线框与 HUD。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,9 +11,11 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use super::camera::Camera;
+use super::hud::{HudModel, HudVertex};
+use super::particles::ParticleSystem;
 use super::pipeline::{self, DEPTH_FORMAT};
-use crate::mesh::{build_chunk_mesh, ChunkMesh};
-use crate::world::{ChunkPos, World};
+use crate::mesh::{build_chunk_mesh, ChunkMesh, Vertex};
+use crate::world::{Block, ChunkPos, World};
 
 /// 天空清屏色。
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -48,6 +50,11 @@ const SELECTION_VERTEX_COUNT: u32 = (SELECTION_EDGE_COUNT * 2) as u32;
 /// 线框相对方块表面的外扩量，避免与方块面共面导致闪烁。
 const SELECTION_EXPAND: f32 = 0.003;
 
+/// HUD 动态顶点缓冲容量；正常布局约 200 个顶点，保留充足余量。
+const HUD_VERTEX_CAPACITY: usize = 1024;
+/// 破坏粒子动态顶点缓冲容量（约 100 个碎块）。
+const PARTICLE_VERTEX_CAPACITY: usize = 4096;
+
 /// 单帧渲染结果，决定上层如何继续。
 pub enum RenderOutcome {
     /// 已提交并呈现。
@@ -78,6 +85,13 @@ pub struct Renderer {
     selection_pipeline: wgpu::RenderPipeline,
     selection_buffer: wgpu::Buffer,
     selection: Option<IVec3>,
+    hud_pipeline: wgpu::RenderPipeline,
+    hud_buffer: wgpu::Buffer,
+    hud_model: HudModel,
+    hud_vertices: Vec<HudVertex>,
+    particle_buffer: wgpu::Buffer,
+    particles: ParticleSystem,
+    particle_vertices: Vec<Vertex>,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -141,6 +155,19 @@ impl Renderer {
         let pipeline = pipeline::create_pipeline(&device, config.format, &bind_group_layout);
         let selection_pipeline =
             pipeline::create_selection_pipeline(&device, config.format, &bind_group_layout);
+        let hud_pipeline = pipeline::create_hud_pipeline(&device, config.format);
+        let hud_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hud vertices"),
+            size: (HUD_VERTEX_CAPACITY * std::mem::size_of::<HudVertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle vertices"),
+            size: (PARTICLE_VERTEX_CAPACITY * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let selection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("selection vertices"),
             size: (SELECTION_VERTEX_COUNT as usize * std::mem::size_of::<[f32; 3]>())
@@ -178,6 +205,13 @@ impl Renderer {
             selection_pipeline,
             selection_buffer,
             selection: None,
+            hud_pipeline,
+            hud_buffer,
+            hud_model: HudModel::default(),
+            hud_vertices: Vec::with_capacity(HUD_VERTEX_CAPACITY),
+            particle_buffer,
+            particles: ParticleSystem::new(),
+            particle_vertices: Vec::with_capacity(PARTICLE_VERTEX_CAPACITY),
             chunks,
             uniform_buffer,
             bind_group,
@@ -217,6 +251,21 @@ impl Renderer {
     /// 更新准星选中的方块，`None` 表示当前没有可高亮的方块。
     pub fn set_selection(&mut self, block: Option<IVec3>) {
         self.selection = block;
+    }
+
+    /// 上层每帧写入 HUD 状态（快捷栏选择、挖掘进度等）。
+    pub fn hud_mut(&mut self) -> &mut HudModel {
+        &mut self.hud_model
+    }
+
+    /// 在指定方块位置生成破坏碎块。
+    pub fn spawn_block_particles(&mut self, block: Block, block_pos: IVec3) {
+        self.particles.spawn_block(block, block_pos);
+    }
+
+    /// 推进破坏粒子的生命周期。
+    pub fn update_particles(&mut self, delta_secs: f32) {
+        self.particles.update(delta_secs);
     }
 
     /// 方块被修改后，重建受影响区块的网格并替换对应的 GPU 缓冲。
@@ -267,6 +316,30 @@ impl Renderer {
                 &self.selection_buffer,
                 0,
                 bytemuck::cast_slice(&selection_vertices(block)),
+            );
+        }
+
+        self.particles.build_vertices(&mut self.particle_vertices);
+        let particle_count = self.particle_vertices.len().min(PARTICLE_VERTEX_CAPACITY) as u32;
+        if particle_count > 0 {
+            self.queue.write_buffer(
+                &self.particle_buffer,
+                0,
+                bytemuck::cast_slice(&self.particle_vertices[..particle_count as usize]),
+            );
+        }
+
+        self.hud_model.build(
+            &mut self.hud_vertices,
+            self.config.width as f32,
+            self.config.height as f32,
+        );
+        let hud_count = self.hud_vertices.len().min(HUD_VERTEX_CAPACITY) as u32;
+        if hud_count > 0 {
+            self.queue.write_buffer(
+                &self.hud_buffer,
+                0,
+                bytemuck::cast_slice(&self.hud_vertices[..hud_count as usize]),
             );
         }
 
@@ -327,11 +400,24 @@ impl Renderer {
                 render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
 
+            if particle_count > 0 {
+                render_pass.set_pipeline(&self.pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.particle_buffer.slice(..));
+                render_pass.draw(0..particle_count, 0..1);
+            }
+
             if self.selection.is_some() {
                 render_pass.set_pipeline(&self.selection_pipeline);
                 render_pass.set_bind_group(0, &self.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.selection_buffer.slice(..));
                 render_pass.draw(0..SELECTION_VERTEX_COUNT, 0..1);
+            }
+
+            if hud_count > 0 {
+                render_pass.set_pipeline(&self.hud_pipeline);
+                render_pass.set_vertex_buffer(0, self.hud_buffer.slice(..));
+                render_pass.draw(0..hud_count, 0..1);
             }
         }
 

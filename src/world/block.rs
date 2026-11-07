@@ -2,6 +2,8 @@
 
 use glam::Vec3;
 
+use super::block_registry::{self, BlockProperties};
+
 /// 方块面的朝向。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
@@ -59,23 +61,49 @@ pub enum Block {
 }
 
 impl Block {
-    /// 是否为可渲染的实体方块。
+    /// 稳定的方块 ID，与存档数据和属性注册表共用。
+    pub fn id(self) -> u8 {
+        self as u8
+    }
+
+    /// 统一的方块属性；所有模块都应通过该接口查询，而不是各自维护条件判断。
+    pub fn properties(self) -> &'static BlockProperties {
+        block_registry::properties(self)
+    }
+
+    /// 是否为具有实体碰撞的方块。
     pub fn is_solid(self) -> bool {
-        !matches!(self, Block::Air)
+        self.properties().solid
+    }
+
+    /// 是否允许被破坏（挖掘）。
+    pub fn is_breakable(self) -> bool {
+        self.properties().breakable
+    }
+
+    /// 是否允许作为放置方块。
+    pub fn is_placeable(self) -> bool {
+        self.properties().placeable
+    }
+
+    /// 是否允许被准星射线选中。
+    pub fn is_selectable(self) -> bool {
+        self.properties().selectable
+    }
+
+    /// 挖掘所需时间（秒）；不可挖掘方块返回 0。
+    pub fn mining_time(self, seconds_per_hardness: f32) -> f32 {
+        let properties = self.properties();
+        if properties.breakable {
+            properties.hardness * seconds_per_hardness
+        } else {
+            0.0
+        }
     }
 
     /// 该方块某个面的基础颜色（未叠加朝向明暗）。
     pub fn face_color(self, face: Face) -> Vec3 {
-        match self {
-            Block::Air => Vec3::ZERO,
-            Block::Stone => Vec3::new(0.55, 0.55, 0.58),
-            Block::Dirt => Vec3::new(0.45, 0.33, 0.22),
-            Block::Grass => match face {
-                Face::PosY => Vec3::new(0.35, 0.62, 0.32),
-                Face::NegY => Vec3::new(0.45, 0.33, 0.22),
-                _ => Vec3::new(0.42, 0.47, 0.24),
-            },
-        }
+        self.properties().face_color(face)
     }
 }
 

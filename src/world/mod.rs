@@ -1,6 +1,7 @@
-//! 世界层：方块类型、区块数据、程序化地形、动态世界容器与区块生命周期管理。
+//! 世界层：方块类型与属性、区块数据、程序化地形、动态世界容器与区块生命周期管理。
 
 pub mod block;
+pub mod block_registry;
 pub mod chunk;
 pub mod chunk_manager;
 pub mod terrain;

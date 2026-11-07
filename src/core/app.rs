@@ -3,17 +3,22 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use glam::IVec3;
 use tracing::{debug, error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
-use crate::interaction::raycast::{placement_target, raycast, RayHit};
+use crate::interaction::{
+    placement_cell, raycast, Hotbar, MiningOutcome, MiningState, MiningTarget, RayHit,
+};
 use crate::player::{PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController};
 use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
@@ -23,8 +28,6 @@ use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 /// 准星射线长度：超出该距离的方块不会被选中。
 const SELECTION_REACH: f32 = 8.0;
-/// 右键放置的方块类型。
-const PLACE_BLOCK: Block = Block::Grass;
 /// 存档写入失败后的重试间隔，避免每帧都重复写盘。
 const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -39,6 +42,12 @@ pub struct App {
     controller: PlayerController,
     player: Player,
     physics: PhysicsSystem,
+    /// 持续挖掘状态：绑定当前目标方块与累计时间。
+    mining: MiningState,
+    /// 左键是否仍按住。
+    mining_held: bool,
+    /// 方块快捷栏选择，决定右键放置的方块类型。
+    hotbar: Hotbar,
     /// 上一帧实际执行的物理步数，用于调试日志。
     physics_steps: u32,
     cursor_grabbed: bool,
@@ -72,6 +81,9 @@ impl App {
             controller: PlayerController::new(),
             player,
             physics,
+            mining: MiningState::new(),
+            mining_held: false,
+            hotbar: Hotbar::new(),
             physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
@@ -177,6 +189,8 @@ impl App {
             window.set_cursor_visible(true);
         }
         self.cursor_grabbed = false;
+        self.mining_held = false;
+        self.mining.cancel();
         self.controller.reset();
     }
 
@@ -192,54 +206,67 @@ impl App {
         )
     }
 
-    /// 左键破坏：把准星选中的方块变成空气。
-    fn break_block(&mut self) {
-        let Some(hit) = self.targeted_block() else {
-            return;
-        };
-        let affected = self
-            .world
-            .set_block(hit.block.x, hit.block.y, hit.block.z, Block::Air);
-        if !affected.is_empty() {
-            info!(block = ?hit.block, "方块已破坏");
-            self.remember_edit(BlockEdit {
-                x: hit.block.x,
-                y: hit.block.y,
-                z: hit.block.z,
-                block: Block::Air,
-            });
+    /// 当前命中方块对应的挖掘目标；空气不可挖掘，因此无需进入状态机。
+    fn mining_target(&self, hit: Option<RayHit>) -> Option<MiningTarget> {
+        let hit = hit?;
+        let block_type = self.world.block_at(hit.block.x, hit.block.y, hit.block.z);
+        if block_type == Block::Air {
+            return None;
         }
-        self.rebuild_chunks(affected);
+        Some(MiningTarget {
+            block: hit.block,
+            block_type,
+        })
     }
 
-    /// 右键放置：在命中面外侧的空格放下一块草方块。
+    /// 破坏指定方块：写世界、存存档、重建网格并生成碎块。
+    fn break_block(&mut self, block: IVec3, block_type: Block) {
+        let affected = self.world.set_block(block.x, block.y, block.z, Block::Air);
+        if affected.is_empty() {
+            return;
+        }
+
+        info!(block = ?block, block_type = ?block_type, "方块已破坏");
+        self.remember_edit(BlockEdit {
+            x: block.x,
+            y: block.y,
+            z: block.z,
+            block: Block::Air,
+        });
+        self.rebuild_chunks(affected);
+        self.mining.cancel();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.spawn_block_particles(block_type, block);
+            renderer.set_selection(None);
+        }
+    }
+
+    /// 右键放置：在命中面外侧的空格放下快捷栏当前选中的方块。
     fn place_block(&mut self) {
         let Some(hit) = self.targeted_block() else {
             return;
         };
-        let target = placement_target(&hit);
-        if !self.world.contains(target.x, target.y, target.z) {
+        let block = self.hotbar.selected_block();
+        let target = match placement_cell(&self.world, &hit, &self.player, block) {
+            Ok(target) => target,
+            Err(reason) => {
+                debug!(?reason, hit = ?hit.block, "方块放置被拒绝");
+                return;
+            }
+        };
+
+        let affected = self.world.set_block(target.x, target.y, target.z, block);
+        if affected.is_empty() {
             return;
         }
-        if self.world.block_at(target.x, target.y, target.z).is_solid() {
-            return;
-        }
-        // 方块不能放进玩家自身碰撞体，避免角色被生成在方块内部。
-        if self.player.intersects_block(target) {
-            return;
-        }
-        let affected = self
-            .world
-            .set_block(target.x, target.y, target.z, PLACE_BLOCK);
-        if !affected.is_empty() {
-            info!(block = ?target, "方块已放置");
-            self.remember_edit(BlockEdit {
-                x: target.x,
-                y: target.y,
-                z: target.z,
-                block: PLACE_BLOCK,
-            });
-        }
+
+        info!(block = ?target, block_type = ?block, "方块已放置");
+        self.remember_edit(BlockEdit {
+            x: target.x,
+            y: target.y,
+            z: target.z,
+            block,
+        });
         self.rebuild_chunks(affected);
     }
 
@@ -353,8 +380,27 @@ impl App {
         self.stream_chunks();
 
         let hit = self.targeted_block();
+        let mining_target = self.mining_target(hit);
+        let delta_secs = delta.as_secs_f32();
+        let outcome = self
+            .mining
+            .update(self.mining_held, mining_target, delta_secs);
+
+        let mut selection = hit.map(|hit| hit.block);
+        if let MiningOutcome::Completed { block } = outcome {
+            let block_type = self.world.block_at(block.x, block.y, block.z);
+            self.break_block(block, block_type);
+            // 方块已变成空气，本帧不应再高亮旧目标。
+            selection = None;
+        }
+
+        let slots = *self.hotbar.slots();
+        let selected_slot = self.hotbar.selected_index();
+        let progress = self.mining.progress();
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_selection(hit.map(|hit| hit.block));
+            renderer.set_selection(selection);
+            renderer.hud_mut().set(selected_slot, slots, progress);
+            renderer.update_particles(delta_secs);
         }
 
         let outcome = match self.renderer.as_mut() {
@@ -375,6 +421,18 @@ impl App {
                 event_loop.exit();
             }
         }
+    }
+}
+
+/// 数字键 1-5 对应的快捷栏槽位；其他按键返回 `None`。
+fn hotbar_slot_for_key(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::Digit1 => Some(0),
+        KeyCode::Digit2 => Some(1),
+        KeyCode::Digit3 => Some(2),
+        KeyCode::Digit4 => Some(3),
+        KeyCode::Digit5 => Some(4),
+        _ => None,
     }
 }
 
@@ -418,25 +476,43 @@ impl ApplicationHandler for App {
                 if !self.cursor_grabbed {
                     return;
                 }
+                if let Some(slot) = hotbar_slot_for_key(code) {
+                    if pressed {
+                        self.hotbar.select_slot(slot);
+                    }
+                    return;
+                }
                 self.controller.handle_key(code, pressed);
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 if !self.cursor_grabbed {
                     // 首次点击只用于捕获鼠标，避免误触挖掘。
-                    if button == MouseButton::Left {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
                         self.grab_cursor();
                     }
                     return;
                 }
-                match button {
-                    MouseButton::Left => self.break_block(),
-                    MouseButton::Right => self.place_block(),
+                match (button, state) {
+                    // 左键按住持续挖掘，松开立即中断并清空进度。
+                    (MouseButton::Left, ElementState::Pressed) => self.mining_held = true,
+                    (MouseButton::Left, ElementState::Released) => {
+                        self.mining_held = false;
+                        self.mining.cancel();
+                    }
+                    // 右键只在按下瞬间放置一块，避免长按连续刷方块。
+                    (MouseButton::Right, ElementState::Pressed) => self.place_block(),
                     _ => {}
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if !self.cursor_grabbed {
+                    return;
+                }
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(position) => position.y as f32,
+                };
+                self.hotbar.scroll(amount);
             }
             WindowEvent::Focused(false) => {
                 if self.cursor_grabbed {
@@ -487,6 +563,12 @@ impl ApplicationHandler for App {
                         pending_meshes = self.chunk_manager.pending_mesh(),
                         generation_ms = self.generation_ms,
                         mesh_ms = self.mesh_ms,
+                        selected_block = ?self.hotbar.selected_block(),
+                        mining_active = self.mining.is_mining(),
+                        mining_target = ?self.mining.target(),
+                        mining_progress = self.mining.progress(),
+                        mining_elapsed = self.mining.elapsed_time(),
+                        mining_required = self.mining.required_time(),
                         "帧率统计"
                     );
                 }
