@@ -136,8 +136,43 @@ pub fn upload_texture(
     image: &AtlasImage,
     label: &str,
 ) -> GpuTexture {
-    let width = image.width.max(1);
-    let height = image.height.max(1);
+    upload_rgba8(
+        device,
+        queue,
+        image.width,
+        image.height,
+        &image.pixels,
+        label,
+    )
+}
+
+/// 上传一张模型纹理（任意尺寸的 RGBA8 像素），并创建最近邻采样器。
+pub fn upload_texture_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &super::types::TextureImage,
+    label: &str,
+) -> GpuTexture {
+    upload_rgba8(
+        device,
+        queue,
+        image.width,
+        image.height,
+        &image.pixels,
+        label,
+    )
+}
+
+fn upload_rgba8(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    label: &str,
+) -> GpuTexture {
+    let width = width.max(1);
+    let height = height.max(1);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -160,7 +195,7 @@ pub fn upload_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &image.pixels,
+        pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(4 * width),

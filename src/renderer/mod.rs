@@ -4,6 +4,7 @@
 //! 共享的动态顶点缓冲并调用 HUD 管线，不重复实现界面逻辑。
 
 pub mod camera;
+pub mod model;
 pub mod particles;
 pub mod pipeline;
 // 需求文档约定渲染主体位于 renderer/renderer.rs，保留同名子模块。

@@ -1,5 +1,6 @@
 //! 应用主体：窗口创建与主循环。
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,8 +19,8 @@ use super::config::AppConfig;
 use super::time::FrameTimer;
 use crate::entity::{
     entity_collision, entity_registry, entity_render, AiConfig, DamageResult, EntityId,
-    EntityManager, EntityPhysicsConfig, EntityPhysicsSystem, EntityRenderConfig, SpawnConfig,
-    Spawner,
+    EntityManager, EntityModelConfig, EntityModelSet, EntityPhysicsConfig, EntityPhysicsSystem,
+    EntityRenderConfig, SpawnConfig, Spawner,
 };
 use crate::interaction::{
     drops_for_harvest, placement_cell, primary_use, raycast, secondary_use, HarvestTool, Hotbar,
@@ -29,6 +30,7 @@ use crate::item::{
     collect_pickups, crafting, recipe_registry, tool, DroppedItemConfig, DroppedItemStore,
     Inventory, ItemId, ItemStack, RecipeCategory, RecipeId, Wear, HOTBAR_OFFSET,
 };
+use crate::model::{builtin, ModelDraw, ModelRegistry};
 use crate::player::{
     damage, find_respawn_position, Damage, DamageOutcome, DamageSource, PhysicsConfig,
     PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival,
@@ -93,6 +95,10 @@ pub struct App {
     ai_config: AiConfig,
     /// 生物渲染参数。
     entity_render_config: EntityRenderConfig,
+    /// 模型资源注册表：磁盘 GLB 优先，缺失时使用内置模型。
+    models: ModelRegistry,
+    /// 生物与模型实例的桥接状态。
+    entity_models: EntityModelSet,
     /// 上一帧实际执行的物理步数，用于调试日志。
     physics_steps: u32,
     cursor_grabbed: bool,
@@ -149,6 +155,20 @@ impl App {
             "纹理资源已装配"
         );
         let texture_watcher = TextureWatcher::new(&asset_root);
+        // 模型目录中的 GLB 优先；缺失或损坏时由内置猪/牛保证正式 3D 外观。
+        let models_dir = Path::new(&asset_root).join("models");
+        let mut models = ModelRegistry::load_from_dir(&models_dir);
+        models.register_builtin("pig", builtin::pig());
+        models.register_builtin("cow", builtin::cow());
+        for error in models.errors() {
+            warn!(error = %error, "模型文件加载失败");
+        }
+        info!(
+            dir = %models_dir.display(),
+            models = %models.summary(),
+            "模型资源已装配"
+        );
+        let entity_models = EntityModelSet::new(&models, EntityModelConfig::default());
         let mut ui = UiManager::new();
         ui.set_ui_textures(&textures.ui_textures);
         let mut hotbar = Hotbar::new();
@@ -184,6 +204,8 @@ impl App {
             spawner: Spawner::new(SpawnConfig::default(), spawn_seed),
             ai_config: AiConfig::default(),
             entity_render_config: EntityRenderConfig::default(),
+            models,
+            entity_models,
             physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
@@ -265,7 +287,8 @@ impl App {
                     self.player.pitch(),
                     self.textures.clone(),
                 ) {
-                    Ok(renderer) => {
+                    Ok(mut renderer) => {
+                        renderer.upload_models(&self.models);
                         info!("渲染器已初始化");
                         self.renderer = Some(renderer);
                     }
@@ -948,6 +971,10 @@ impl App {
             }
         }
 
+        // 新生成的生物也要在本帧立即获得模型实例与待机姿态。
+        self.entity_models
+            .update(self.entities.creatures(), &self.models, delta_secs);
+
         // 掉落物物理与自动拾取；拾取后立即同步玩家背包与所属区块存档。
         self.dropped
             .update(delta_secs, &self.world, &self.drop_config);
@@ -1029,6 +1056,17 @@ impl App {
                 .build_vertices(renderer.drop_vertices_mut(), &self.textures.item_textures);
             let view_proj = renderer.camera().view_proj();
             let camera_position = renderer.camera().position();
+            let mut model_draws: Vec<ModelDraw> = Vec::new();
+            self.entity_models.build_draws(
+                self.entities.creatures(),
+                &self.models,
+                self.entity_physics.alpha(),
+                view_proj,
+                camera_position,
+                &mut model_draws,
+            );
+            renderer.set_model_draws(model_draws);
+            let modeled = self.entity_models.modeled_types().to_vec();
             let entity_vertices = renderer.entity_vertices_mut();
             entity_vertices.clear();
             entity_render::build_vertices(
@@ -1037,6 +1075,7 @@ impl App {
                 view_proj,
                 camera_position,
                 &self.entity_render_config,
+                &modeled,
                 entity_vertices,
             );
             let viewport = renderer.viewport();

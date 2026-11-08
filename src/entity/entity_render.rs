@@ -6,6 +6,7 @@
 use glam::{Mat4, Vec3};
 
 use super::creature::Creature;
+use super::entity::EntityTypeId;
 use super::entity_registry::{definition, CreatureModel, EntityDefinition};
 use crate::mesh::Vertex;
 
@@ -25,16 +26,22 @@ impl Default for EntityRenderConfig {
 }
 
 /// 为所有可见生物追加顶点；`out` 由调用方负责清空。
+///
+/// `modeled` 中的实体类型已由正式 3D 模型渲染，这里只作为资源缺失时的回退。
 pub fn build_vertices(
     creatures: &[Creature],
     alpha: f32,
     view_proj: Mat4,
     camera_position: Vec3,
     config: &EntityRenderConfig,
+    modeled: &[EntityTypeId],
     out: &mut Vec<Vertex>,
 ) {
     let alpha = alpha.clamp(0.0, 1.0);
     for creature in creatures.iter().filter(|creature| creature.is_alive()) {
+        if modeled.contains(&creature.kind()) {
+            continue;
+        }
         let definition = match definition(creature.kind()) {
             Some(definition) => definition,
             None => continue,
@@ -320,6 +327,7 @@ mod tests {
             Mat4::IDENTITY,
             Vec3::new(0.0, 0.0, -10.0),
             &EntityRenderConfig::default(),
+            &[],
             &mut out,
         );
         out
@@ -343,6 +351,22 @@ mod tests {
     }
 
     #[test]
+    fn model_backed_types_skip_box_fallback() {
+        let creatures = [creature(EntityTypeId::PIG, Vec3::ZERO)];
+        let mut out = Vec::new();
+        build_vertices(
+            &creatures,
+            1.0,
+            Mat4::IDENTITY,
+            Vec3::new(0.0, 0.0, -10.0),
+            &EntityRenderConfig::default(),
+            &[EntityTypeId::PIG],
+            &mut out,
+        );
+        assert!(out.is_empty(), "已由正式模型渲染的实体不应再产生盒状顶点");
+    }
+
+    #[test]
     fn distant_creatures_are_culled_by_range() {
         let far = creature(EntityTypeId::PIG, Vec3::new(0.0, 0.0, 200.0));
         assert!(build(&[far]).is_empty());
@@ -357,6 +381,7 @@ mod tests {
             Mat4::from_translation(Vec3::new(-5.0, -10.0, 0.0)),
             Vec3::new(5.0, 10.0, -10.0),
             &EntityRenderConfig::default(),
+            &[],
             &mut vertices,
         );
         assert!(!vertices.is_empty());

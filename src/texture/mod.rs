@@ -23,7 +23,7 @@ pub mod ui_texture;
 pub use self::block_texture::BlockTextureMap;
 pub use self::gpu_texture::{
     create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
-    upload_atlas, upload_texture, GpuAtlasTexture, GpuTexture,
+    upload_atlas, upload_texture, upload_texture_image, GpuAtlasTexture, GpuTexture,
 };
 pub use self::item_texture::ItemTextureMap;
 pub use self::texture_assets::{TextureAssets, DEFAULT_ASSET_ROOT};

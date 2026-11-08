@@ -11,9 +11,11 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use super::camera::Camera;
+use super::model::ModelRenderer;
 use super::particles::ParticleSystem;
 use super::pipeline::{self, DEPTH_FORMAT};
 use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, Vertex};
+use crate::model::{ModelDraw, ModelRegistry};
 use crate::texture::{
     create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
     upload_atlas, upload_texture, BlockTextureMap, GpuAtlasTexture, GpuTexture, TextureAssets,
@@ -117,6 +119,8 @@ pub struct Renderer {
     drop_vertices: Vec<BlockVertex>,
     entity_buffer: wgpu::Buffer,
     entity_vertices: Vec<Vertex>,
+    /// 模型资源：纹理、静态网格缓存、蒙皮顶点与实例矩阵。
+    model: ModelRenderer,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -267,6 +271,7 @@ impl Renderer {
         let camera = Camera::new(eye_position, yaw, pitch, width as f32 / height as f32);
         let mut hud_model = HudModel::default();
         hud_model.set_ui_textures(textures.ui_textures.clone());
+        let model = ModelRenderer::new(&device, &queue, config.format, &bind_group_layout);
 
         Ok(Self {
             surface,
@@ -299,6 +304,7 @@ impl Renderer {
             drop_vertices: Vec::with_capacity(DROP_VERTEX_CAPACITY),
             entity_buffer,
             entity_vertices: Vec::with_capacity(ENTITY_VERTEX_CAPACITY),
+            model,
             chunks,
             uniform_buffer,
             bind_group,
@@ -358,6 +364,20 @@ impl Renderer {
     /// 供上层直接复用的生物顶点缓冲。
     pub fn entity_vertices_mut(&mut self) -> &mut Vec<Vertex> {
         &mut self.entity_vertices
+    }
+
+    /// 上传注册表中的全部模型资源（纹理与静态网格缓冲）。
+    pub fn upload_models(&mut self, registry: &ModelRegistry) {
+        for (id, asset) in registry.assets() {
+            self.model
+                .upload_model(&self.device, &self.queue, id, asset);
+        }
+        info!(models = registry.len(), "模型 GPU 资源已上传");
+    }
+
+    /// 提交本帧模型绘制批次。
+    pub fn set_model_draws(&mut self, draws: Vec<ModelDraw>) {
+        self.model.set_draws(draws);
     }
 
     /// 当前视口尺寸（像素）。
@@ -506,6 +526,9 @@ impl Renderer {
             );
         }
 
+        // 模型实例矩阵与蒙皮顶点必须在编码绘制命令前写入。
+        self.model.prepare(&self.device, &self.queue);
+
         self.hud_model.build(
             &mut self.hud_vertices,
             self.config.width as f32,
@@ -599,6 +622,9 @@ impl Renderer {
                 render_pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 render_pass.draw(0..entity_count, 0..1);
             }
+
+            // 正式 3D 生物模型：静态网格与蒙皮顶点共用同一批管线。
+            self.model.draw(&mut render_pass, &self.bind_group);
 
             if self.selection.is_some() {
                 render_pass.set_pipeline(&self.selection_pipeline);

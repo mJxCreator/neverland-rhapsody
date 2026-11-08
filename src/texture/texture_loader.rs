@@ -45,6 +45,17 @@ pub const fn is_supported_ui_texture_size(width: u32, height: u32) -> bool {
     width >= 1 && height >= 1 && width <= MAX_UI_TEXTURE_SIZE && height <= MAX_UI_TEXTURE_SIZE
 }
 
+/// 模型纹理允许的最大单边边长；模型 UV 纹理可以是任意尺寸。
+pub const MAX_MODEL_TEXTURE_SIZE: u32 = 4096;
+
+/// 模型纹理尺寸说明，用于错误提示。
+pub const SUPPORTED_MODEL_SIZES_TEXT: &str = "1–4096 像素（宽高可不同）";
+
+/// 模型纹理尺寸校验：任意正整数宽高，只要不超过 [`MAX_MODEL_TEXTURE_SIZE`]。
+pub const fn is_supported_model_texture_size(width: u32, height: u32) -> bool {
+    width >= 1 && height >= 1 && width <= MAX_MODEL_TEXTURE_SIZE && height <= MAX_MODEL_TEXTURE_SIZE
+}
+
 /// 纹理加载失败的具体原因；每条错误都携带可定位的资源路径。
 #[derive(Debug)]
 pub enum TextureLoadError {
@@ -125,8 +136,27 @@ fn load_texture_png_with(
         path: path.to_path_buf(),
         message: error.to_string(),
     })?;
+    decode_png_reader(file, path, supported, requirement)
+}
 
-    let mut decoder = png::Decoder::new(file);
+/// 解码模型内嵌或外部引用的 PNG 字节；允许 1–4096 像素的任意尺寸。
+pub fn decode_png_bytes(bytes: &[u8], name: &str) -> Result<TextureImage, TextureLoadError> {
+    let path = PathBuf::from(format!("<embedded:{name}>"));
+    decode_png_reader(
+        std::io::Cursor::new(bytes),
+        &path,
+        is_supported_model_texture_size,
+        SUPPORTED_MODEL_SIZES_TEXT,
+    )
+}
+
+fn decode_png_reader<R: std::io::Read>(
+    source: R,
+    path: &Path,
+    supported: fn(u32, u32) -> bool,
+    requirement: &'static str,
+) -> Result<TextureImage, TextureLoadError> {
+    let mut decoder = png::Decoder::new(source);
     // 展开调色板、低位深灰度与 tRNS 透明块，统一得到 8 位通道数据。
     decoder.set_transformations(png::Transformations::EXPAND);
 
