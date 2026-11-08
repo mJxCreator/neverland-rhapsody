@@ -37,6 +37,7 @@ use crate::renderer::{
     spawn_pose, ClickButton, CraftingUi, DeathAction, DeathUi, InventoryUi, RenderOutcome, Renderer,
 };
 use crate::save::{BlockEdit, WorldSave};
+use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
 use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
 
 /// 目标帧间隔，约 60 FPS。
@@ -49,6 +50,10 @@ const ENTITY_REACH: f32 = 4.0;
 const CREATURE_TEST_DAMAGE: u32 = 3;
 /// 存档写入失败后的重试间隔，避免每帧都重复写盘。
 const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+/// 纹理热重载轮询间隔；开发期修改 PNG 后约 1 秒内生效。
+const TEXTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// 纹理资源根目录环境变量；未设置时使用 `assets`。
+const ASSET_ROOT_ENV: &str = "NEVERLAND_ASSET_ROOT";
 
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
@@ -104,6 +109,14 @@ pub struct App {
     mesh_ms: f64,
     /// 下一次允许重试写入存档的时刻。
     next_save_retry: Instant,
+    /// 当前纹理资源；HUD 与后续背包 UI 可通过它查询物品图标。
+    textures: Arc<TextureAssets>,
+    /// 纹理资源根目录，热重载时重新装配使用。
+    asset_root: String,
+    /// 开发期纹理文件监听器。
+    texture_watcher: TextureWatcher,
+    /// 下一次纹理轮询时刻。
+    next_texture_poll: Instant,
 }
 
 impl App {
@@ -126,6 +139,20 @@ impl App {
             .map(Survival::from_saved)
             .unwrap_or_default();
         let spawn_seed = world.seed();
+        let asset_root =
+            std::env::var(ASSET_ROOT_ENV).unwrap_or_else(|_| DEFAULT_ASSET_ROOT.to_string());
+        let textures = Arc::new(TextureAssets::load(&asset_root));
+        let texture_summary = textures.summary();
+        info!(
+            block_textures = texture_summary.block_textures,
+            item_textures = texture_summary.item_textures,
+            placeholders = texture_summary.placeholders,
+            warnings = texture_summary.warnings,
+            errors = texture_summary.errors,
+            root = %asset_root,
+            "纹理资源已装配"
+        );
+        let texture_watcher = TextureWatcher::new(&asset_root);
         let mut hotbar = Hotbar::new();
         hotbar.set_selected(selected_hotbar);
         debug!(
@@ -168,6 +195,10 @@ impl App {
             generation_ms: 0.0,
             mesh_ms: 0.0,
             next_save_retry: Instant::now(),
+            textures,
+            asset_root,
+            texture_watcher,
+            next_texture_poll: Instant::now(),
         }
     }
 
@@ -236,6 +267,7 @@ impl App {
                     self.player.eye_position(),
                     self.player.yaw(),
                     self.player.pitch(),
+                    self.textures.clone(),
                 ) {
                     Ok(renderer) => {
                         info!("渲染器已初始化");
@@ -807,6 +839,34 @@ impl App {
         }
     }
 
+    /// 开发期纹理热重载：轮询文件变化，成功时替换 GPU 图集并重建区块网格。
+    fn poll_texture_reload(&mut self) {
+        let now = Instant::now();
+        if now < self.next_texture_poll {
+            return;
+        }
+        self.next_texture_poll = now + TEXTURE_POLL_INTERVAL;
+        if !self.texture_watcher.poll() {
+            return;
+        }
+
+        let assets = Arc::new(TextureAssets::load(&self.asset_root));
+        if !assets.assets_ok() {
+            warn!(
+                errors = assets.errors.len(),
+                current_placeholders = self.textures.summary().placeholders,
+                "纹理热重载失败，保留上一份有效纹理"
+            );
+            return;
+        }
+
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.reload_textures(assets.clone(), &self.world);
+        }
+        self.textures = assets;
+        info!("纹理资源已热重载");
+    }
+
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
         let delta_secs = delta.as_secs_f32();
         // 视角旋转与物理位移解耦：鼠标视角立即生效，位移走固定步长物理。
@@ -869,6 +929,9 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.camera_mut().set_pose(eye, yaw, pitch);
         }
+
+        // 开发期纹理修改后重新装配资源；失败时保留上一份有效纹理。
+        self.poll_texture_reload();
 
         // 物理移动后先补齐区块，再让射线检测基于最新的已加载世界。
         self.stream_chunks();
@@ -968,7 +1031,8 @@ impl App {
                 .hud_mut()
                 .set(selected_slot, slots, progress, ui_blocking);
             renderer.update_particles(delta_secs);
-            self.dropped.build_vertices(renderer.drop_vertices_mut());
+            self.dropped
+                .build_vertices(renderer.drop_vertices_mut(), &self.textures.item_textures);
             let view_proj = renderer.camera().view_proj();
             let camera_position = renderer.camera().position();
             let entity_vertices = renderer.entity_vertices_mut();
@@ -990,11 +1054,17 @@ impl App {
                     &mut ui_vertices,
                     recipe_registry::all(),
                     &self.inventory,
+                    &self.textures.item_textures,
                     viewport,
                 );
             } else {
-                self.inventory_ui
-                    .build(&mut ui_vertices, &self.inventory, selected_slot, viewport);
+                self.inventory_ui.build(
+                    &mut ui_vertices,
+                    &self.inventory,
+                    selected_slot,
+                    &self.textures.item_textures,
+                    viewport,
+                );
             }
             renderer.set_ui_vertices(ui_vertices);
         }

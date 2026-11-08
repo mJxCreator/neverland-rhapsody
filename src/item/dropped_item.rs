@@ -9,8 +9,9 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use super::item::{ItemId, ItemStack};
-use super::item_registry;
-use crate::mesh::Vertex;
+use crate::mesh::BlockVertex;
+use crate::texture::types::UVRect;
+use crate::texture::ItemTextureMap;
 use crate::world::{ChunkPos, World};
 
 /// 掉落物行为参数；所有时序与半径集中在这里，避免散落在多个模块。
@@ -332,13 +333,15 @@ impl DroppedItemStore {
         restored
     }
 
-    /// 生成掉落物小立方体顶点；带轻微旋转与上下浮动。
-    pub fn build_vertices(&self, out: &mut Vec<Vertex>) {
+    /// 生成掉落物图标精灵顶点；没有图标的物品不产生几何。
+    pub fn build_vertices(&self, out: &mut Vec<BlockVertex>, icons: &ItemTextureMap) {
         out.clear();
         out.reserve(self.items.len() * DROPPED_VERTICES_PER_ITEM);
         for item in self.items() {
-            let color = item_registry::icon_color(item.stack.item());
-            push_item_cube(out, item, color);
+            let Some(icon) = icons.icon(item.stack.item()) else {
+                continue;
+            };
+            push_item_sprite(out, item, icon.uv);
         }
     }
 }
@@ -354,58 +357,32 @@ pub fn chunk_of(position: Vec3) -> ChunkPos {
 
 /// 掉落物渲染的半边长。
 const DROP_RENDER_SIZE: f32 = 0.3;
-/// 每个掉落物的顶点数：6 个面 × 2 个三角形 × 3 个顶点。
-const DROPPED_VERTICES_PER_ITEM: usize = 36;
+/// 每个掉落物的顶点数：一个双三角形精灵。
+const DROPPED_VERTICES_PER_ITEM: usize = 6;
 
-/// 立方体 8 个角点，坐标范围 -0.5..0.5。
-const CUBE_CORNERS: [[f32; 3]; 8] = [
-    [-0.5, -0.5, -0.5],
-    [0.5, -0.5, -0.5],
-    [0.5, -0.5, 0.5],
-    [-0.5, -0.5, 0.5],
-    [-0.5, 0.5, -0.5],
-    [0.5, 0.5, -0.5],
-    [0.5, 0.5, 0.5],
-    [-0.5, 0.5, 0.5],
-];
-
-/// 六个面的角点顺序（外侧逆时针）与基础明暗。
-const CUBE_FACES: [([usize; 4], f32); 6] = [
-    ([2, 1, 5, 6], 0.80),
-    ([0, 3, 7, 4], 0.80),
-    ([7, 6, 5, 4], 1.00),
-    ([0, 1, 2, 3], 0.50),
-    ([3, 2, 6, 7], 0.68),
-    ([1, 0, 4, 5], 0.68),
-];
-
-fn push_item_cube(out: &mut Vec<Vertex>, item: &DroppedItem, color: Vec3) {
+/// 生成一个始终竖直、绕 Y 轴缓慢旋转并上下浮动的图标精灵。
+fn push_item_sprite(out: &mut Vec<BlockVertex>, item: &DroppedItem, uv: UVRect) {
     let (sin, cos) = (item.age * 1.6).sin_cos();
     let bob = (item.age * 2.0).sin() * 0.06;
-    let center = item.position + Vec3::Y * (0.12 + bob);
+    let center = item.position + Vec3::Y * (0.20 + bob);
     let scale = DROP_RENDER_SIZE;
 
-    let corner = |index: usize| {
-        let [x, y, z] = CUBE_CORNERS[index];
-        let x = x * scale;
-        let z = z * scale;
-        center + Vec3::new(x * cos - z * sin, y * scale, x * sin + z * cos)
-    };
-
-    for (face, shade) in CUBE_FACES {
-        let points = [
-            corner(face[0]),
-            corner(face[1]),
-            corner(face[2]),
-            corner(face[3]),
-        ];
-        let shaded = (color * shade).to_array();
-        for index in [0, 1, 2, 0, 2, 3] {
-            out.push(Vertex {
-                position: points[index].to_array(),
-                color: shaded,
-            });
-        }
+    // (局部 x, 局部 y, u, v)：左下、右下、右上、左上；纹理 v 轴向下。
+    let corners = [
+        (-0.5, -0.5, uv.min[0], uv.max[1]),
+        (0.5, -0.5, uv.max[0], uv.max[1]),
+        (0.5, 0.5, uv.max[0], uv.min[1]),
+        (-0.5, 0.5, uv.min[0], uv.min[1]),
+    ];
+    for index in [0, 1, 2, 0, 2, 3] {
+        let (x, y, u, v) = corners[index];
+        let local_x = x * scale;
+        out.push(BlockVertex {
+            position: (center + Vec3::new(local_x * cos, y * scale, local_x * sin)).to_array(),
+            // 图标自带颜色，顶点色只保留中性明暗。
+            color: [1.0, 1.0, 1.0],
+            uv: [u, v],
+        });
     }
 }
 
@@ -490,6 +467,37 @@ mod tests {
     use super::*;
     use crate::world::{Block, Chunk, ChunkPos, DEFAULT_SEED};
 
+    /// 构造包含石头图标的映射，供掉落物几何测试使用。
+    fn stone_icons() -> ItemTextureMap {
+        use crate::texture::item_texture::builtin_manifest;
+        use crate::texture::texture_registry::{TextureRegistry, TextureSeed};
+        use crate::texture::types::{TextureType, Transparency};
+
+        let mut registry = TextureRegistry::new();
+        let id = registry
+            .register(TextureSeed {
+                name: "stone".to_string(),
+                texture_type: TextureType::Item,
+                resource_path: "assets/textures/items/stone.png".to_string(),
+                width: 16,
+                height: 16,
+                transparency: Transparency::Opaque,
+                placeholder: false,
+            })
+            .expect("登记图标纹理");
+        registry
+            .apply_uv(
+                id,
+                UVRect {
+                    min: [0.0, 0.0],
+                    max: [0.25, 0.25],
+                },
+            )
+            .expect("写入 UV");
+        ItemTextureMap::from_manifest(&builtin_manifest(), &registry, id, &mut Vec::new())
+            .expect("构建图标映射")
+    }
+
     fn stone_floor_world() -> World {
         let mut world = World::new(DEFAULT_SEED);
         assert!(world.insert_chunk(Chunk::new(ChunkPos::new(0, 0, 0))));
@@ -518,12 +526,33 @@ mod tests {
 
         assert_eq!(store.len(), 1);
         let mut vertices = Vec::new();
-        store.build_vertices(&mut vertices);
+        store.build_vertices(&mut vertices, &stone_icons());
         assert_eq!(vertices.len(), DROPPED_VERTICES_PER_ITEM);
+        assert!(
+            vertices
+                .iter()
+                .all(|vertex| vertex.uv[0] >= 0.0 && vertex.uv[0] <= 1.0),
+            "掉落物必须使用图标图集 UV"
+        );
         assert_eq!(
             store.take_dirty_chunks(),
             vec![chunk_of(Vec3::new(8.5, 12.0, 8.5))]
         );
+    }
+
+    #[test]
+    fn items_without_an_icon_draw_no_sprite() {
+        let mut store = DroppedItemStore::new();
+        let config = DroppedItemConfig::default();
+        store.spawn(
+            stone_stack(1),
+            Vec3::new(8.5, 12.0, 8.5),
+            Vec3::ZERO,
+            &config,
+        );
+        let mut vertices = Vec::new();
+        store.build_vertices(&mut vertices, &ItemTextureMap::empty());
+        assert!(vertices.is_empty(), "没有图标时不绘制掉落物");
     }
 
     #[test]

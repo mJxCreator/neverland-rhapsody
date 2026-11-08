@@ -3,9 +3,10 @@
 //! UI 只负责展示与命中检测；实际合成由 [`crate::item::crafting`] 执行，
 //! 因此刷新界面不会重复产出物品。
 
-use crate::item::{crafting::CraftError, icon_color, item_name, Inventory, Recipe, RecipeId};
+use crate::item::{crafting::CraftError, item_name, Inventory, Recipe, RecipeId};
 use crate::renderer::font;
-use crate::renderer::hud::{push_quad, HudRect, HudVertex};
+use crate::renderer::hud::{push_item_icon, push_quad, HudRect, HudVertex};
+use crate::texture::ItemTextureMap;
 
 const PANEL_MAX_WIDTH: f32 = 620.0;
 const PANEL_MARGIN: f32 = 20.0;
@@ -137,6 +138,7 @@ impl CraftingUi {
         out: &mut Vec<HudVertex>,
         recipes: &[Recipe],
         inventory: &Inventory,
+        icons: &ItemTextureMap,
         viewport: (f32, f32),
     ) {
         if !self.open {
@@ -185,6 +187,7 @@ impl CraftingUi {
                 row,
                 recipes.get(index),
                 inventory,
+                icons,
                 contains(row, self.cursor),
             );
         }
@@ -257,6 +260,7 @@ fn push_row(
     row: &HudRect,
     recipe: Option<&Recipe>,
     inventory: &Inventory,
+    icons: &ItemTextureMap,
     hovered: bool,
 ) {
     push_quad(out, viewport, *row, if hovered { ROW_HOVER } else { ROW });
@@ -271,10 +275,7 @@ fn push_row(
         width: ICON_SIZE,
         height: ICON_SIZE,
     };
-    push_quad(out, viewport, icon, {
-        let color = icon_color(recipe.output.item());
-        [color.x, color.y, color.z, 0.95]
-    });
+    push_item_icon(out, viewport, icon, recipe.output.item(), icons);
     push_border(out, viewport, icon, PANEL_BORDER, 1.0);
 
     let text_x = icon.x + ICON_SIZE + 10.0;
@@ -456,6 +457,7 @@ mod tests {
             &mut vertices,
             recipe_registry::all(),
             &inventory,
+            &ItemTextureMap::empty(),
             viewport(),
         );
 
@@ -483,12 +485,14 @@ mod tests {
             &mut with_vertices,
             recipe_registry::all(),
             &inventory,
+            &ItemTextureMap::empty(),
             viewport(),
         );
         plain.build(
             &mut plain_vertices,
             recipe_registry::all(),
             &inventory,
+            &ItemTextureMap::empty(),
             viewport(),
         );
         assert!(

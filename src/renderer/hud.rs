@@ -1,18 +1,27 @@
 //! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏、选中工具名称/耐久与提示。
 //!
-//! 全部内容由纯色四边形与内联位图字体组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
+//! 全部内容由四边形与内联位图字体组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
+//! 纯色四边形使用 UV 哨兵，物品图标则按图集 UV 采样 PNG。
 //! 背包打开时隐藏战斗与快捷栏 HUD，使界面焦点完全交给背包面板。
 
 use bytemuck::{Pod, Zeroable};
 
 use super::font;
-use crate::item::{icon_color, item_name, ItemId, ItemStack, HOTBAR_SLOTS};
+use crate::item::{item_name, ItemId, ItemStack, HOTBAR_SLOTS};
+use crate::texture::types::UVRect;
+use crate::texture::ItemTextureMap;
 
-/// 一个 HUD 顶点：裁剪空间坐标与带透明度的颜色。
+/// HUD 顶点使用的 UV 哨兵值：负值表示该顶点不采样纹理，只使用颜色。
+pub(crate) const SOLID_UV: [f32; 2] = [-1.0, -1.0];
+
+/// 一个 HUD 顶点：裁剪空间坐标、图集 UV 与带透明度的颜色。
+///
+/// `uv` 为 [`SOLID_UV`] 时按纯色绘制；否则按物品图集中的子区域采样。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct HudVertex {
     pub position: [f32; 2],
+    pub uv: [f32; 2],
     pub color: [f32; 4],
 }
 
@@ -206,8 +215,8 @@ impl HudModel {
         }
     }
 
-    /// 生成全部 HUD 四边形顶点，写入 `out`。
-    pub fn build(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    /// 生成全部 HUD 四边形顶点，写入 `out`；`icons` 提供物品图标的图集 UV。
+    pub fn build(&self, out: &mut Vec<HudVertex>, width: f32, height: f32, icons: &ItemTextureMap) {
         out.clear();
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
             return;
@@ -217,7 +226,7 @@ impl HudModel {
         }
 
         self.push_health(out, width, height);
-        self.push_hotbar(out, width, height);
+        self.push_hotbar(out, width, height, icons);
         self.push_tool_label(out, width, height);
         self.push_toast(out, width, height);
         self.push_progress(out, width, height);
@@ -307,7 +316,13 @@ impl HudModel {
         );
     }
 
-    fn push_hotbar(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    fn push_hotbar(
+        &self,
+        out: &mut Vec<HudVertex>,
+        width: f32,
+        height: f32,
+        icons: &ItemTextureMap,
+    ) {
         let viewport = (width, height);
         let total = HOTBAR_SLOTS as f32 * SLOT_SIZE + (HOTBAR_SLOTS - 1) as f32 * SLOT_GAP;
         let start_x = (width - total) * 0.5;
@@ -367,8 +382,7 @@ impl HudModel {
             match self.slots[index] {
                 None => push_quad(out, viewport, inner, SLOT_EMPTY),
                 Some(stack) => {
-                    let color = icon_color(stack.item());
-                    push_quad(out, viewport, inner, [color.x, color.y, color.z, 0.95]);
+                    push_item_icon(out, viewport, inner, stack.item(), icons);
                     push_slot_durability(out, viewport, x, y, stack);
                     if stack.count() > 1 {
                         let text = stack.count().to_string();
@@ -670,11 +684,62 @@ pub(crate) struct HudRect {
     pub(crate) height: f32,
 }
 
-/// 把像素坐标的矩形转为两个裁剪空间三角形。
+/// 把像素坐标的矩形转为两个裁剪空间三角形，使用纯色绘制。
 pub(crate) fn push_quad(
     out: &mut Vec<HudVertex>,
     viewport: (f32, f32),
     rect: HudRect,
+    color: [f32; 4],
+) {
+    push_quad_uv(out, viewport, rect, [SOLID_UV; 4], color);
+}
+
+/// 绘制一张物品图集中的图标；没有图标（未配置或显式隐藏）时不产生几何。
+pub(crate) fn push_item_icon(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    item: ItemId,
+    icons: &ItemTextureMap,
+) {
+    let Some(icon) = icons.icon(item) else {
+        return;
+    };
+    push_textured_quad(out, viewport, rect, icon.uv, [1.0, 1.0, 1.0, 1.0]);
+}
+
+/// 按图集 UV 子区域采样绘制矩形；`uv` 为 `min` 左上、`max` 右下。
+pub(crate) fn push_textured_quad(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    uv: UVRect,
+    color: [f32; 4],
+) {
+    if uv.max[0] <= uv.min[0] || uv.max[1] <= uv.min[1] {
+        return;
+    }
+    // 顶点顺序与 push_quad_uv 的四角一致，UV 与位置一一对应；纹理 v 轴向下。
+    push_quad_uv(
+        out,
+        viewport,
+        rect,
+        [
+            [uv.min[0], uv.min[1]],
+            [uv.min[0], uv.max[1]],
+            [uv.max[0], uv.max[1]],
+            [uv.max[0], uv.min[1]],
+        ],
+        color,
+    );
+}
+
+/// 顶点顺序：左上、左下、右下、左上、右下、右上。
+fn push_quad_uv(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    uvs: [[f32; 2]; 4],
     color: [f32; 4],
 ) {
     let (width, height) = viewport;
@@ -687,9 +752,17 @@ pub(crate) fn push_quad(
     let y0 = 1.0 - rect.y / height * 2.0;
     let y1 = 1.0 - (rect.y + rect.height) / height * 2.0;
 
-    for (px, py) in [(x0, y0), (x0, y1), (x1, y1), (x0, y0), (x1, y1), (x1, y0)] {
+    for (px, py, uv) in [
+        (x0, y0, uvs[0]),
+        (x0, y1, uvs[1]),
+        (x1, y1, uvs[2]),
+        (x0, y0, uvs[0]),
+        (x1, y1, uvs[2]),
+        (x1, y0, uvs[3]),
+    ] {
         out.push(HudVertex {
             position: [px, py],
+            uv,
             color,
         });
     }
@@ -709,6 +782,77 @@ mod tests {
             .with_durability(durability)
     }
 
+    /// 构造只包含石头图标的映射，UV 固定为图集中的一个子区域。
+    fn stone_icons() -> ItemTextureMap {
+        use crate::texture::item_texture::builtin_manifest;
+        use crate::texture::texture_registry::{TextureRegistry, TextureSeed};
+        use crate::texture::types::{TextureType, Transparency};
+
+        let mut registry = TextureRegistry::new();
+        let id = registry
+            .register(TextureSeed {
+                name: "stone".to_string(),
+                texture_type: TextureType::Item,
+                resource_path: "assets/textures/items/stone.png".to_string(),
+                width: 16,
+                height: 16,
+                transparency: Transparency::Opaque,
+                placeholder: false,
+            })
+            .expect("登记图标纹理");
+        registry
+            .apply_uv(
+                id,
+                UVRect {
+                    min: [0.25, 0.5],
+                    max: [0.5, 0.75],
+                },
+            )
+            .expect("写入 UV");
+        ItemTextureMap::from_manifest(&builtin_manifest(), &registry, id, &mut Vec::new())
+            .expect("构建图标映射")
+    }
+
+    #[test]
+    fn hotbar_draws_item_icons_with_atlas_uvs() {
+        let mut slots = [None; HOTBAR_SLOTS];
+        slots[0] = Some(stone(1));
+        let mut vertices = Vec::new();
+        HudModel {
+            slots,
+            ..HudModel::default()
+        }
+        .build(&mut vertices, 1280.0, 720.0, &stone_icons());
+
+        let textured: Vec<&HudVertex> = vertices.iter().filter(|v| v.uv[0] >= 0.0).collect();
+        assert!(!textured.is_empty(), "快捷栏必须采样物品图标");
+        // 首个四边形按左上、左下、右下顺序生成，用于校验 UV 未被上下翻转。
+        assert_eq!(textured[0].uv, [0.25, 0.5]);
+        assert_eq!(textured[1].uv, [0.25, 0.75]);
+        assert_eq!(textured[2].uv, [0.5, 0.75]);
+        for vertex in textured {
+            assert!((0.0..=1.0).contains(&vertex.uv[0]));
+            assert!((0.0..=1.0).contains(&vertex.uv[1]));
+        }
+        assert!(
+            vertices.iter().any(|v| v.uv == SOLID_UV),
+            "槽位背景与数量文字仍应使用纯色绘制"
+        );
+    }
+
+    #[test]
+    fn a_slot_without_an_icon_draws_no_textured_geometry() {
+        let mut slots = [None; HOTBAR_SLOTS];
+        slots[0] = Some(stone(1));
+        let mut vertices = Vec::new();
+        HudModel {
+            slots,
+            ..HudModel::default()
+        }
+        .build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
+        assert!(vertices.iter().all(|vertex| vertex.uv == SOLID_UV));
+    }
+
     #[test]
     fn hud_geometry_stays_inside_clip_space() {
         let mut vertices = Vec::new();
@@ -719,7 +863,7 @@ mod tests {
             slots,
             ..HudModel::default()
         };
-        model.build(&mut vertices, 1280.0, 720.0);
+        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
 
         assert!(!vertices.is_empty());
         assert_eq!(vertices.len() % 6, 0, "HUD 顶点必须成三角形对");
@@ -738,8 +882,13 @@ mod tests {
             mining_progress: Some(0.3),
             ..HudModel::default()
         }
-        .build(&mut with_progress, 1280.0, 720.0);
-        HudModel::default().build(&mut without_progress, 1280.0, 720.0);
+        .build(&mut with_progress, 1280.0, 720.0, &ItemTextureMap::empty());
+        HudModel::default().build(
+            &mut without_progress,
+            1280.0,
+            720.0,
+            &ItemTextureMap::empty(),
+        );
 
         assert!(with_progress.len() > without_progress.len());
     }
@@ -757,9 +906,9 @@ mod tests {
     #[test]
     fn invalid_viewport_produces_no_geometry() {
         let mut vertices = Vec::new();
-        HudModel::default().build(&mut vertices, 0.0, 720.0);
+        HudModel::default().build(&mut vertices, 0.0, 720.0, &ItemTextureMap::empty());
         assert!(vertices.is_empty());
-        HudModel::default().build(&mut vertices, f32::NAN, 720.0);
+        HudModel::default().build(&mut vertices, f32::NAN, 720.0, &ItemTextureMap::empty());
         assert!(vertices.is_empty());
     }
 
@@ -771,7 +920,7 @@ mod tests {
             ..HudModel::default()
         };
         model.set(0, [None; HOTBAR_SLOTS], Some(0.5), true);
-        model.build(&mut vertices, 1280.0, 720.0);
+        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
         assert!(vertices.is_empty());
     }
 
@@ -779,12 +928,12 @@ mod tests {
     fn toast_expires_and_adds_geometry() {
         let mut model = HudModel::default();
         let mut without_toast = Vec::new();
-        model.build(&mut without_toast, 1280.0, 720.0);
+        model.build(&mut without_toast, 1280.0, 720.0, &ItemTextureMap::empty());
 
         model.show_pickup(ItemId::STONE, 2);
         assert!(model.toast.is_some());
         let mut with_toast = Vec::new();
-        model.build(&mut with_toast, 1280.0, 720.0);
+        model.build(&mut with_toast, 1280.0, 720.0, &ItemTextureMap::empty());
         assert!(with_toast.len() > without_toast.len());
 
         model.update(TOAST_DURATION + 0.1);
@@ -826,10 +975,10 @@ mod tests {
             slots,
             ..HudModel::default()
         }
-        .build(&mut vertices, 1280.0, 720.0);
+        .build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
 
         let mut empty_vertices = Vec::new();
-        HudModel::default().build(&mut empty_vertices, 1280.0, 720.0);
+        HudModel::default().build(&mut empty_vertices, 1280.0, 720.0, &ItemTextureMap::empty());
         assert!(
             vertices.len() > empty_vertices.len(),
             "选中工具必须显示名称"
@@ -842,7 +991,12 @@ mod tests {
             slots: broken_slots,
             ..HudModel::default()
         }
-        .build(&mut broken_vertices, 1280.0, 720.0);
+        .build(
+            &mut broken_vertices,
+            1280.0,
+            720.0,
+            &ItemTextureMap::empty(),
+        );
         assert!(
             broken_vertices.len() >= vertices.len(),
             "损坏状态仍显示名称与警示"
@@ -865,7 +1019,7 @@ mod tests {
         let mut vertices = Vec::new();
         let mut model = HudModel::default();
         model.set_health(19, 20);
-        model.build(&mut vertices, 1280.0, 720.0);
+        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
 
         assert!(
             vertices.iter().any(|vertex| vertex.color == HEART_EMPTY),
@@ -877,16 +1031,16 @@ mod tests {
     fn damage_flash_adds_edge_geometry_and_fades_out() {
         let mut model = HudModel::default();
         let mut plain = Vec::new();
-        model.build(&mut plain, 1280.0, 720.0);
+        model.build(&mut plain, 1280.0, 720.0, &ItemTextureMap::empty());
 
         model.show_damage();
         let mut damaged = Vec::new();
-        model.build(&mut damaged, 1280.0, 720.0);
+        model.build(&mut damaged, 1280.0, 720.0, &ItemTextureMap::empty());
         assert!(damaged.len() > plain.len(), "受伤反馈应额外绘制屏幕边缘");
 
         model.update(DAMAGE_FLASH_DURATION + 0.1);
         let mut recovered = Vec::new();
-        model.build(&mut recovered, 1280.0, 720.0);
+        model.build(&mut recovered, 1280.0, 720.0, &ItemTextureMap::empty());
         assert_eq!(recovered.len(), plain.len(), "闪屏结束后恢复原 HUD");
     }
 }

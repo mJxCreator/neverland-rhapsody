@@ -3,7 +3,7 @@
 use wgpu::vertex_attr_array;
 
 use super::hud::HudVertex;
-use crate::mesh::Vertex;
+use crate::mesh::{BlockVertex, Vertex};
 
 /// 深度附件格式，渲染管线与深度纹理共用。
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -79,10 +79,144 @@ pub fn create_pipeline(
     })
 }
 
-const HUD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-    vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+const BLOCK_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
 
-/// HUD 顶点布局：裁剪空间位置与 RGBA 颜色。
+/// 方块网格顶点布局：位置、朝向明暗与图集 UV。
+pub fn block_vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<BlockVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &BLOCK_VERTEX_ATTRIBUTES,
+    }
+}
+
+/// 创建纹理化方块管线：采样方块图集并与顶点明暗相乘。
+pub fn create_block_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("textured block shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../assets/shaders/block_textured.wgsl").into(),
+        ),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("textured block pipeline layout"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("textured block pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(block_vertex_buffer_layout())],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// 创建掉落物图标管线：以世界坐标绘制带透明背景的精灵，Alpha 混合、双面可见、不写深度。
+pub fn create_item_sprite_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("item sprite shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../assets/shaders/item_sprite.wgsl").into(),
+        ),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("item sprite pipeline layout"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("item sprite pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(block_vertex_buffer_layout())],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            // 物品图标带透明背景，且旋转后两面都可见。
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            // 不使用深度写入，避免透明像素遮挡后方精灵。
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+const HUD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+
+/// HUD 顶点布局：裁剪空间位置、图集 UV 与 RGBA 颜色。
 pub fn hud_vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<HudVertex>() as wgpu::BufferAddress,
@@ -91,10 +225,11 @@ pub fn hud_vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// 创建屏幕空间 HUD 管线：三角形、Alpha 混合、无深度测试、不剔除背面。
+/// 创建屏幕空间 HUD 管线：采样物品图集、Alpha 混合、无深度测试、不剔除背面。
 pub fn create_hud_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("hud shader"),
@@ -103,7 +238,7 @@ pub fn create_hud_pipeline(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("hud pipeline layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[Some(bind_group_layout)],
         immediate_size: 0,
     });
 

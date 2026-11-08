@@ -14,7 +14,10 @@ use super::camera::Camera;
 use super::hud::{HudModel, HudVertex};
 use super::particles::ParticleSystem;
 use super::pipeline::{self, DEPTH_FORMAT};
-use crate::mesh::{build_chunk_mesh, ChunkMesh, Vertex};
+use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, Vertex};
+use crate::texture::{
+    create_texture_bind_group_layout, upload_atlas, BlockTextureMap, GpuAtlasTexture, TextureAssets,
+};
 use crate::world::{Block, ChunkPos, World};
 
 /// 天空清屏色。
@@ -86,6 +89,12 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
+    block_pipeline: wgpu::RenderPipeline,
+    texture_layout: wgpu::BindGroupLayout,
+    block_atlas: GpuAtlasTexture,
+    /// 物品图集：掉落物精灵与 HUD/背包/合成图标共用。
+    item_atlas: GpuAtlasTexture,
+    textures: Arc<TextureAssets>,
     selection_pipeline: wgpu::RenderPipeline,
     selection_buffer: wgpu::Buffer,
     selection: Option<IVec3>,
@@ -97,8 +106,9 @@ pub struct Renderer {
     particle_buffer: wgpu::Buffer,
     particles: ParticleSystem,
     particle_vertices: Vec<Vertex>,
+    drop_pipeline: wgpu::RenderPipeline,
     drop_buffer: wgpu::Buffer,
-    drop_vertices: Vec<Vertex>,
+    drop_vertices: Vec<BlockVertex>,
     entity_buffer: wgpu::Buffer,
     entity_vertices: Vec<Vertex>,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
@@ -118,6 +128,7 @@ impl Renderer {
         eye_position: Vec3,
         yaw: f32,
         pitch: f32,
+        textures: Arc<TextureAssets>,
     ) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window)?;
@@ -162,9 +173,14 @@ impl Renderer {
         });
 
         let pipeline = pipeline::create_pipeline(&device, config.format, &bind_group_layout);
+        let texture_layout = create_texture_bind_group_layout(&device);
+        let block_pipeline =
+            pipeline::create_block_pipeline(&device, config.format, &texture_layout);
         let selection_pipeline =
             pipeline::create_selection_pipeline(&device, config.format, &bind_group_layout);
-        let hud_pipeline = pipeline::create_hud_pipeline(&device, config.format);
+        let hud_pipeline = pipeline::create_hud_pipeline(&device, config.format, &texture_layout);
+        let drop_pipeline =
+            pipeline::create_item_sprite_pipeline(&device, config.format, &texture_layout);
         let hud_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hud vertices"),
             size: (HUD_VERTEX_CAPACITY * std::mem::size_of::<HudVertex>()) as wgpu::BufferAddress,
@@ -179,7 +195,8 @@ impl Renderer {
         });
         let drop_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dropped item vertices"),
-            size: (DROP_VERTEX_CAPACITY * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            size: (DROP_VERTEX_CAPACITY * std::mem::size_of::<BlockVertex>())
+                as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -196,14 +213,30 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let chunks = upload_chunk_meshes(&device, world);
-
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene uniforms"),
             size: std::mem::size_of::<[[f32; 4]; 4]>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        let block_atlas = upload_atlas(
+            &device,
+            &queue,
+            &texture_layout,
+            &uniform_buffer,
+            &textures.block_atlas,
+            "block texture atlas",
+        );
+        let item_atlas = upload_atlas(
+            &device,
+            &queue,
+            &texture_layout,
+            &uniform_buffer,
+            &textures.item_atlas,
+            "item texture atlas",
+        );
+        let chunks = upload_chunk_meshes(&device, world, &textures.block_textures);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene bind group"),
@@ -223,6 +256,11 @@ impl Renderer {
             config,
             depth_view,
             pipeline,
+            block_pipeline,
+            texture_layout,
+            block_atlas,
+            item_atlas,
+            textures,
             selection_pipeline,
             selection_buffer,
             selection: None,
@@ -234,6 +272,7 @@ impl Renderer {
             particle_buffer,
             particles: ParticleSystem::new(),
             particle_vertices: Vec::with_capacity(PARTICLE_VERTEX_CAPACITY),
+            drop_pipeline,
             drop_buffer,
             drop_vertices: Vec::with_capacity(DROP_VERTEX_CAPACITY),
             entity_buffer,
@@ -290,7 +329,7 @@ impl Renderer {
     }
 
     /// 供上层直接复用的掉落物顶点缓冲。
-    pub fn drop_vertices_mut(&mut self) -> &mut Vec<Vertex> {
+    pub fn drop_vertices_mut(&mut self) -> &mut Vec<BlockVertex> {
         &mut self.drop_vertices
     }
 
@@ -318,7 +357,11 @@ impl Renderer {
     pub fn update_chunks(&mut self, world: &World, positions: &[ChunkPos]) {
         for &pos in positions {
             let mesh = match world.chunk_at(pos) {
-                Some(chunk) => build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z)),
+                Some(chunk) => build_chunk_mesh(
+                    chunk,
+                    |x, y, z| world.block_at(x, y, z),
+                    &self.textures.block_textures,
+                ),
                 None => {
                     // 区块已卸载，释放对应 GPU 资源。
                     self.chunks.remove(&pos);
@@ -335,6 +378,38 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// 替换纹理资源：重新上传图集并重建全部区块网格。
+    ///
+    /// 调用方应只在 `TextureAssets::assets_ok()` 为真时调用，确保热重载失败
+    /// 时保留上一份有效纹理。
+    pub fn reload_textures(&mut self, textures: Arc<TextureAssets>, world: &World) {
+        self.block_atlas = upload_atlas(
+            &self.device,
+            &self.queue,
+            &self.texture_layout,
+            &self.uniform_buffer,
+            &textures.block_atlas,
+            "block texture atlas",
+        );
+        self.item_atlas = upload_atlas(
+            &self.device,
+            &self.queue,
+            &self.texture_layout,
+            &self.uniform_buffer,
+            &textures.item_atlas,
+            "item texture atlas",
+        );
+        self.textures = textures;
+        self.chunks = upload_chunk_meshes(&self.device, world, &self.textures.block_textures);
+        let summary = self.textures.summary();
+        info!(
+            block_textures = summary.block_textures,
+            item_textures = summary.item_textures,
+            placeholders = summary.placeholders,
+            "纹理资源已热重载并重建区块网格"
+        );
     }
 
     /// 释放已卸载区块的 GPU 缓冲。
@@ -397,6 +472,7 @@ impl Renderer {
             &mut self.hud_vertices,
             self.config.width as f32,
             self.config.height as f32,
+            &self.textures.item_textures,
         );
         self.hud_vertices.extend_from_slice(&self.ui_vertices);
         let hud_count = self.hud_vertices.len().min(HUD_VERTEX_CAPACITY) as u32;
@@ -456,8 +532,8 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_pipeline(&self.block_pipeline);
+            render_pass.set_bind_group(0, &self.block_atlas.bind_group, &[]);
             for chunk in self.chunks.values() {
                 render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
                 render_pass
@@ -473,8 +549,8 @@ impl Renderer {
             }
 
             if drop_count > 0 {
-                render_pass.set_pipeline(&self.pipeline);
-                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_pipeline(&self.drop_pipeline);
+                render_pass.set_bind_group(0, &self.item_atlas.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.drop_buffer.slice(..));
                 render_pass.draw(0..drop_count, 0..1);
             }
@@ -495,6 +571,7 @@ impl Renderer {
 
             if hud_count > 0 {
                 render_pass.set_pipeline(&self.hud_pipeline);
+                render_pass.set_bind_group(0, &self.item_atlas.bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.hud_buffer.slice(..));
                 render_pass.draw(0..hud_count, 0..1);
             }
@@ -512,11 +589,15 @@ impl Renderer {
 }
 
 /// 把每个非空区块的网格上传为顶点/索引缓冲。
-fn upload_chunk_meshes(device: &wgpu::Device, world: &World) -> HashMap<ChunkPos, ChunkBuffers> {
+fn upload_chunk_meshes(
+    device: &wgpu::Device,
+    world: &World,
+    textures: &BlockTextureMap,
+) -> HashMap<ChunkPos, ChunkBuffers> {
     world
         .chunks()
         .filter_map(|chunk| {
-            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z));
+            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z), textures);
             let buffers = chunk_buffers(device, &mesh)?;
 
             debug!(

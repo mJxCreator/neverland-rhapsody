@@ -1,0 +1,22 @@
+{
+  "items": [
+    { "id": 1, "name": "stone", "icon": "stone", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 2, "name": "dirt", "icon": "dirt", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 3, "name": "grass", "icon": "grass", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 4, "name": "wooden_pickaxe", "icon": "wooden_pickaxe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 5, "name": "stone_pickaxe", "icon": "stone_pickaxe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 6, "name": "iron_pickaxe", "icon": "iron_pickaxe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 7, "name": "wooden_axe", "icon": "wooden_axe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 8, "name": "stone_axe", "icon": "stone_axe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 9, "name": "iron_axe", "icon": "iron_axe", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 10, "name": "wooden_shovel", "icon": "wooden_shovel", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 11, "name": "stone_shovel", "icon": "stone_shovel", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 12, "name": "iron_shovel", "icon": "iron_shovel", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 13, "name": "wood", "icon": "wood", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 14, "name": "stick", "icon": "stick", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 15, "name": "iron_ingot", "icon": "iron_ingot", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 16, "name": "raw_porkchop", "icon": "raw_porkchop", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 17, "name": "raw_beef", "icon": "raw_beef", "display_mode": "icon", "alpha": "preserve" },
+    { "id": 18, "name": "leather", "icon": "leather", "display_mode": "icon", "alpha": "preserve" }
+  ]
+}

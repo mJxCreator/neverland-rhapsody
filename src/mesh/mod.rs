@@ -2,4 +2,4 @@
 
 pub mod chunk_mesh;
 
-pub use self::chunk_mesh::{build_chunk_mesh, ChunkMesh, Vertex};
+pub use self::chunk_mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, Vertex};

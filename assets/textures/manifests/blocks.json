@@ -1,0 +1,42 @@
+{
+  "blocks": [
+    {
+      "id": 1,
+      "name": "stone",
+      "top": "stone",
+      "bottom": "stone",
+      "east": "stone",
+      "west": "stone",
+      "north": "stone",
+      "south": "stone",
+      "default": "stone"
+    },
+    {
+      "id": 2,
+      "name": "dirt",
+      "default": "dirt"
+    },
+    {
+      "id": 3,
+      "name": "grass",
+      "top": "grass_top",
+      "bottom": "dirt",
+      "east": "grass_side",
+      "west": "grass_side",
+      "north": "grass_side",
+      "south": "grass_side",
+      "default": "grass_side"
+    },
+    {
+      "id": 4,
+      "name": "wood",
+      "top": "wood_top",
+      "bottom": "wood_top",
+      "east": "wood_side",
+      "west": "wood_side",
+      "north": "wood_side",
+      "south": "wood_side",
+      "default": "wood_side"
+    }
+  ]
+}

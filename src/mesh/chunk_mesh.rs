@@ -2,9 +2,10 @@
 
 use glam::Vec3;
 
+use crate::texture::BlockTextureMap;
 use crate::world::{Block, Chunk, Face, CHUNK_SIZE};
 
-/// 带面色的顶点：位置与颜色，直接作为 GPU 顶点数据。
+/// 带面色的顶点：位置与颜色，供粒子/掉落物等纯色几何使用。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -12,10 +13,22 @@ pub struct Vertex {
     pub color: [f32; 3],
 }
 
+/// 方块网格顶点：位置、明暗色与图集 UV。
+///
+/// `color` 不再承载方块基色，而是保留面朝向明暗与稳定变化，最终颜色由
+/// 着色器乘以图集采样结果得到。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BlockVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub uv: [f32; 2],
+}
+
 /// 一个区块提取出的三角形网格，位置已转换到世界坐标。
 #[derive(Debug, Default)]
 pub struct ChunkMesh {
-    pub vertices: Vec<Vertex>,
+    pub vertices: Vec<BlockVertex>,
     pub indices: Vec<u32>,
 }
 
@@ -28,10 +41,11 @@ impl ChunkMesh {
 /// 只为与非实心方块相邻的面生成四边形，隐藏区块内部与跨区块贴合面。
 ///
 /// `block_at_world` 提供世界坐标查询，使区块边界的邻居能查询到相邻区块，
-/// 避免在区块接缝处生成多余的侧面。
+/// 避免在区块接缝处生成多余的侧面。`textures` 决定每个六面各自的图集 UV。
 pub fn build_chunk_mesh(
     chunk: &Chunk,
     block_at_world: impl Fn(i32, i32, i32) -> Block,
+    textures: &BlockTextureMap,
 ) -> ChunkMesh {
     let pos = chunk.pos();
     let origin = pos.origin();
@@ -59,7 +73,7 @@ pub fn build_chunk_mesh(
                     if neighbor.is_solid() {
                         continue;
                     }
-                    push_face(&mut mesh, block, face, min);
+                    push_face(&mut mesh, block, face, min, textures);
                 }
             }
         }
@@ -68,13 +82,23 @@ pub fn build_chunk_mesh(
     mesh
 }
 
-fn push_face(mesh: &mut ChunkMesh, block: Block, face: Face, min: Vec3) {
-    let color = (block.face_color(face) * face.shade() * block_variation(min)).to_array();
+fn push_face(
+    mesh: &mut ChunkMesh,
+    block: Block,
+    face: Face,
+    min: Vec3,
+    textures: &BlockTextureMap,
+) {
+    // 纹理提供基色，顶点色只保留朝向明暗与稳定变化。
+    let brightness = face.shade() * block_variation(min);
+    let color = [brightness; 3];
+    let uvs = textures.face_uv(block, face);
     let base = mesh.vertices.len() as u32;
-    for corner in face_corners(face, min) {
-        mesh.vertices.push(Vertex {
+    for (index, corner) in face_corners(face, min).into_iter().enumerate() {
+        mesh.vertices.push(BlockVertex {
             position: corner.to_array(),
             color,
+            uv: uvs[index],
         });
     }
     mesh.indices
@@ -148,7 +172,11 @@ mod tests {
 
     /// 只为单个区块建网格，区块外的邻居一律视为空气。
     fn mesh_of(chunk: &Chunk) -> ChunkMesh {
-        build_chunk_mesh(chunk, |x, y, z| chunk.block_at(x, y, z))
+        build_chunk_mesh(
+            chunk,
+            |x, y, z| chunk.block_at(x, y, z),
+            &BlockTextureMap::placeholder(),
+        )
     }
 
     #[test]
@@ -182,13 +210,17 @@ mod tests {
         left.set_block(15, 1, 1, Block::Stone);
         right.set_block(0, 1, 1, Block::Stone);
 
-        let mesh = build_chunk_mesh(&left, |x, y, z| {
-            if (0..CHUNK_SIZE).contains(&x) {
-                left.block_at(x, y, z)
-            } else {
-                right.block_at(x - CHUNK_SIZE, y, z)
-            }
-        });
+        let mesh = build_chunk_mesh(
+            &left,
+            |x, y, z| {
+                if (0..CHUNK_SIZE).contains(&x) {
+                    left.block_at(x, y, z)
+                } else {
+                    right.block_at(x - CHUNK_SIZE, y, z)
+                }
+            },
+            &BlockTextureMap::placeholder(),
+        );
 
         // 单个方块有 6 个面，跨区块贴合面被隐藏后只剩 5 个。
         assert_eq!(mesh.vertices.len(), 20);
@@ -205,9 +237,12 @@ mod tests {
         chunk.set_block(15, 1, 1, Block::Stone);
         world.insert_chunk(chunk);
 
-        let mesh_without_neighbor = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
-            world.block_at(x, y, z)
-        });
+        let placeholder = BlockTextureMap::placeholder();
+        let mesh_without_neighbor = build_chunk_mesh(
+            world.chunk_at(left).unwrap(),
+            |x, y, z| world.block_at(x, y, z),
+            &placeholder,
+        );
         // 邻居未加载时，区块边界外的格子视为空气，六个面都可见。
         assert_eq!(mesh_without_neighbor.vertices.len(), 24);
 
@@ -215,17 +250,21 @@ mod tests {
         chunk.set_block(0, 1, 1, Block::Stone);
         world.insert_chunk(chunk);
 
-        let mesh_with_neighbor = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
-            world.block_at(x, y, z)
-        });
+        let mesh_with_neighbor = build_chunk_mesh(
+            world.chunk_at(left).unwrap(),
+            |x, y, z| world.block_at(x, y, z),
+            &placeholder,
+        );
         // 邻居加载后，跨区块贴合的侧面被剔除。
         assert_eq!(mesh_with_neighbor.vertices.len(), 20);
 
         world.remove_chunk(right);
 
-        let mesh_after_unload = build_chunk_mesh(world.chunk_at(left).unwrap(), |x, y, z| {
-            world.block_at(x, y, z)
-        });
+        let mesh_after_unload = build_chunk_mesh(
+            world.chunk_at(left).unwrap(),
+            |x, y, z| world.block_at(x, y, z),
+            &placeholder,
+        );
         // 邻居卸载后边界面需要重新出现。
         assert_eq!(mesh_after_unload.vertices.len(), 24);
     }
@@ -244,5 +283,69 @@ mod tests {
         let faces = 6 * (CHUNK_SIZE * CHUNK_SIZE) as usize;
         assert_eq!(mesh.vertices.len(), faces * 4);
         assert_eq!(mesh.indices.len(), faces * 6);
+    }
+
+    #[test]
+    fn block_faces_use_their_configured_uvs() {
+        use crate::texture::block_texture::builtin_manifest;
+        use crate::texture::texture_registry::{TextureRegistry, TextureSeed};
+        use crate::texture::types::{TextureId, TextureType, Transparency, UVRect};
+
+        let names = [
+            "stone",
+            "dirt",
+            "grass_top",
+            "grass_side",
+            "wood_top",
+            "wood_side",
+        ];
+        let mut registry = TextureRegistry::new();
+        for (index, name) in names.iter().enumerate() {
+            let id = registry
+                .register(TextureSeed {
+                    name: (*name).to_string(),
+                    texture_type: TextureType::Block,
+                    resource_path: format!("assets/textures/blocks/{name}.png"),
+                    width: 16,
+                    height: 16,
+                    transparency: Transparency::Opaque,
+                    placeholder: false,
+                })
+                .expect("登记纹理");
+            let offset = index as f32 * 0.05;
+            registry
+                .apply_uv(
+                    id,
+                    UVRect {
+                        min: [offset, 0.0],
+                        max: [offset + 0.05, 0.25],
+                    },
+                )
+                .expect("写入 UV");
+        }
+
+        let map = BlockTextureMap::from_manifest(
+            &builtin_manifest(),
+            &registry,
+            TextureId::new(0),
+            &mut Vec::new(),
+        )
+        .expect("构建纹理映射");
+        let chunk = chunk_with(&[(1, 1, 1, Block::Grass)]);
+        let mesh = build_chunk_mesh(&chunk, |x, y, z| chunk.block_at(x, y, z), &map);
+
+        // 面顺序为 PosX、NegX、PosY、NegY、PosZ、NegZ，每个面 4 个顶点。
+        let top_uv = mesh.vertices[2 * 4].uv;
+        let bottom_uv = mesh.vertices[3 * 4].uv;
+        let side_uv = mesh.vertices[0].uv;
+        assert_ne!(top_uv, bottom_uv, "草方块顶/底应使用不同纹理");
+        assert_ne!(top_uv, side_uv, "草方块侧面应与顶面不同");
+        for vertex in &mesh.vertices {
+            assert!(
+                (0.0..=1.0).contains(&vertex.uv[0]) && (0.0..=1.0).contains(&vertex.uv[1]),
+                "UV 必须位于图集范围内: {:?}",
+                vertex.uv
+            );
+        }
     }
 }

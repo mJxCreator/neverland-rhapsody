@@ -6,9 +6,8 @@
 
 use super::font;
 use super::hud::{durability_color, push_quad, HudRect, HudVertex};
-use crate::item::{
-    icon_color, item_name, tool_registry, Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS,
-};
+use crate::item::{item_name, tool_registry, Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
+use crate::texture::ItemTextureMap;
 
 /// 鼠标按键语义，避免界面层依赖具体输入框架。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +184,7 @@ impl InventoryUi {
         out: &mut Vec<HudVertex>,
         inventory: &Inventory,
         selected_hotbar: usize,
+        icons: &ItemTextureMap,
         viewport: (f32, f32),
     ) {
         out.clear();
@@ -276,7 +276,7 @@ impl InventoryUi {
             }
 
             if let Some(stack) = inventory.slot(index) {
-                push_item_icon(out, viewport, rect, stack);
+                push_item_icon(out, viewport, rect, stack, icons);
                 push_slot_durability(out, viewport, rect, stack);
                 push_count(out, viewport, rect, stack);
             }
@@ -294,7 +294,7 @@ impl InventoryUi {
                 width: size,
                 height: size,
             };
-            push_item_icon(out, viewport, rect, held);
+            push_item_icon(out, viewport, rect, held, icons);
             push_slot_durability(out, viewport, rect, held);
             if held.count() > 1 {
                 let text = held.count().to_string();
@@ -316,10 +316,15 @@ impl InventoryUi {
     }
 }
 
-fn push_item_icon(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, stack: ItemStack) {
-    let color = icon_color(stack.item());
+fn push_item_icon(
+    out: &mut Vec<HudVertex>,
+    viewport: (f32, f32),
+    rect: HudRect,
+    stack: ItemStack,
+    icons: &ItemTextureMap,
+) {
     let inset = rect.width * 0.14;
-    push_quad(
+    super::hud::push_item_icon(
         out,
         viewport,
         HudRect {
@@ -328,7 +333,8 @@ fn push_item_icon(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect,
             width: rect.width - inset * 2.0,
             height: rect.height - inset * 2.0,
         },
-        [color.x, color.y, color.z, 0.95],
+        stack.item(),
+        icons,
     );
 }
 
@@ -696,11 +702,23 @@ mod tests {
         let inventory = Inventory::new();
         let mut ui = InventoryUi::new();
         let mut vertices = Vec::new();
-        ui.build(&mut vertices, &inventory, 0, (1280.0, 720.0));
+        ui.build(
+            &mut vertices,
+            &inventory,
+            0,
+            &ItemTextureMap::empty(),
+            (1280.0, 720.0),
+        );
         assert!(vertices.is_empty());
 
         ui.open();
-        ui.build(&mut vertices, &inventory, 0, (1280.0, 720.0));
+        ui.build(
+            &mut vertices,
+            &inventory,
+            0,
+            &ItemTextureMap::empty(),
+            (1280.0, 720.0),
+        );
         assert_eq!(vertices.len() % 6, 0);
         for vertex in &vertices {
             assert!((-1.0..=1.0).contains(&vertex.position[0]));
@@ -771,7 +789,13 @@ mod tests {
         let mut inventory = Inventory::new();
         inventory.set_slot(0, Some(stone(1)));
         let mut block_vertices = Vec::new();
-        ui.build(&mut block_vertices, &inventory, 0, viewport);
+        ui.build(
+            &mut block_vertices,
+            &inventory,
+            0,
+            &ItemTextureMap::empty(),
+            viewport,
+        );
 
         inventory.set_slot(
             0,
@@ -782,7 +806,13 @@ mod tests {
             ),
         );
         let mut tool_vertices = Vec::new();
-        ui.build(&mut tool_vertices, &inventory, 0, viewport);
+        ui.build(
+            &mut tool_vertices,
+            &inventory,
+            0,
+            &ItemTextureMap::empty(),
+            viewport,
+        );
 
         assert_eq!(
             tool_vertices.len(),
