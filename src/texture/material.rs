@@ -118,7 +118,7 @@ impl MaterialRegistry {
     pub fn for_atlas(&self, atlas: AtlasId, transparency: Transparency) -> &Material {
         let target = match (atlas, transparency) {
             (AtlasId::Block, Transparency::Opaque) => Self::BLOCK_OPAQUE,
-            (AtlasId::Item, _) => Self::ITEM_ALPHA,
+            (AtlasId::Item, _) | (AtlasId::Ui, _) => Self::ITEM_ALPHA,
             (_, Transparency::Alpha) | (AtlasId::Entity, _) => Self::ENTITY_RESERVED,
         };
         // 内置材质表总是完整，索引失败时退回第一项作为安全默认值。

@@ -1,0 +1,26 @@
+{
+  "ui": [
+    { "name": "hotbar_bg", "image": "hotbar_bg.png", "draw": "nine_slice", "slice": [8, 8, 8, 8] },
+    { "name": "hotbar_slot", "image": "hotbar_slot.png", "draw": "stretch" },
+    { "name": "hotbar_slot_selected", "image": "hotbar_slot_selected.png", "draw": "stretch" },
+    { "name": "inventory_panel", "image": "inventory_panel.png", "draw": "nine_slice", "slice": [12, 12, 12, 12] },
+    { "name": "inventory_slot", "image": "inventory_slot.png", "draw": "stretch" },
+    { "name": "inventory_slot_hover", "image": "inventory_slot_hover.png", "draw": "stretch" },
+    { "name": "inventory_slot_selected", "image": "inventory_slot_selected.png", "draw": "stretch" },
+    { "name": "tooltip_bg", "image": "tooltip_bg.png", "draw": "nine_slice", "slice": [8, 8, 8, 8] },
+    { "name": "crafting_row", "image": "crafting_row.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
+    { "name": "crafting_row_hover", "image": "crafting_row_hover.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
+    { "name": "crafting_row_selected", "image": "crafting_row_selected.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
+    { "name": "crosshair", "image": "crosshair.png", "draw": "stretch" },
+    { "name": "heart_full", "image": "heart_full.png", "draw": "stretch" },
+    { "name": "heart_half", "image": "heart_half.png", "draw": "stretch" },
+    { "name": "heart_empty", "image": "heart_empty.png", "draw": "stretch" },
+    { "name": "progress_bg", "image": "progress_bg.png", "draw": "nine_slice", "slice": [4, 4, 4, 4] },
+    { "name": "progress_fill", "image": "progress_fill.png", "draw": "nine_slice", "slice": [4, 4, 4, 4] },
+    { "name": "damage_vignette", "image": "damage_vignette.png", "draw": "nine_slice", "slice": [16, 16, 16, 16] },
+    { "name": "death_overlay", "image": "death_overlay.png", "draw": "stretch" },
+    { "name": "death_panel", "image": "death_panel.png", "draw": "nine_slice", "slice": [8, 8, 8, 8] },
+    { "name": "button", "image": "button.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
+    { "name": "button_hover", "image": "button_hover.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] }
+  ]
+}

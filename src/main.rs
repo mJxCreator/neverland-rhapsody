@@ -11,6 +11,7 @@ mod player;
 mod renderer;
 mod save;
 mod texture;
+mod ui;
 mod world;
 
 use anyhow::Result;

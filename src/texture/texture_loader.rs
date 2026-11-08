@@ -12,17 +12,18 @@ use super::types::TextureImage;
 /// 基础纹理边长（像素）；占位纹理使用该尺寸。
 pub const BASE_TEXTURE_SIZE: u32 = 16;
 
-/// 允许导入的正方形纹理边长；保持 2 的幂并限制上限，避免图集无节制增长。
-pub const ALLOWED_TEXTURE_SIZES: [u32; 4] = [BASE_TEXTURE_SIZE, 32, 64, 128];
+/// 允许导入的纹理边长；宽高各自须属于该列表，因此允许非正方形 UI 面板。
+pub const ALLOWED_TEXTURE_SIZES: [u32; 7] = [BASE_TEXTURE_SIZE, 32, 64, 128, 256, 512, 1024];
 
-/// 判断宽高是否为支持的纹理尺寸：必须正方形且属于允许列表。
+/// 判断宽高是否为支持的纹理尺寸：宽与高各自属于允许列表，不要求相等。
 pub const fn is_supported_texture_size(width: u32, height: u32) -> bool {
-    if width != height {
-        return false;
-    }
+    is_allowed_side(width) && is_allowed_side(height)
+}
+
+const fn is_allowed_side(side: u32) -> bool {
     let mut index = 0;
     while index < ALLOWED_TEXTURE_SIZES.len() {
-        if ALLOWED_TEXTURE_SIZES[index] == width {
+        if ALLOWED_TEXTURE_SIZES[index] == side {
             return true;
         }
         index += 1;
@@ -31,7 +32,18 @@ pub const fn is_supported_texture_size(width: u32, height: u32) -> bool {
 }
 
 /// 支持的尺寸列表文本，用于错误提示。
-pub const SUPPORTED_SIZES_TEXT: &str = "16×16、32×32、64×64 或 128×128";
+pub const SUPPORTED_SIZES_TEXT: &str = "16/32/64/128/256/512/1024 像素（宽高可不同）";
+
+/// UI 控件允许的最大单边边长；UI 图不做 2 的幂限制，任意尺寸都可直接导入。
+pub const MAX_UI_TEXTURE_SIZE: u32 = 2048;
+
+/// UI 纹理尺寸说明，用于错误提示。
+pub const SUPPORTED_UI_SIZES_TEXT: &str = "1–2048 像素（宽高可不同）";
+
+/// UI 纹理尺寸校验：任意正整数宽高，只要不超过 [`MAX_UI_TEXTURE_SIZE`]。
+pub const fn is_supported_ui_texture_size(width: u32, height: u32) -> bool {
+    width >= 1 && height >= 1 && width <= MAX_UI_TEXTURE_SIZE && height <= MAX_UI_TEXTURE_SIZE
+}
 
 /// 纹理加载失败的具体原因；每条错误都携带可定位的资源路径。
 #[derive(Debug)]
@@ -45,6 +57,8 @@ pub enum TextureLoadError {
         path: PathBuf,
         width: u32,
         height: u32,
+        /// 该类纹理允许的尺寸说明。
+        requirement: &'static str,
     },
     /// 像素格式无法转换为 RGBA8。
     UnsupportedFormat { path: PathBuf, message: String },
@@ -67,9 +81,10 @@ impl fmt::Display for TextureLoadError {
                 path,
                 width,
                 height,
+                requirement,
             } => write!(
                 formatter,
-                "纹理尺寸不符合规范: {} 为 {width}×{height}，要求 {SUPPORTED_SIZES_TEXT} 的正方形",
+                "纹理尺寸不符合规范: {} 为 {width}×{height}，要求 {requirement}",
                 path.display()
             ),
             TextureLoadError::UnsupportedFormat { path, message } => {
@@ -85,8 +100,21 @@ impl fmt::Display for TextureLoadError {
 
 impl std::error::Error for TextureLoadError {}
 
-/// 加载并校验一张纹理 PNG：支持 16/32/64/128 的正方形。
+/// 加载并校验一张方块/物品纹理 PNG：宽高各自支持 16/32/64/128/256/512/1024。
 pub fn load_texture_png(path: &Path) -> Result<TextureImage, TextureLoadError> {
+    load_texture_png_with(path, is_supported_texture_size, SUPPORTED_SIZES_TEXT)
+}
+
+/// 加载并校验一张 UI 控件 PNG：宽高各自允许 1–2048 像素的任意尺寸。
+pub fn load_ui_texture_png(path: &Path) -> Result<TextureImage, TextureLoadError> {
+    load_texture_png_with(path, is_supported_ui_texture_size, SUPPORTED_UI_SIZES_TEXT)
+}
+
+fn load_texture_png_with(
+    path: &Path,
+    supported: fn(u32, u32) -> bool,
+    requirement: &'static str,
+) -> Result<TextureImage, TextureLoadError> {
     if !path.is_file() {
         return Err(TextureLoadError::NotFound {
             path: path.to_path_buf(),
@@ -111,11 +139,12 @@ pub fn load_texture_png(path: &Path) -> Result<TextureImage, TextureLoadError> {
         let info = reader.info();
         (info.width, info.height)
     };
-    if !is_supported_texture_size(width, height) {
+    if !supported(width, height) {
         return Err(TextureLoadError::InvalidSize {
             path: path.to_path_buf(),
             width,
             height,
+            requirement,
         });
     }
 
@@ -278,12 +307,42 @@ mod tests {
     }
 
     #[test]
-    fn non_square_textures_are_rejected() {
+    fn non_square_textures_are_accepted() {
         let dir = unique_dir("rect");
         let path = dir.join("rect.png");
-        write_png(&path, 32, 16, &[255; 32 * 16 * 4]);
+        write_png(&path, 1024, 256, &[255; 1024 * 256 * 4]);
 
-        let error = load_texture_png(&path).expect_err("非正方形应被拒绝");
+        let image = load_texture_png(&path).expect("非正方形应被接受");
+        assert_eq!((image.width, image.height), (1024, 256));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unsupported_sides_are_rejected() {
+        let dir = unique_dir("bad-side");
+        let path = dir.join("bad.png");
+        write_png(&path, 24, 64, &[255; 24 * 64 * 4]);
+
+        let error = load_texture_png(&path).expect_err("24 像素宽应被拒绝");
+        assert!(matches!(error, TextureLoadError::InvalidSize { .. }));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ui_textures_accept_arbitrary_sizes_within_the_limit() {
+        let dir = unique_dir("ui-size");
+        let path = dir.join("hotbar_bg.png");
+        write_png(&path, 1040, 80, &[255; 1040 * 80 * 4]);
+
+        let image = load_ui_texture_png(&path).expect("UI 图应接受 1040×80");
+        assert_eq!((image.width, image.height), (1040, 80));
+
+        let too_wide = dir.join("too_wide.png");
+        let width = MAX_UI_TEXTURE_SIZE + 1;
+        write_png(&too_wide, width, 16, &vec![255; width as usize * 16 * 4]);
+        let error = load_ui_texture_png(&too_wide).expect_err("超过上限应被拒绝");
         assert!(matches!(error, TextureLoadError::InvalidSize { .. }));
 
         fs::remove_dir_all(&dir).ok();

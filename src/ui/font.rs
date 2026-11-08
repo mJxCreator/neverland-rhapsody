@@ -1,8 +1,9 @@
-//! 极简 5×7 位图字体：把大写字幕与数字渲染成纯色四边形，供 HUD 数量、名称与提示使用。
+//! 极简 5×7 位图字体：把大写字幕与数字渲染成纯色四边形，供所有 UI 使用。
 //!
 //! 不引入字体文件与纹理，所有字形以位掩码内联；小写字母统一映射为大写。
 
-use super::hud::{push_quad, HudRect, HudVertex};
+use super::draw::{push_quad, UiVertex};
+use super::layout::UiRect;
 
 /// 字形宽度（像素格）。
 pub const GLYPH_WIDTH: u32 = 5;
@@ -22,7 +23,7 @@ pub fn text_width(text: &str, pixel: f32) -> f32 {
 
 /// 把文本写入 HUD 顶点列表；`x`、`y` 是左上角像素坐标。
 pub fn push_text(
-    out: &mut Vec<HudVertex>,
+    out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
     x: f32,
     y: f32,
@@ -46,7 +47,7 @@ pub fn push_text(
 }
 
 fn push_glyph(
-    out: &mut Vec<HudVertex>,
+    out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
     x: f32,
     y: f32,
@@ -70,7 +71,7 @@ fn push_glyph(
             push_quad(
                 out,
                 viewport,
-                HudRect {
+                UiRect {
                     x: x + start as f32 * pixel,
                     y: y + row as f32 * pixel,
                     width: (column - start) as f32 * pixel,

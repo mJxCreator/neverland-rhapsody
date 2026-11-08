@@ -18,9 +18,14 @@ pub mod texture_hot_reload;
 pub mod texture_loader;
 pub mod texture_registry;
 pub mod types;
+pub mod ui_texture;
 
 pub use self::block_texture::BlockTextureMap;
-pub use self::gpu_texture::{create_texture_bind_group_layout, upload_atlas, GpuAtlasTexture};
+pub use self::gpu_texture::{
+    create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
+    upload_atlas, upload_texture, GpuAtlasTexture, GpuTexture,
+};
 pub use self::item_texture::ItemTextureMap;
 pub use self::texture_assets::{TextureAssets, DEFAULT_ASSET_ROOT};
 pub use self::texture_hot_reload::TextureWatcher;
+pub use self::ui_texture::UiTextureMap;

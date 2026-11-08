@@ -11,13 +11,14 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use super::camera::Camera;
-use super::hud::{HudModel, HudVertex};
 use super::particles::ParticleSystem;
 use super::pipeline::{self, DEPTH_FORMAT};
 use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, Vertex};
 use crate::texture::{
-    create_texture_bind_group_layout, upload_atlas, BlockTextureMap, GpuAtlasTexture, TextureAssets,
+    create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
+    upload_atlas, upload_texture, BlockTextureMap, GpuAtlasTexture, GpuTexture, TextureAssets,
 };
+use crate::ui::{HudModel, UiVertex};
 use crate::world::{Block, ChunkPos, World};
 
 /// 天空清屏色。
@@ -91,9 +92,14 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     block_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
+    hud_texture_layout: wgpu::BindGroupLayout,
     block_atlas: GpuAtlasTexture,
     /// 物品图集：掉落物精灵与 HUD/背包/合成图标共用。
     item_atlas: GpuAtlasTexture,
+    /// UI 独立图集：面板、槽位、按钮等控件。
+    ui_atlas: GpuTexture,
+    /// HUD 绑定组同时引用物品图集与 UI 图集。
+    hud_bind_group: wgpu::BindGroup,
     textures: Arc<TextureAssets>,
     selection_pipeline: wgpu::RenderPipeline,
     selection_buffer: wgpu::Buffer,
@@ -101,8 +107,8 @@ pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
     hud_buffer: wgpu::Buffer,
     hud_model: HudModel,
-    hud_vertices: Vec<HudVertex>,
-    ui_vertices: Vec<HudVertex>,
+    hud_vertices: Vec<UiVertex>,
+    ui_vertices: Vec<UiVertex>,
     particle_buffer: wgpu::Buffer,
     particles: ParticleSystem,
     particle_vertices: Vec<Vertex>,
@@ -174,16 +180,18 @@ impl Renderer {
 
         let pipeline = pipeline::create_pipeline(&device, config.format, &bind_group_layout);
         let texture_layout = create_texture_bind_group_layout(&device);
+        let hud_texture_layout = create_hud_bind_group_layout(&device);
         let block_pipeline =
             pipeline::create_block_pipeline(&device, config.format, &texture_layout);
         let selection_pipeline =
             pipeline::create_selection_pipeline(&device, config.format, &bind_group_layout);
-        let hud_pipeline = pipeline::create_hud_pipeline(&device, config.format, &texture_layout);
+        let hud_pipeline =
+            pipeline::create_hud_pipeline(&device, config.format, &hud_texture_layout);
         let drop_pipeline =
             pipeline::create_item_sprite_pipeline(&device, config.format, &texture_layout);
         let hud_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hud vertices"),
-            size: (HUD_VERTEX_CAPACITY * std::mem::size_of::<HudVertex>()) as wgpu::BufferAddress,
+            size: (HUD_VERTEX_CAPACITY * std::mem::size_of::<UiVertex>()) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -236,6 +244,15 @@ impl Renderer {
             &textures.item_atlas,
             "item texture atlas",
         );
+        let ui_atlas = upload_texture(&device, &queue, &textures.ui_atlas, "ui texture atlas");
+        let hud_bind_group = create_hud_bind_group(
+            &device,
+            &hud_texture_layout,
+            &uniform_buffer,
+            &item_atlas,
+            &ui_atlas,
+            "hud bind group",
+        );
         let chunks = upload_chunk_meshes(&device, world, &textures.block_textures);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -248,6 +265,8 @@ impl Renderer {
         });
 
         let camera = Camera::new(eye_position, yaw, pitch, width as f32 / height as f32);
+        let mut hud_model = HudModel::default();
+        hud_model.set_ui_textures(textures.ui_textures.clone());
 
         Ok(Self {
             surface,
@@ -258,15 +277,18 @@ impl Renderer {
             pipeline,
             block_pipeline,
             texture_layout,
+            hud_texture_layout,
             block_atlas,
             item_atlas,
+            ui_atlas,
+            hud_bind_group,
             textures,
             selection_pipeline,
             selection_buffer,
             selection: None,
             hud_pipeline,
             hud_buffer,
-            hud_model: HudModel::default(),
+            hud_model,
             hud_vertices: Vec::with_capacity(HUD_VERTEX_CAPACITY),
             ui_vertices: Vec::new(),
             particle_buffer,
@@ -323,8 +345,8 @@ impl Renderer {
         &mut self.hud_model
     }
 
-    /// 写入背包界面几何；关闭时传入空列表即可。
-    pub fn set_ui_vertices(&mut self, vertices: Vec<HudVertex>) {
+    /// 写入当前全屏界面几何；关闭时传入空列表即可。
+    pub fn set_ui_vertices(&mut self, vertices: Vec<UiVertex>) {
         self.ui_vertices = vertices;
     }
 
@@ -401,12 +423,28 @@ impl Renderer {
             &textures.item_atlas,
             "item texture atlas",
         );
+        self.ui_atlas = upload_texture(
+            &self.device,
+            &self.queue,
+            &textures.ui_atlas,
+            "ui texture atlas",
+        );
+        self.hud_bind_group = create_hud_bind_group(
+            &self.device,
+            &self.hud_texture_layout,
+            &self.uniform_buffer,
+            &self.item_atlas,
+            &self.ui_atlas,
+            "hud bind group",
+        );
+        self.hud_model.set_ui_textures(textures.ui_textures.clone());
         self.textures = textures;
         self.chunks = upload_chunk_meshes(&self.device, world, &self.textures.block_textures);
         let summary = self.textures.summary();
         info!(
             block_textures = summary.block_textures,
             item_textures = summary.item_textures,
+            ui_textures = summary.ui_textures,
             placeholders = summary.placeholders,
             "纹理资源已热重载并重建区块网格"
         );
@@ -571,7 +609,7 @@ impl Renderer {
 
             if hud_count > 0 {
                 render_pass.set_pipeline(&self.hud_pipeline);
-                render_pass.set_bind_group(0, &self.item_atlas.bind_group, &[]);
+                render_pass.set_bind_group(0, &self.hud_bind_group, &[]);
                 render_pass.set_vertex_buffer(0, self.hud_buffer.slice(..));
                 render_pass.draw(0..hud_count, 0..1);
             }

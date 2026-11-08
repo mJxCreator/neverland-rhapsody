@@ -1,29 +1,17 @@
-//! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏、选中工具名称/耐久与提示。
+//! HUD：屏幕空间准星、挖掘进度条、9 格快捷栏、选中物品名称/耐久、拾取提示与生命值。
 //!
-//! 全部内容由四边形与内联位图字体组成，直接写入动态顶点缓冲；不引入第三方 UI 框架。
+//! 全部内容由四边形与内联位图字体组成，直接写入共享的 UI 动态顶点缓冲；
 //! 纯色四边形使用 UV 哨兵，物品图标则按图集 UV 采样 PNG。
-//! 背包打开时隐藏战斗与快捷栏 HUD，使界面焦点完全交给背包面板。
+//! 任何全屏界面（背包、合成、死亡）打开时隐藏 HUD，使界面焦点完全交给面板。
 
-use bytemuck::{Pod, Zeroable};
-
+use super::animation::UiClock;
+use super::draw::{push_item_icon, push_quad, push_ui_view, UiVertex};
 use super::font;
+use super::layout::{valid_viewport, UiRect};
+use super::theme;
+use super::widget::{self, SlotSkin, SlotState};
 use crate::item::{item_name, ItemId, ItemStack, HOTBAR_SLOTS};
-use crate::texture::types::UVRect;
-use crate::texture::ItemTextureMap;
-
-/// HUD 顶点使用的 UV 哨兵值：负值表示该顶点不采样纹理，只使用颜色。
-pub(crate) const SOLID_UV: [f32; 2] = [-1.0, -1.0];
-
-/// 一个 HUD 顶点：裁剪空间坐标、图集 UV 与带透明度的颜色。
-///
-/// `uv` 为 [`SOLID_UV`] 时按纯色绘制；否则按物品图集中的子区域采样。
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct HudVertex {
-    pub position: [f32; 2],
-    pub uv: [f32; 2],
-    pub color: [f32; 4],
-}
+use crate::texture::{ItemTextureMap, UiTextureMap};
 
 /// 准星单臂长度（像素）。
 const CROSSHAIR_ARM: f32 = 9.0;
@@ -41,17 +29,17 @@ const SLOT_SIZE: f32 = 48.0;
 const SLOT_GAP: f32 = 8.0;
 /// 快捷栏距屏幕底部的距离（像素）。
 const BOTTOM_MARGIN: f32 = 18.0;
-/// 槽位外框宽度（像素）。
-const SLOT_BORDER: f32 = 3.0;
-/// 槽位内部色块留白（像素）。
-const SLOT_PADDING: f32 = 7.0;
+/// 快捷栏底板相对槽位的外扩留白（像素）。
+const HOTBAR_PADDING: f32 = 6.0;
 /// 拾取提示字号（像素格）。
 const TOAST_PIXEL: f32 = 2.0;
 /// 提示显示时长（秒）。
 const TOAST_DURATION: f32 = 1.2;
 /// 提示淡出时长（秒）。
 const TOAST_FADE: f32 = 0.3;
-/// 选中工具名称与快捷栏的距离（像素）。
+/// 提示图标边长（像素）。
+const TOAST_ICON_SIZE: f32 = 22.0;
+/// 选中物品名称与快捷栏的距离（像素）。
 const TOOL_LABEL_OFFSET: f32 = 50.0;
 /// 提示文字与快捷栏的距离（像素）。
 const TOAST_OFFSET: f32 = 70.0;
@@ -65,35 +53,8 @@ const HEART_GAP: f32 = 2.0;
 const DAMAGE_FLASH_DURATION: f32 = 0.35;
 /// 伤害闪屏边缘厚度（像素）。
 const DAMAGE_FLASH_THICKNESS: f32 = 26.0;
-/// 槽位耐久条高度（像素）。
-const DURABILITY_BAR_HEIGHT: f32 = 4.0;
-/// 耐久低于该比例时显示警示色。
-const DURABILITY_LOW_THRESHOLD: f32 = 0.25;
-/// 耐久低于该比例时显示中间过渡色。
-const DURABILITY_MID_THRESHOLD: f32 = 0.5;
-
-const CROSSHAIR_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
-const CROSSHAIR_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-const PROGRESS_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-const PROGRESS_FILL: [f32; 4] = [0.42, 0.85, 0.35, 0.95];
-const HOTBAR_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-const SLOT_BORDER_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-const SLOT_BORDER_IDLE: [f32; 4] = [0.55, 0.55, 0.55, 0.55];
-const SLOT_GLOW: [f32; 4] = [1.0, 1.0, 1.0, 0.22];
-const SLOT_EMPTY: [f32; 4] = [0.12, 0.12, 0.12, 0.55];
-const COUNT_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-const TEXT_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
-const TOAST_TEXT: [f32; 4] = [1.0, 1.0, 0.85, 1.0];
-const TOOL_LABEL_COLOR: [f32; 4] = [0.92, 0.94, 1.0, 1.0];
-const TOOL_BROKEN_COLOR: [f32; 4] = [1.0, 0.42, 0.36, 1.0];
-const DURABILITY_BAR_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.72];
-const DURABILITY_BAR_BROKEN: [f32; 4] = [0.55, 0.12, 0.12, 0.85];
-const DURABILITY_HIGH: [f32; 4] = [0.38, 0.86, 0.42, 0.95];
-const DURABILITY_MID: [f32; 4] = [0.95, 0.80, 0.28, 0.95];
-const DURABILITY_LOW: [f32; 4] = [0.95, 0.32, 0.26, 0.95];
-const HEART_FULL: [f32; 4] = [0.86, 0.16, 0.16, 0.95];
-const HEART_EMPTY: [f32; 4] = [0.28, 0.09, 0.09, 0.85];
-const DAMAGE_FLASH: [f32; 4] = [0.72, 0.03, 0.03, 0.46];
+/// 选中格光晕的呼吸速度。
+const SELECTED_PULSE_SPEED: f32 = 4.0;
 
 /// 7×7 像素心形图案，1 表示实心格。
 const HEART_PATTERN: [u8; 7] = [
@@ -117,20 +78,23 @@ struct Toast {
 }
 
 /// 每帧由上层写入的 HUD 数据。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HudModel {
     pub selected_slot: usize,
     pub slots: [Option<ItemStack>; HOTBAR_SLOTS],
     /// 当前挖掘进度；`None` 表示不显示进度条。
     pub mining_progress: Option<f32>,
-    /// 背包/合成等全屏界面是否打开；打开时不绘制战斗与快捷栏 HUD。
-    pub inventory_open: bool,
+    /// 任意全屏界面是否打开；打开时不绘制战斗与快捷栏 HUD。
+    pub ui_open: bool,
     /// 当前生命值（1 点 = 半颗心）。
     pub health: u32,
     /// 最大生命值（1 点 = 半颗心）。
     pub max_health: u32,
     damage_flash_remaining: f32,
     toast: Option<Toast>,
+    clock: UiClock,
+    /// UI 控件图集；为空时全部回退纯色绘制。
+    ui_textures: UiTextureMap,
 }
 
 impl Default for HudModel {
@@ -139,28 +103,35 @@ impl Default for HudModel {
             selected_slot: 0,
             slots: [None; HOTBAR_SLOTS],
             mining_progress: None,
-            inventory_open: false,
+            ui_open: false,
             health: 20,
             max_health: 20,
             damage_flash_remaining: 0.0,
             toast: None,
+            clock: UiClock::default(),
+            ui_textures: UiTextureMap::empty(),
         }
     }
 }
 
 impl HudModel {
+    /// 替换 UI 控件图集；资源加载或热重载后由渲染器调用。
+    pub fn set_ui_textures(&mut self, textures: UiTextureMap) {
+        self.ui_textures = textures;
+    }
+
     /// 更新 HUD 数据；选中下标会被限制在当前槽位范围内。
     pub fn set(
         &mut self,
         selected_slot: usize,
         slots: [Option<ItemStack>; HOTBAR_SLOTS],
         mining_progress: Option<f32>,
-        inventory_open: bool,
+        ui_open: bool,
     ) {
         self.selected_slot = selected_slot.min(HOTBAR_SLOTS - 1);
         self.slots = slots;
         self.mining_progress = mining_progress.filter(|progress| progress.is_finite());
-        self.inventory_open = inventory_open;
+        self.ui_open = ui_open;
     }
 
     /// 写入生命值；最大值为 0 时回落到默认 20 点。
@@ -174,10 +145,17 @@ impl HudModel {
         self.damage_flash_remaining = DAMAGE_FLASH_DURATION;
     }
 
-    /// 显示一条拾取提示；重复拾取会刷新计时。
+    /// 显示一条拾取提示；同一物品重复拾取会合并数量并刷新计时。
     pub fn show_pickup(&mut self, item: ItemId, count: u32) {
         if count == 0 || !item.is_valid() {
             return;
+        }
+        if let Some(toast) = &mut self.toast {
+            if toast.kind == ToastKind::Pickup && toast.item == item {
+                toast.count = toast.count.saturating_add(count);
+                toast.remaining = TOAST_DURATION;
+                return;
+            }
         }
         self.toast = Some(Toast {
             item,
@@ -200,11 +178,12 @@ impl HudModel {
         });
     }
 
-    /// 推进提示与伤害闪屏计时。
+    /// 推进提示、伤害闪屏与选中动画计时。
     pub fn update(&mut self, delta_secs: f32) {
         if !delta_secs.is_finite() || delta_secs <= 0.0 {
             return;
         }
+        self.clock.update(delta_secs);
         self.damage_flash_remaining = (self.damage_flash_remaining - delta_secs).max(0.0);
         let Some(toast) = &mut self.toast else {
             return;
@@ -216,26 +195,23 @@ impl HudModel {
     }
 
     /// 生成全部 HUD 四边形顶点，写入 `out`；`icons` 提供物品图标的图集 UV。
-    pub fn build(&self, out: &mut Vec<HudVertex>, width: f32, height: f32, icons: &ItemTextureMap) {
+    pub fn build(&self, out: &mut Vec<UiVertex>, width: f32, height: f32, icons: &ItemTextureMap) {
         out.clear();
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-            return;
-        }
-        if self.inventory_open {
+        if !valid_viewport(width, height) || self.ui_open {
             return;
         }
 
         self.push_health(out, width, height);
         self.push_hotbar(out, width, height, icons);
-        self.push_tool_label(out, width, height);
-        self.push_toast(out, width, height);
+        self.push_selected_name(out, width, height);
+        self.push_toast(out, width, height, icons);
         self.push_progress(out, width, height);
         self.push_damage_flash(out, width, height);
-        push_crosshair(out, width, height);
+        push_crosshair(out, width, height, &self.ui_textures);
     }
 
-    /// 心形生命值：满心、半心与空心按 2 点生命值换算。
-    fn push_health(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    /// 心形生命值：满心、半心与空心按 2 点生命值换算，并在上方显示数值。
+    fn push_health(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         let viewport = (width, height);
         let hearts = self.max_health.div_ceil(2) as usize;
         if hearts == 0 {
@@ -246,6 +222,19 @@ impl HudModel {
             hearts as f32 * heart_size + (hearts.saturating_sub(1)) as f32 * HEART_GAP;
         let start_x = (width - total_width) * 0.5;
         let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size;
+
+        let label = format!("HP {}/{}", self.health, self.max_health);
+        let label_width = font::text_width(&label, 1.4);
+        font::push_text(
+            out,
+            viewport,
+            (width - label_width) * 0.5,
+            y - 13.0,
+            1.4,
+            theme::TEXT_MUTED,
+            &label,
+        );
+
         for index in 0..hearts {
             let x = start_x + index as f32 * (heart_size + HEART_GAP);
             let remaining = (self.health as i64 - (index as i64) * 2).clamp(0, 2);
@@ -256,69 +245,64 @@ impl HudModel {
             } else {
                 HeartFill::Empty
             };
-            push_heart(out, viewport, x, y, fill);
+            push_heart(out, viewport, x, y, fill, &self.ui_textures);
         }
     }
 
     /// 受伤后覆盖屏幕四周的红色反馈，随时间淡出。
-    fn push_damage_flash(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    fn push_damage_flash(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         if self.damage_flash_remaining <= 0.0 {
             return;
         }
         let alpha = (self.damage_flash_remaining / DAMAGE_FLASH_DURATION).clamp(0.0, 1.0);
-        let mut color = DAMAGE_FLASH;
-        color[3] *= alpha;
         let viewport = (width, height);
+        if let Some(view) = self.ui_textures.get("damage_vignette") {
+            push_ui_view(
+                out,
+                viewport,
+                UiRect::new(0.0, 0.0, width, height),
+                view,
+                [1.0, 1.0, 1.0, alpha],
+            );
+            return;
+        }
+        let mut color = theme::DAMAGE_FLASH;
+        color[3] *= alpha;
         let thickness = DAMAGE_FLASH_THICKNESS;
         push_quad(
             out,
             viewport,
-            HudRect {
-                x: 0.0,
-                y: 0.0,
-                width,
-                height: thickness,
-            },
+            UiRect::new(0.0, 0.0, width, thickness),
             color,
         );
         push_quad(
             out,
             viewport,
-            HudRect {
-                x: 0.0,
-                y: height - thickness,
-                width,
-                height: thickness,
-            },
+            UiRect::new(0.0, height - thickness, width, thickness),
             color,
         );
         push_quad(
             out,
             viewport,
-            HudRect {
-                x: 0.0,
-                y: thickness,
-                width: thickness,
-                height: height - thickness * 2.0,
-            },
+            UiRect::new(0.0, thickness, thickness, height - thickness * 2.0),
             color,
         );
         push_quad(
             out,
             viewport,
-            HudRect {
-                x: width - thickness,
-                y: thickness,
-                width: thickness,
-                height: height - thickness * 2.0,
-            },
+            UiRect::new(
+                width - thickness,
+                thickness,
+                thickness,
+                height - thickness * 2.0,
+            ),
             color,
         );
     }
 
     fn push_hotbar(
         &self,
-        out: &mut Vec<HudVertex>,
+        out: &mut Vec<UiVertex>,
         width: f32,
         height: f32,
         icons: &ItemTextureMap,
@@ -327,102 +311,77 @@ impl HudModel {
         let total = HOTBAR_SLOTS as f32 * SLOT_SIZE + (HOTBAR_SLOTS - 1) as f32 * SLOT_GAP;
         let start_x = (width - total) * 0.5;
         let y = height - BOTTOM_MARGIN - SLOT_SIZE;
+        let pulse = self.clock.pulse(SELECTED_PULSE_SPEED);
+
+        if let Some(view) = self.ui_textures.get("hotbar_bg") {
+            push_ui_view(
+                out,
+                viewport,
+                UiRect::new(
+                    start_x - HOTBAR_PADDING,
+                    y - HOTBAR_PADDING,
+                    total + HOTBAR_PADDING * 2.0,
+                    SLOT_SIZE + HOTBAR_PADDING * 2.0,
+                ),
+                view,
+                [1.0; 4],
+            );
+        }
 
         for index in 0..HOTBAR_SLOTS {
             let x = start_x + index as f32 * (SLOT_SIZE + SLOT_GAP);
             let selected = index == self.selected_slot;
+            let rect = UiRect::new(x, y, SLOT_SIZE, SLOT_SIZE);
 
             if selected {
+                let expand = 1.0 + pulse * 2.0;
+                let mut glow = theme::SLOT_GLOW;
+                glow[3] = 0.12 + pulse * 0.20;
                 push_quad(
                     out,
                     viewport,
-                    HudRect {
-                        x: x - 2.0,
-                        y: y - 2.0,
-                        width: SLOT_SIZE + 4.0,
-                        height: SLOT_SIZE + 4.0,
-                    },
-                    SLOT_GLOW,
+                    UiRect::new(
+                        rect.x - expand,
+                        rect.y - expand,
+                        rect.width + expand * 2.0,
+                        rect.height + expand * 2.0,
+                    ),
+                    glow,
                 );
             }
 
-            push_quad(
+            widget::push_slot(
                 out,
                 viewport,
-                HudRect {
-                    x,
-                    y,
-                    width: SLOT_SIZE,
-                    height: SLOT_SIZE,
-                },
+                rect,
                 if selected {
-                    SLOT_BORDER_SELECTED
+                    SlotState::Selected
                 } else {
-                    SLOT_BORDER_IDLE
+                    SlotState::Normal
                 },
+                self.slots[index],
+                icons,
+                &self.ui_textures,
+                SlotSkin::Hotbar,
+                theme::HOTBAR_BACKGROUND,
             );
-            push_quad(
-                out,
-                viewport,
-                HudRect {
-                    x: x + SLOT_BORDER,
-                    y: y + SLOT_BORDER,
-                    width: SLOT_SIZE - SLOT_BORDER * 2.0,
-                    height: SLOT_SIZE - SLOT_BORDER * 2.0,
-                },
-                HOTBAR_BACKGROUND,
-            );
-
-            let inner = HudRect {
-                x: x + SLOT_PADDING,
-                y: y + SLOT_PADDING,
-                width: SLOT_SIZE - SLOT_PADDING * 2.0,
-                height: SLOT_SIZE - SLOT_PADDING * 2.0,
-            };
-            match self.slots[index] {
-                None => push_quad(out, viewport, inner, SLOT_EMPTY),
-                Some(stack) => {
-                    push_item_icon(out, viewport, inner, stack.item(), icons);
-                    push_slot_durability(out, viewport, x, y, stack);
-                    if stack.count() > 1 {
-                        let text = stack.count().to_string();
-                        let text_width = font::text_width(&text, 2.0);
-                        let text_y = y + SLOT_SIZE - 4.0 - font::GLYPH_HEIGHT as f32 * 2.0;
-                        let text_x = x + SLOT_SIZE - 4.0 - text_width;
-                        font::push_text(
-                            out,
-                            viewport,
-                            text_x + 1.0,
-                            text_y + 1.0,
-                            2.0,
-                            TEXT_SHADOW,
-                            &text,
-                        );
-                        font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
-                    }
-                }
-            }
         }
     }
 
-    /// 选中工具的名称与损坏状态；普通方块物品不显示。
-    fn push_tool_label(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    /// 当前快捷栏物品的名称；工具损坏时改用警示色并注明状态。
+    fn push_selected_name(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         let Some(stack) = self.slots[self.selected_slot] else {
             return;
         };
-        if !stack.is_tool() {
-            return;
-        }
-
         let text = if stack.is_broken() {
             format!("BROKEN {}", item_name(stack.item()))
         } else {
             item_name(stack.item()).to_string()
         };
         let color = if stack.is_broken() {
-            TOOL_BROKEN_COLOR
+            theme::TOOL_BROKEN
         } else {
-            TOOL_LABEL_COLOR
+            theme::TOOL_LABEL
         };
         let text_width = font::text_width(&text, TOAST_PIXEL);
         let x = (width - text_width) * 0.5;
@@ -433,13 +392,13 @@ impl HudModel {
             x + 1.0,
             y + 1.0,
             TOAST_PIXEL,
-            [0.0, 0.0, 0.0, 0.85],
+            theme::TEXT_SHADOW,
             &text,
         );
         font::push_text(out, (width, height), x, y, TOAST_PIXEL, color, &text);
     }
 
-    fn push_toast(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    fn push_toast(&self, out: &mut Vec<UiVertex>, width: f32, height: f32, icons: &ItemTextureMap) {
         let Some(toast) = self.toast else {
             return;
         };
@@ -447,20 +406,34 @@ impl HudModel {
         let (text, base_color) = match toast.kind {
             ToastKind::Pickup => (
                 format!("+{} {}", toast.count, item_name(toast.item)),
-                TOAST_TEXT,
+                theme::TOAST_TEXT,
             ),
             ToastKind::ToolBroken => (
                 format!("{} BROKEN", item_name(toast.item)),
-                TOOL_BROKEN_COLOR,
+                theme::TOOL_BROKEN,
             ),
         };
+        let has_icon = icons.icon(toast.item).is_some();
+        let icon_span = if has_icon { TOAST_ICON_SIZE + 8.0 } else { 0.0 };
         let text_width = font::text_width(&text, TOAST_PIXEL);
-        let x = (width - text_width) * 0.5;
+        let total_width = icon_span + text_width;
+        let x = (width - total_width) * 0.5;
         let y = height - BOTTOM_MARGIN - SLOT_SIZE - TOAST_OFFSET;
+
+        if has_icon {
+            push_item_icon(
+                out,
+                (width, height),
+                UiRect::new(x, y - 2.0, TOAST_ICON_SIZE, TOAST_ICON_SIZE),
+                toast.item,
+                icons,
+            );
+        }
+        let text_x = x + icon_span;
         font::push_text(
             out,
             (width, height),
-            x + 1.0,
+            text_x + 1.0,
             y + 1.0,
             TOAST_PIXEL,
             [0.0, 0.0, 0.0, 0.85 * alpha],
@@ -468,10 +441,10 @@ impl HudModel {
         );
         let mut color = base_color;
         color[3] *= alpha;
-        font::push_text(out, (width, height), x, y, TOAST_PIXEL, color, &text);
+        font::push_text(out, (width, height), text_x, y, TOAST_PIXEL, color, &text);
     }
 
-    fn push_progress(&self, out: &mut Vec<HudVertex>, width: f32, height: f32) {
+    fn push_progress(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         let Some(progress) = self.mining_progress else {
             return;
         };
@@ -479,82 +452,25 @@ impl HudModel {
         let progress = progress.clamp(0.0, 1.0);
         let x = (width - PROGRESS_WIDTH) * 0.5;
         let y = height * 0.5 + PROGRESS_OFFSET;
+        let bar = UiRect::new(x, y, PROGRESS_WIDTH, PROGRESS_HEIGHT);
 
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                x,
-                y,
-                width: PROGRESS_WIDTH,
-                height: PROGRESS_HEIGHT,
-            },
-            PROGRESS_BACKGROUND,
+        if let Some(view) = self.ui_textures.get("progress_bg") {
+            push_ui_view(out, viewport, bar, view, [1.0; 4]);
+        } else {
+            push_quad(out, viewport, bar, theme::PROGRESS_BACKGROUND);
+        }
+
+        let fill = UiRect::new(
+            x + 2.0,
+            y + 2.0,
+            (PROGRESS_WIDTH - 4.0) * progress,
+            PROGRESS_HEIGHT - 4.0,
         );
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                x: x + 2.0,
-                y: y + 2.0,
-                width: (PROGRESS_WIDTH - 4.0) * progress,
-                height: PROGRESS_HEIGHT - 4.0,
-            },
-            PROGRESS_FILL,
-        );
-    }
-}
-
-/// 快捷栏槽位底部的耐久条；普通方块物品不绘制。
-fn push_slot_durability(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    x: f32,
-    y: f32,
-    stack: ItemStack,
-) {
-    let Some(max) = stack.max_durability() else {
-        return;
-    };
-    if max == 0 {
-        return;
-    }
-
-    let current = stack.durability().unwrap_or(max);
-    let ratio = (current as f32 / max as f32).clamp(0.0, 1.0);
-    let bar = HudRect {
-        x: x + SLOT_PADDING,
-        y: y + SLOT_SIZE - SLOT_PADDING - DURABILITY_BAR_HEIGHT,
-        width: SLOT_SIZE - SLOT_PADDING * 2.0,
-        height: DURABILITY_BAR_HEIGHT,
-    };
-    let background = if current == 0 {
-        DURABILITY_BAR_BROKEN
-    } else {
-        DURABILITY_BAR_BACKGROUND
-    };
-    push_quad(out, viewport, bar, background);
-    if ratio > 0.0 {
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                width: bar.width * ratio,
-                ..bar
-            },
-            durability_color(ratio),
-        );
-    }
-}
-
-/// 按剩余耐久比例选择颜色：低于 25% 警示，低于 50% 过渡。
-pub(crate) fn durability_color(ratio: f32) -> [f32; 4] {
-    if ratio <= DURABILITY_LOW_THRESHOLD {
-        DURABILITY_LOW
-    } else if ratio <= DURABILITY_MID_THRESHOLD {
-        DURABILITY_MID
-    } else {
-        DURABILITY_HIGH
+        if let Some(view) = self.ui_textures.get("progress_fill") {
+            push_ui_view(out, viewport, fill, view, [1.0; 4]);
+        } else {
+            push_quad(out, viewport, fill, theme::PROGRESS_FILL);
+        }
     }
 }
 
@@ -566,8 +482,25 @@ enum HeartFill {
     Empty,
 }
 
-/// 绘制一颗 7×7 像素心形；半心只填充图案左半部分。
-fn push_heart(out: &mut Vec<HudVertex>, viewport: (f32, f32), x: f32, y: f32, fill: HeartFill) {
+/// 绘制一颗心形；存在 UI 图集时使用整图，否则回退 7×7 像素图案。
+fn push_heart(
+    out: &mut Vec<UiVertex>,
+    viewport: (f32, f32),
+    x: f32,
+    y: f32,
+    fill: HeartFill,
+    ui: &UiTextureMap,
+) {
+    let name = match fill {
+        HeartFill::Full => "heart_full",
+        HeartFill::Half => "heart_half",
+        HeartFill::Empty => "heart_empty",
+    };
+    if let Some(view) = ui.get(name) {
+        let size = HEART_PATTERN.len() as f32 * HEART_PIXEL;
+        push_ui_view(out, viewport, UiRect::new(x, y, size, size), view, [1.0; 4]);
+        return;
+    }
     let heart_columns = HEART_PATTERN.len();
     for (row, bits) in HEART_PATTERN.iter().enumerate() {
         let mut column = 0;
@@ -588,7 +521,11 @@ fn push_heart(out: &mut Vec<HudVertex>, viewport: (f32, f32), x: f32, y: f32, fi
                 HeartFill::Half => start <= heart_columns / 2,
                 HeartFill::Empty => false,
             };
-            let color = if is_visible { HEART_FULL } else { HEART_EMPTY };
+            let color = if is_visible {
+                theme::HEART_FULL
+            } else {
+                theme::HEART_EMPTY
+            };
             let visible_end = match fill {
                 HeartFill::Half => column.min(heart_columns / 2 + 1),
                 _ => column,
@@ -597,34 +534,46 @@ fn push_heart(out: &mut Vec<HudVertex>, viewport: (f32, f32), x: f32, y: f32, fi
                 push_quad(
                     out,
                     viewport,
-                    HudRect {
-                        x: x + start as f32 * HEART_PIXEL,
-                        y: y + row as f32 * HEART_PIXEL,
-                        width: (column - start) as f32 * HEART_PIXEL,
-                        height: HEART_PIXEL,
-                    },
-                    HEART_EMPTY,
+                    UiRect::new(
+                        x + start as f32 * HEART_PIXEL,
+                        y + row as f32 * HEART_PIXEL,
+                        (column - start) as f32 * HEART_PIXEL,
+                        HEART_PIXEL,
+                    ),
+                    theme::HEART_EMPTY,
                 );
                 continue;
             }
             push_quad(
                 out,
                 viewport,
-                HudRect {
-                    x: x + start as f32 * HEART_PIXEL,
-                    y: y + row as f32 * HEART_PIXEL,
-                    width: (visible_end - start) as f32 * HEART_PIXEL,
-                    height: HEART_PIXEL,
-                },
+                UiRect::new(
+                    x + start as f32 * HEART_PIXEL,
+                    y + row as f32 * HEART_PIXEL,
+                    (visible_end - start) as f32 * HEART_PIXEL,
+                    HEART_PIXEL,
+                ),
                 color,
             );
         }
     }
 }
 
-fn push_crosshair(out: &mut Vec<HudVertex>, width: f32, height: f32) {
+fn push_crosshair(out: &mut Vec<UiVertex>, width: f32, height: f32, ui: &UiTextureMap) {
     let center_x = width * 0.5;
     let center_y = height * 0.5;
+
+    if let Some(view) = ui.get("crosshair") {
+        let size = (CROSSHAIR_ARM + 4.0) * 2.0;
+        push_ui_view(
+            out,
+            (width, height),
+            UiRect::new(center_x - size * 0.5, center_y - size * 0.5, size, size),
+            view,
+            [1.0; 4],
+        );
+        return;
+    }
 
     // 先画深色底衬，再画亮色线条，保证在草地与石头上都清晰可见。
     push_crosshair_layer(
@@ -634,13 +583,21 @@ fn push_crosshair(out: &mut Vec<HudVertex>, width: f32, height: f32) {
         center_x,
         center_y,
         1.0,
-        CROSSHAIR_SHADOW,
+        theme::CROSSHAIR_SHADOW,
     );
-    push_crosshair_layer(out, width, height, center_x, center_y, 0.0, CROSSHAIR_COLOR);
+    push_crosshair_layer(
+        out,
+        width,
+        height,
+        center_x,
+        center_y,
+        0.0,
+        theme::CROSSHAIR,
+    );
 }
 
 fn push_crosshair_layer(
-    out: &mut Vec<HudVertex>,
+    out: &mut Vec<UiVertex>,
     width: f32,
     height: f32,
     center_x: f32,
@@ -654,123 +611,31 @@ fn push_crosshair_layer(
     push_quad(
         out,
         viewport,
-        HudRect {
-            x: center_x - arm,
-            y: center_y - thickness * 0.5,
-            width: arm * 2.0,
-            height: thickness,
-        },
+        UiRect::new(
+            center_x - arm,
+            center_y - thickness * 0.5,
+            arm * 2.0,
+            thickness,
+        ),
         color,
     );
     push_quad(
         out,
         viewport,
-        HudRect {
-            x: center_x - thickness * 0.5,
-            y: center_y - arm,
-            width: thickness,
-            height: arm * 2.0,
-        },
+        UiRect::new(
+            center_x - thickness * 0.5,
+            center_y - arm,
+            thickness,
+            arm * 2.0,
+        ),
         color,
     );
-}
-
-/// 像素坐标的矩形，用于生成 HUD 四边形。
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct HudRect {
-    pub(crate) x: f32,
-    pub(crate) y: f32,
-    pub(crate) width: f32,
-    pub(crate) height: f32,
-}
-
-/// 把像素坐标的矩形转为两个裁剪空间三角形，使用纯色绘制。
-pub(crate) fn push_quad(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    color: [f32; 4],
-) {
-    push_quad_uv(out, viewport, rect, [SOLID_UV; 4], color);
-}
-
-/// 绘制一张物品图集中的图标；没有图标（未配置或显式隐藏）时不产生几何。
-pub(crate) fn push_item_icon(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    item: ItemId,
-    icons: &ItemTextureMap,
-) {
-    let Some(icon) = icons.icon(item) else {
-        return;
-    };
-    push_textured_quad(out, viewport, rect, icon.uv, [1.0, 1.0, 1.0, 1.0]);
-}
-
-/// 按图集 UV 子区域采样绘制矩形；`uv` 为 `min` 左上、`max` 右下。
-pub(crate) fn push_textured_quad(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    uv: UVRect,
-    color: [f32; 4],
-) {
-    if uv.max[0] <= uv.min[0] || uv.max[1] <= uv.min[1] {
-        return;
-    }
-    // 顶点顺序与 push_quad_uv 的四角一致，UV 与位置一一对应；纹理 v 轴向下。
-    push_quad_uv(
-        out,
-        viewport,
-        rect,
-        [
-            [uv.min[0], uv.min[1]],
-            [uv.min[0], uv.max[1]],
-            [uv.max[0], uv.max[1]],
-            [uv.max[0], uv.min[1]],
-        ],
-        color,
-    );
-}
-
-/// 顶点顺序：左上、左下、右下、左上、右下、右上。
-fn push_quad_uv(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    uvs: [[f32; 2]; 4],
-    color: [f32; 4],
-) {
-    let (width, height) = viewport;
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return;
-    }
-
-    let x0 = rect.x / width * 2.0 - 1.0;
-    let x1 = (rect.x + rect.width) / width * 2.0 - 1.0;
-    let y0 = 1.0 - rect.y / height * 2.0;
-    let y1 = 1.0 - (rect.y + rect.height) / height * 2.0;
-
-    for (px, py, uv) in [
-        (x0, y0, uvs[0]),
-        (x0, y1, uvs[1]),
-        (x1, y1, uvs[2]),
-        (x0, y0, uvs[0]),
-        (x1, y1, uvs[2]),
-        (x1, y0, uvs[3]),
-    ] {
-        out.push(HudVertex {
-            position: [px, py],
-            uv,
-            color,
-        });
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::draw::SOLID_UV;
 
     fn stone(count: u32) -> ItemStack {
         ItemStack::new(ItemId::STONE, count).expect("合法堆叠")
@@ -786,7 +651,7 @@ mod tests {
     fn stone_icons() -> ItemTextureMap {
         use crate::texture::item_texture::builtin_manifest;
         use crate::texture::texture_registry::{TextureRegistry, TextureSeed};
-        use crate::texture::types::{TextureType, Transparency};
+        use crate::texture::types::{TextureType, Transparency, UVRect};
 
         let mut registry = TextureRegistry::new();
         let id = registry
@@ -824,9 +689,8 @@ mod tests {
         }
         .build(&mut vertices, 1280.0, 720.0, &stone_icons());
 
-        let textured: Vec<&HudVertex> = vertices.iter().filter(|v| v.uv[0] >= 0.0).collect();
+        let textured: Vec<&UiVertex> = vertices.iter().filter(|v| v.uv[0] >= 0.0).collect();
         assert!(!textured.is_empty(), "快捷栏必须采样物品图标");
-        // 首个四边形按左上、左下、右下顺序生成，用于校验 UV 未被上下翻转。
         assert_eq!(textured[0].uv, [0.25, 0.5]);
         assert_eq!(textured[1].uv, [0.25, 0.75]);
         assert_eq!(textured[2].uv, [0.5, 0.75]);
@@ -913,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn an_open_inventory_hides_the_hud() {
+    fn an_open_ui_hides_the_hud() {
         let mut vertices = Vec::new();
         let mut model = HudModel {
             mining_progress: Some(0.5),
@@ -941,33 +805,46 @@ mod tests {
     }
 
     #[test]
+    fn repeated_pickups_of_the_same_item_are_merged() {
+        let mut model = HudModel::default();
+        model.show_pickup(ItemId::STONE, 3);
+        model.show_pickup(ItemId::STONE, 5);
+        assert_eq!(model.toast.map(|toast| toast.count), Some(8));
+
+        model.show_pickup(ItemId::DIRT, 1);
+        assert_eq!(model.toast.map(|toast| toast.item), Some(ItemId::DIRT));
+        assert_eq!(model.toast.map(|toast| toast.count), Some(1));
+    }
+
+    #[test]
     fn durability_bars_only_apply_to_tools() {
         let viewport = (1280.0, 720.0);
+        let rect = UiRect::new(0.0, 0.0, SLOT_SIZE, SLOT_SIZE);
 
         let mut block_vertices = Vec::new();
-        push_slot_durability(&mut block_vertices, viewport, 0.0, 0.0, stone(1));
+        widget::push_durability_strip(&mut block_vertices, viewport, rect, stone(1));
         assert!(block_vertices.is_empty(), "普通方块物品没有耐久条");
 
         let mut tool_vertices = Vec::new();
-        push_slot_durability(&mut tool_vertices, viewport, 0.0, 0.0, pickaxe(30));
+        widget::push_durability_strip(&mut tool_vertices, viewport, rect, pickaxe(30));
         assert_eq!(tool_vertices.len(), 12, "耐久条背景 + 填充");
 
         let mut broken_vertices = Vec::new();
-        push_slot_durability(&mut broken_vertices, viewport, 0.0, 0.0, pickaxe(0));
+        widget::push_durability_strip(&mut broken_vertices, viewport, rect, pickaxe(0));
         assert_eq!(broken_vertices.len(), 6, "损坏工具只绘制警示背景，没有填充");
     }
 
     #[test]
     fn durability_color_warns_at_low_and_medium_levels() {
-        assert_eq!(durability_color(1.0), DURABILITY_HIGH);
-        assert_eq!(durability_color(0.6), DURABILITY_HIGH);
-        assert_eq!(durability_color(0.4), DURABILITY_MID);
-        assert_eq!(durability_color(0.2), DURABILITY_LOW);
-        assert_eq!(durability_color(0.0), DURABILITY_LOW);
+        assert_eq!(widget::durability_color(1.0), theme::DURABILITY_HIGH);
+        assert_eq!(widget::durability_color(0.6), theme::DURABILITY_HIGH);
+        assert_eq!(widget::durability_color(0.4), theme::DURABILITY_MID);
+        assert_eq!(widget::durability_color(0.2), theme::DURABILITY_LOW);
+        assert_eq!(widget::durability_color(0.0), theme::DURABILITY_LOW);
     }
 
     #[test]
-    fn the_selected_tool_shows_its_name_and_broken_state() {
+    fn the_selected_item_shows_its_name_and_broken_state() {
         let mut slots = [None; HOTBAR_SLOTS];
         slots[0] = Some(pickaxe(60));
         let mut vertices = Vec::new();
@@ -981,7 +858,7 @@ mod tests {
         HudModel::default().build(&mut empty_vertices, 1280.0, 720.0, &ItemTextureMap::empty());
         assert!(
             vertices.len() > empty_vertices.len(),
-            "选中工具必须显示名称"
+            "选中物品必须显示名称"
         );
 
         let mut broken_slots = [None; HOTBAR_SLOTS];
@@ -1004,6 +881,22 @@ mod tests {
     }
 
     #[test]
+    fn every_selected_item_has_a_name_not_only_tools() {
+        let mut slots = [None; HOTBAR_SLOTS];
+        slots[0] = Some(stone(4));
+        let mut with_item = Vec::new();
+        HudModel {
+            slots,
+            ..HudModel::default()
+        }
+        .build(&mut with_item, 1280.0, 720.0, &ItemTextureMap::empty());
+
+        let mut empty = Vec::new();
+        HudModel::default().build(&mut empty, 1280.0, 720.0, &ItemTextureMap::empty());
+        assert!(with_item.len() > empty.len(), "方块物品同样显示名称");
+    }
+
+    #[test]
     fn health_is_clamped_and_defaults_are_safe() {
         let mut model = HudModel::default();
         model.set_health(50, 20);
@@ -1022,8 +915,24 @@ mod tests {
         model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
 
         assert!(
-            vertices.iter().any(|vertex| vertex.color == HEART_EMPTY),
+            vertices
+                .iter()
+                .any(|vertex| vertex.color == theme::HEART_EMPTY),
             "19/20 应出现半颗心，右半部分保持空心色"
+        );
+    }
+
+    #[test]
+    fn health_value_text_is_rendered() {
+        let mut vertices = Vec::new();
+        let mut model = HudModel::default();
+        model.set_health(7, 20);
+        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
+        assert!(
+            vertices
+                .iter()
+                .any(|vertex| vertex.color == theme::TEXT_MUTED),
+            "生命值数值以次要文本颜色绘制"
         );
     }
 

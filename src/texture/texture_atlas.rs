@@ -1,18 +1,17 @@
 //! Texture Atlas 自动打包：确定性布局、边缘像素扩展与 UV 生成。
 //!
-//! 开发者只维护独立 PNG，图集由资源系统自动生成。纹理支持
-//! 16/32/64/128 的正方形尺寸；布局先按边长从大到小、再按名称排序，
-//! 因此相同资源集合无论读取顺序如何都会得到相同结果。
+//! 开发者只维护独立 PNG，图集由资源系统自动生成。纹理可以为任意宽高
+//! （含 UI 的非正方形大图），只要不超过图集容量；布局按高度、宽度降序，
+//! 再按名称排序，因此相同资源集合无论读取顺序如何都会得到相同结果。
 
 use std::fmt;
 
-use super::texture_loader::{is_supported_texture_size, SUPPORTED_SIZES_TEXT};
 use super::types::{TextureId, TextureImage, Transparency, UVRect};
 
 /// 每张纹理四周的像素间隔；间隔由边缘像素复制填充，防止采样串色。
 pub const ATLAS_PADDING: u32 = 1;
 /// 默认图集最大边长；超出时返回明确的容量错误而不是静默丢弃。
-pub const MAX_ATLAS_SIZE: u32 = 2048;
+pub const MAX_ATLAS_SIZE: u32 = 4096;
 
 /// 图集打包输入。
 #[derive(Clone, Debug)]
@@ -60,12 +59,6 @@ impl AtlasImage {
 /// 图集构建失败原因。
 #[derive(Clone, Debug, PartialEq)]
 pub enum AtlasError {
-    /// 纹理尺寸不符合规范。
-    InvalidTextureSize {
-        name: String,
-        width: u32,
-        height: u32,
-    },
     /// 纹理数量超过图集容量。
     CapacityExceeded { count: usize, max_size: u32 },
     /// 输入中存在重复纹理名。
@@ -77,14 +70,6 @@ pub enum AtlasError {
 impl fmt::Display for AtlasError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AtlasError::InvalidTextureSize {
-                name,
-                width,
-                height,
-            } => write!(
-                formatter,
-                "纹理 {name} 尺寸为 {width}×{height}，图集要求 {SUPPORTED_SIZES_TEXT} 的正方形"
-            ),
             AtlasError::CapacityExceeded { count, max_size } => write!(
                 formatter,
                 "图集容量不足: {count} 张纹理超出最大边长 {max_size} 像素"
@@ -111,24 +96,18 @@ pub fn build_atlas(sources: &[AtlasSource], max_size: u32) -> Result<AtlasImage,
     }
 
     let mut ordered: Vec<&AtlasSource> = sources.iter().collect();
-    // 先按边长降序，再按名称升序：货架式打包能把相近尺寸排在一起，
+    // 先按高度降序、再按宽度降序、最后按名称升序：货架式打包把相近尺寸排在一起，
     // 同时保证同一资源集合的布局与输入顺序无关。
     ordered.sort_by(|left, right| {
         right
             .image
             .height
             .cmp(&left.image.height)
+            .then_with(|| right.image.width.cmp(&left.image.width))
             .then_with(|| left.name.cmp(&right.name))
     });
 
     for (index, source) in ordered.iter().enumerate() {
-        if !is_supported_texture_size(source.image.width, source.image.height) {
-            return Err(AtlasError::InvalidTextureSize {
-                name: source.name.clone(),
-                width: source.image.width,
-                height: source.image.height,
-            });
-        }
         if ordered[..index]
             .iter()
             .any(|other| other.name == source.name)
@@ -141,7 +120,7 @@ pub fn build_atlas(sources: &[AtlasSource], max_size: u32) -> Result<AtlasImage,
     }
 
     let count = ordered.len();
-    // 货架式布局：逐行填充，行高由该行最高的纹理决定。
+    // 货架式布局：逐行填充，行高由该行最高的纹理决定；宽高独立计算，支持矩形纹理。
     let mut placements = Vec::with_capacity(count);
     let mut cursor_x = 0u32;
     let mut cursor_y = 0u32;
@@ -149,22 +128,22 @@ pub fn build_atlas(sources: &[AtlasSource], max_size: u32) -> Result<AtlasImage,
     let mut used_width = 0u32;
 
     for source in &ordered {
-        let size = source.image.width;
-        let cell = size + ATLAS_PADDING * 2;
-        if cell > max_size {
+        let cell_width = source.image.width + ATLAS_PADDING * 2;
+        let cell_height = source.image.height + ATLAS_PADDING * 2;
+        if cell_width > max_size || cell_height > max_size {
             return Err(AtlasError::CapacityExceeded { count, max_size });
         }
-        if cursor_x + cell > max_size {
+        if cursor_x + cell_width > max_size {
             cursor_y += row_height;
             cursor_x = 0;
             row_height = 0;
         }
-        if cursor_y + cell > max_size {
+        if cursor_y + cell_height > max_size {
             return Err(AtlasError::CapacityExceeded { count, max_size });
         }
-        placements.push((cursor_x, cursor_y, cell));
-        cursor_x += cell;
-        row_height = row_height.max(cell);
+        placements.push((cursor_x, cursor_y, cell_width, cell_height));
+        cursor_x += cell_width;
+        row_height = row_height.max(cell_height);
         used_width = used_width.max(cursor_x);
     }
 
@@ -178,14 +157,17 @@ pub fn build_atlas(sources: &[AtlasSource], max_size: u32) -> Result<AtlasImage,
     let mut pixels = vec![0; (width * height * 4) as usize];
     let mut entries = Vec::with_capacity(count);
 
-    for (source, (origin_x, origin_y, cell)) in ordered.iter().zip(placements) {
-        let size = source.image.width;
+    for (source, (origin_x, origin_y, cell_width, cell_height)) in ordered.iter().zip(placements) {
+        let image_width = source.image.width;
+        let image_height = source.image.height;
         // 包含间隔的格内，每个目标像素都从纹理内部钳制取样，
         // 从而把边缘像素复制到间隔区域，消除最近邻采样串色。
-        for dy in 0..cell {
-            let source_y = (dy as i32 - ATLAS_PADDING as i32).clamp(0, size as i32 - 1) as u32;
-            for dx in 0..cell {
-                let source_x = (dx as i32 - ATLAS_PADDING as i32).clamp(0, size as i32 - 1) as u32;
+        for dy in 0..cell_height {
+            let source_y =
+                (dy as i32 - ATLAS_PADDING as i32).clamp(0, image_height as i32 - 1) as u32;
+            for dx in 0..cell_width {
+                let source_x =
+                    (dx as i32 - ATLAS_PADDING as i32).clamp(0, image_width as i32 - 1) as u32;
                 let Some([r, g, b, a]) = source.image.pixel(source_x, source_y) else {
                     continue;
                 };
@@ -199,8 +181,8 @@ pub fn build_atlas(sources: &[AtlasSource], max_size: u32) -> Result<AtlasImage,
         let uv = UVRect::from_pixels(
             origin_x + ATLAS_PADDING,
             origin_y + ATLAS_PADDING,
-            size,
-            size,
+            image_width,
+            image_height,
             width,
             height,
         );
@@ -343,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_textures_keep_their_aspect_ratio() {
+        let sources = vec![
+            AtlasSource {
+                id: TextureId::new(0),
+                name: "panel".to_string(),
+                image: TextureImage::new(256, 64, vec![10; 256 * 64 * 4]).expect("合法图片"),
+                transparency: Transparency::Opaque,
+            },
+            AtlasSource {
+                id: TextureId::new(1),
+                name: "tall".to_string(),
+                image: TextureImage::new(32, 128, vec![20; 32 * 128 * 4]).expect("合法图片"),
+                transparency: Transparency::Opaque,
+            },
+        ];
+        let atlas = build_atlas(&sources, MAX_ATLAS_SIZE).expect("矩形纹理应可打包");
+        for (name, width, height) in [("panel", 256, 64), ("tall", 32, 128)] {
+            let entry = atlas.entry(name).expect("条目存在");
+            let pixel_width = ((entry.uv.max[0] - entry.uv.min[0]) * atlas.width as f32).round();
+            let pixel_height = ((entry.uv.max[1] - entry.uv.min[1]) * atlas.height as f32).round();
+            assert_eq!(pixel_width as u32, width, "{name} 的 UV 宽度应保持");
+            assert_eq!(pixel_height as u32, height, "{name} 的 UV 高度应保持");
+        }
+    }
+
+    #[test]
     fn layout_is_deterministic_regardless_of_input_order() {
         let sources = vec![
             solid("stone", 0, [1, 1, 1, 255]),
@@ -375,14 +383,18 @@ mod tests {
     }
 
     #[test]
-    fn wrong_sized_textures_are_rejected() {
+    fn arbitrary_texture_sizes_are_packed_when_they_fit() {
         let source = AtlasSource {
             id: TextureId::new(0),
-            name: "bad".to_string(),
-            image: TextureImage::new(8, 8, vec![0; 8 * 8 * 4]).expect("合法缓冲"),
+            name: "ui_panel".to_string(),
+            image: TextureImage::new(1040, 80, vec![7; 1040 * 80 * 4]).expect("合法缓冲"),
             transparency: Transparency::Opaque,
         };
-        let error = build_atlas(&[source], MAX_ATLAS_SIZE).expect_err("尺寸应被拒绝");
-        assert!(matches!(error, AtlasError::InvalidTextureSize { .. }));
+        let atlas = build_atlas(&[source], MAX_ATLAS_SIZE).expect("1040×80 应可打包");
+        let entry = atlas.entry("ui_panel").expect("条目存在");
+        let pixel_width = ((entry.uv.max[0] - entry.uv.min[0]) * atlas.width as f32).round();
+        let pixel_height = ((entry.uv.max[1] - entry.uv.min[1]) * atlas.height as f32).round();
+        assert_eq!(pixel_width as u32, 1040);
+        assert_eq!(pixel_height as u32, 80);
     }
 }

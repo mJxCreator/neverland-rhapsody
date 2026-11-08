@@ -29,6 +29,8 @@ impl TextureId {
 pub enum TextureType {
     Block,
     Item,
+    /// UI 面板、槽位、按钮与 HUD 部件；独立图集，允许非正方形。
+    Ui,
     /// 未来生物模型与材质使用，v0.16 仅保留目录与类型。
     Entity,
 }
@@ -39,6 +41,7 @@ impl TextureType {
         match self {
             TextureType::Block => "blocks",
             TextureType::Item => "items",
+            TextureType::Ui => "ui",
             TextureType::Entity => "entities",
         }
     }
@@ -48,6 +51,7 @@ impl TextureType {
         match self {
             TextureType::Block => AtlasId::Block,
             TextureType::Item => AtlasId::Item,
+            TextureType::Ui => AtlasId::Ui,
             TextureType::Entity => AtlasId::Entity,
         }
     }
@@ -56,6 +60,7 @@ impl TextureType {
         match self {
             TextureType::Block => "block",
             TextureType::Item => "item",
+            TextureType::Ui => "ui",
             TextureType::Entity => "entity",
         }
     }
@@ -66,6 +71,8 @@ impl TextureType {
 pub enum AtlasId {
     Block,
     Item,
+    /// UI 独立图集，与物品图标解耦。
+    Ui,
     /// 未来生物材质预留，本版本不生成。
     Entity,
 }
@@ -75,6 +82,7 @@ impl AtlasId {
         match self {
             AtlasId::Block => "block",
             AtlasId::Item => "item",
+            AtlasId::Ui => "ui",
             AtlasId::Entity => "entity",
         }
     }
@@ -236,6 +244,8 @@ mod tests {
     fn texture_types_map_to_their_own_atlas() {
         assert_eq!(TextureType::Block.atlas(), AtlasId::Block);
         assert_eq!(TextureType::Item.atlas(), AtlasId::Item);
+        assert_eq!(TextureType::Ui.atlas(), AtlasId::Ui);
         assert_eq!(TextureType::Item.directory(), "items");
+        assert_eq!(TextureType::Ui.directory(), "ui");
     }
 }

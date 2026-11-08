@@ -24,9 +24,12 @@ use super::item_texture::{
 };
 use super::material::MaterialRegistry;
 use super::texture_atlas::{build_atlas, AtlasEntry, AtlasImage, AtlasSource, MAX_ATLAS_SIZE};
-use super::texture_loader::{load_texture_png, TextureLoadError};
+use super::texture_loader::{load_texture_png, load_ui_texture_png, TextureLoadError};
 use super::texture_registry::{TextureRegistry, TextureSeed};
 use super::types::{TextureId, TextureImage, TextureType, Transparency};
+use super::ui_texture::{
+    builtin_manifest as builtin_ui_manifest, image_name, UiManifest, UiManifestEntry, UiTextureMap,
+};
 
 /// 默认资源根目录（相对项目根）。
 pub const DEFAULT_ASSET_ROOT: &str = "assets";
@@ -39,8 +42,10 @@ pub struct TextureAssets {
     pub registry: TextureRegistry,
     pub block_atlas: AtlasImage,
     pub item_atlas: AtlasImage,
+    pub ui_atlas: AtlasImage,
     pub block_textures: BlockTextureMap,
     pub item_textures: ItemTextureMap,
+    pub ui_textures: UiTextureMap,
     pub materials: MaterialRegistry,
     /// 非致命问题：缺失图片、回退到占位等。
     pub warnings: Vec<String>,
@@ -53,6 +58,7 @@ pub struct TextureAssets {
 pub struct TextureAssetSummary {
     pub block_textures: usize,
     pub item_textures: usize,
+    pub ui_textures: usize,
     pub placeholders: usize,
     pub warnings: usize,
     pub errors: usize,
@@ -81,6 +87,11 @@ impl TextureAssets {
             &mut warnings,
         )
         .unwrap_or_else(builtin_item_manifest);
+        let mut ui_manifest = load_manifest(
+            &texture_root.join("manifests").join("ui.json"),
+            &mut warnings,
+        )
+        .unwrap_or_else(builtin_ui_manifest);
 
         let block_requests = block_texture_requests(&block_manifest);
         let item_requests = item_texture_requests(&item_manifest);
@@ -99,6 +110,21 @@ impl TextureAssets {
                 .or_insert_with(|| hashed_color(&name));
         }
 
+        // UI 目录中未登记的 PNG 自动作为同名的“整图拉伸”控件，避免必须同步改 manifest。
+        let known_ui_images: BTreeSet<String> = ui_manifest.ui.iter().map(image_name).collect();
+        for name in png_names(&texture_root.join(TextureType::Ui.directory())) {
+            if known_ui_images.contains(&name) {
+                continue;
+            }
+            ui_manifest.ui.push(UiManifestEntry {
+                name: name.clone(),
+                image: Some(name),
+                draw: None,
+                slice: None,
+            });
+        }
+        let ui_requests = ui_texture_requests(&ui_manifest);
+
         let mut registry = TextureRegistry::new();
         let (block_atlas, block_fallback) = build_texture_atlas(
             &mut registry,
@@ -112,6 +138,14 @@ impl TextureAssets {
             &mut registry,
             TextureType::Item,
             &item_requests,
+            &texture_root,
+            &mut warnings,
+            &mut errors,
+        );
+        let (ui_atlas, ui_fallback) = build_texture_atlas(
+            &mut registry,
+            TextureType::Ui,
+            &ui_requests,
             &texture_root,
             &mut warnings,
             &mut errors,
@@ -143,12 +177,27 @@ impl TextureAssets {
             }
         };
 
+        let ui_textures = match UiTextureMap::from_manifest(
+            &ui_manifest,
+            &registry,
+            ui_fallback,
+            &mut warnings,
+        ) {
+            Ok(map) => map,
+            Err(error) => {
+                errors.push(error.to_string());
+                UiTextureMap::empty()
+            }
+        };
+
         let assets = Self {
             registry,
             block_atlas,
             item_atlas,
+            ui_atlas,
             block_textures,
             item_textures,
+            ui_textures,
             materials: MaterialRegistry::new(),
             warnings,
             errors,
@@ -179,6 +228,11 @@ impl TextureAssets {
                 .registry
                 .iter()
                 .filter(|info| info.texture_type == TextureType::Item)
+                .count(),
+            ui_textures: self
+                .registry
+                .iter()
+                .filter(|info| info.texture_type == TextureType::Ui)
                 .count(),
             placeholders: self.registry.iter().filter(|info| info.placeholder).count(),
             warnings: self.warnings.len(),
@@ -212,7 +266,13 @@ fn build_texture_atlas(
 
     for (name, color) in requests {
         let path = directory.join(format!("{name}.png"));
-        let (image, placeholder, transparency) = match load_texture_png(&path) {
+        // UI 控件允许任意尺寸（上限 2048），方块与物品仍使用边长白名单。
+        let loaded = if texture_type == TextureType::Ui {
+            load_ui_texture_png(&path)
+        } else {
+            load_texture_png(&path)
+        };
+        let (image, placeholder, transparency) = match loaded {
             Ok(image) => {
                 let transparency = if image.has_alpha() {
                     Transparency::Alpha
@@ -353,6 +413,19 @@ fn item_texture_requests(manifest: &ItemManifest) -> BTreeMap<String, [u8; 4]> {
     requests
 }
 
+/// 从 UI manifest 收集纹理名，并用名称散列色生成缺失时的占位颜色。
+fn ui_texture_requests(manifest: &UiManifest) -> BTreeMap<String, [u8; 4]> {
+    let mut requests = BTreeMap::new();
+    for entry in &manifest.ui {
+        let image = image_name(entry);
+        requests
+            .entry(image.clone())
+            .or_insert_with(|| hashed_color(&image));
+    }
+    requests.insert(MISSING_TEXTURE.to_string(), MAGENTA);
+    requests
+}
+
 /// 扫描目录中的 PNG 文件名；目录不存在时返回空集合。
 fn png_names(directory: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(directory) else {
@@ -465,7 +538,12 @@ fn hashed_color(name: &str) -> [u8; 4] {
 pub fn watched_png_files(asset_root: &Path) -> Vec<PathBuf> {
     let texture_root = asset_root.join("textures");
     let mut files = Vec::new();
-    for texture_type in [TextureType::Block, TextureType::Item, TextureType::Entity] {
+    for texture_type in [
+        TextureType::Block,
+        TextureType::Item,
+        TextureType::Ui,
+        TextureType::Entity,
+    ] {
         for name in png_names(&texture_root.join(texture_type.directory())) {
             files.push(
                 texture_root
@@ -476,6 +554,7 @@ pub fn watched_png_files(asset_root: &Path) -> Vec<PathBuf> {
     }
     files.push(texture_root.join("manifests").join("blocks.json"));
     files.push(texture_root.join("manifests").join("items.json"));
+    files.push(texture_root.join("manifests").join("ui.json"));
     files.retain(|path| path.is_file());
     files
 }

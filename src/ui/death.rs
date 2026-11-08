@@ -1,14 +1,20 @@
 //! 死亡界面：全屏遮罩、死亡原因、重生与返回主菜单按钮。
+//!
+//! 死亡是最高优先级界面：打开时其他界面全部关闭，键盘快捷键被吞掉，
+//! 只保留鼠标对两个按钮的点击。
 
+use super::draw::{push_border, push_quad, push_ui_view, UiVertex};
+use super::font;
+use super::layout::UiRect;
+use super::theme;
 use crate::player::DamageSource;
-use crate::renderer::font;
-use crate::renderer::hud::{push_quad, HudRect, HudVertex};
+use crate::texture::UiTextureMap;
 
-const OVERLAY: [f32; 4] = [0.16, 0.01, 0.02, 0.82];
-const TITLE: [f32; 4] = [0.98, 0.86, 0.84, 1.0];
-const MUTED: [f32; 4] = [0.82, 0.74, 0.74, 1.0];
+/// 死亡按钮使用的暗红底色。
 const BUTTON: [f32; 4] = [0.28, 0.09, 0.10, 1.0];
+/// 悬停时的提亮底色。
 const BUTTON_HOVER: [f32; 4] = [0.42, 0.14, 0.16, 1.0];
+/// 按钮边框。
 const BUTTON_BORDER: [f32; 4] = [0.80, 0.42, 0.42, 1.0];
 
 const BUTTON_WIDTH: f32 = 250.0;
@@ -24,11 +30,12 @@ pub enum DeathAction {
 }
 
 /// 死亡界面状态。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DeathUi {
     open: bool,
     cursor: (f32, f32),
     cause: DamageSource,
+    ui_textures: UiTextureMap,
 }
 
 impl Default for DeathUi {
@@ -43,10 +50,17 @@ impl DeathUi {
             open: false,
             cursor: (0.0, 0.0),
             cause: DamageSource::Custom,
+            ui_textures: UiTextureMap::empty(),
         }
     }
 
-    pub const fn is_open(self) -> bool {
+    /// 替换 UI 控件图集；资源加载或热重载后由状态管理器调用。
+    pub fn set_ui_textures(&mut self, textures: UiTextureMap) {
+        self.ui_textures = textures;
+    }
+
+    #[cfg(test)]
+    pub const fn is_open(&self) -> bool {
         self.open
     }
 
@@ -66,19 +80,19 @@ impl DeathUi {
         }
     }
 
-    pub const fn cursor(self) -> (f32, f32) {
+    pub const fn cursor(&self) -> (f32, f32) {
         self.cursor
     }
 
     /// 点击检测；一次点击最多返回一个动作。
-    pub fn click_at(self, viewport: (f32, f32), cursor: (f32, f32)) -> DeathAction {
+    pub fn click_at(&self, viewport: (f32, f32), cursor: (f32, f32)) -> DeathAction {
         if !self.open {
             return DeathAction::None;
         }
         let buttons = buttons(viewport);
-        if contains(&buttons.0, cursor) {
+        if buttons.0.contains(cursor.0, cursor.1) {
             DeathAction::Respawn
-        } else if contains(&buttons.1, cursor) {
+        } else if buttons.1.contains(cursor.0, cursor.1) {
             DeathAction::MainMenu
         } else {
             DeathAction::None
@@ -86,22 +100,43 @@ impl DeathUi {
     }
 
     /// 生成死亡界面顶点。
-    pub fn build(&self, out: &mut Vec<HudVertex>, viewport: (f32, f32)) {
+    pub fn build(&self, out: &mut Vec<UiVertex>, viewport: (f32, f32)) {
         if !self.open {
             return;
         }
         let (width, height) = viewport;
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
-            },
-            OVERLAY,
-        );
+        if let Some(view) = self.ui_textures.get("death_overlay") {
+            push_ui_view(
+                out,
+                viewport,
+                UiRect::new(0.0, 0.0, width, height),
+                view,
+                [1.0; 4],
+            );
+        } else {
+            push_quad(
+                out,
+                viewport,
+                UiRect::new(0.0, 0.0, width, height),
+                theme::DEATH_OVERLAY,
+            );
+        }
+
+        if let Some(view) = self.ui_textures.get("death_panel") {
+            let panel_width = (width - 80.0).min(720.0);
+            push_ui_view(
+                out,
+                viewport,
+                UiRect::new(
+                    (width - panel_width) * 0.5,
+                    height * 0.14,
+                    panel_width,
+                    height * 0.62,
+                ),
+                view,
+                [1.0; 4],
+            );
+        }
 
         let title = "YOU DIED";
         let title_scale = 5.0;
@@ -111,7 +146,7 @@ impl DeathUi {
             (width - font::text_width(title, title_scale)) * 0.5,
             height * 0.24,
             title_scale,
-            TITLE,
+            theme::DEATH_TITLE,
             title,
         );
 
@@ -122,61 +157,69 @@ impl DeathUi {
             (width - font::text_width(&cause, 2.0)) * 0.5,
             height * 0.24 + 52.0,
             2.0,
-            MUTED,
+            theme::TEXT_MUTED,
             &cause,
         );
 
         let (respawn, main_menu) = buttons(viewport);
-        push_button(
+        push_death_button(
             out,
             viewport,
             respawn,
             "RESPAWN",
-            contains(&respawn, self.cursor),
+            respawn.contains(self.cursor.0, self.cursor.1),
+            &self.ui_textures,
         );
-        push_button(
+        push_death_button(
             out,
             viewport,
             main_menu,
             "MAIN MENU",
-            contains(&main_menu, self.cursor),
+            main_menu.contains(self.cursor.0, self.cursor.1),
+            &self.ui_textures,
         );
     }
 }
 
-fn buttons(viewport: (f32, f32)) -> (HudRect, HudRect) {
+fn buttons(viewport: (f32, f32)) -> (UiRect, UiRect) {
     let (width, height) = viewport;
     let center_x = width * 0.5;
     let top = height * 0.52;
-    let respawn = HudRect {
-        x: center_x - BUTTON_WIDTH * 0.5,
-        y: top,
-        width: BUTTON_WIDTH,
-        height: BUTTON_HEIGHT,
-    };
-    let main_menu = HudRect {
-        x: respawn.x,
-        y: top + BUTTON_HEIGHT + BUTTON_GAP,
-        width: BUTTON_WIDTH,
-        height: BUTTON_HEIGHT,
-    };
+    let respawn = UiRect::new(
+        center_x - BUTTON_WIDTH * 0.5,
+        top,
+        BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+    );
+    let main_menu = UiRect::new(
+        respawn.x,
+        top + BUTTON_HEIGHT + BUTTON_GAP,
+        BUTTON_WIDTH,
+        BUTTON_HEIGHT,
+    );
     (respawn, main_menu)
 }
 
-fn push_button(
-    out: &mut Vec<HudVertex>,
+fn push_death_button(
+    out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
-    rect: HudRect,
+    rect: UiRect,
     label: &str,
     hovered: bool,
+    ui: &UiTextureMap,
 ) {
-    push_quad(
-        out,
-        viewport,
-        rect,
-        if hovered { BUTTON_HOVER } else { BUTTON },
-    );
-    push_border(out, viewport, rect, BUTTON_BORDER, 2.0);
+    let texture = if hovered { "button_hover" } else { "button" };
+    if let Some(view) = ui.get(texture) {
+        push_ui_view(out, viewport, rect, view, [1.0; 4]);
+    } else {
+        push_quad(
+            out,
+            viewport,
+            rect,
+            if hovered { BUTTON_HOVER } else { BUTTON },
+        );
+        push_border(out, viewport, rect, 2.0, BUTTON_BORDER);
+    }
 
     let scale = 2.0;
     let text_width = font::text_width(label, scale);
@@ -186,69 +229,9 @@ fn push_button(
         rect.x + (rect.width - text_width) * 0.5,
         rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * scale) * 0.5,
         scale,
-        TITLE,
+        theme::TEXT,
         label,
     );
-}
-
-fn push_border(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    color: [f32; 4],
-    thickness: f32,
-) {
-    push_quad(
-        out,
-        viewport,
-        HudRect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: thickness,
-        },
-        color,
-    );
-    push_quad(
-        out,
-        viewport,
-        HudRect {
-            x: rect.x,
-            y: rect.y + rect.height - thickness,
-            width: rect.width,
-            height: thickness,
-        },
-        color,
-    );
-    push_quad(
-        out,
-        viewport,
-        HudRect {
-            x: rect.x,
-            y: rect.y + thickness,
-            width: thickness,
-            height: rect.height - thickness * 2.0,
-        },
-        color,
-    );
-    push_quad(
-        out,
-        viewport,
-        HudRect {
-            x: rect.x + rect.width - thickness,
-            y: rect.y + thickness,
-            width: thickness,
-            height: rect.height - thickness * 2.0,
-        },
-        color,
-    );
-}
-
-fn contains(rect: &HudRect, point: (f32, f32)) -> bool {
-    point.0 >= rect.x
-        && point.0 <= rect.x + rect.width
-        && point.1 >= rect.y
-        && point.1 <= rect.y + rect.height
 }
 
 #[cfg(test)]
@@ -315,6 +298,15 @@ mod tests {
         for vertex in &vertices {
             assert!((-1.0..=1.0).contains(&vertex.position[0]));
             assert!((-1.0..=1.0).contains(&vertex.position[1]));
+        }
+    }
+
+    #[test]
+    fn buttons_scale_with_the_viewport_height() {
+        for height in [720.0, 900.0, 1080.0] {
+            let (respawn, main_menu) = buttons((1280.0, height));
+            assert!(respawn.y < height);
+            assert!(main_menu.bottom() <= height);
         }
     }
 }

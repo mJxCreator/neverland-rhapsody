@@ -1,20 +1,18 @@
-//! 背包界面：27 格主背包 + 9 格快捷栏面板、左右键移动/拆分堆叠与悬停详情。
+//! 背包界面：27 格主背包 + 9 格快捷栏、底部物品详情、左右键移动/拆分与悬停提示。
 //!
 //! 本模块只负责界面状态、布局与点击语义，不直接修改世界或存档；
 //! 所有槽位变更都通过 [`Inventory`] 接口完成，因此不会产生重复或丢失物品。
-//! 工具槽位额外显示耐久条，悬停信息包含类别、等级与当前/最大耐久。
+//! 视觉细节复用 [`super::widget`]，保证与快捷栏、合成界面的槽位表现一致。
 
+use super::animation::UiAnimation;
+use super::draw::{push_border, push_quad, UiVertex};
 use super::font;
-use super::hud::{durability_color, push_quad, HudRect, HudVertex};
-use crate::item::{item_name, tool_registry, Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
-use crate::texture::ItemTextureMap;
-
-/// 鼠标按键语义，避免界面层依赖具体输入框架。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClickButton {
-    Left,
-    Right,
-}
+use super::input::ClickButton;
+use super::layout::{centered_panel, UiRect};
+use super::theme;
+use super::widget::{self, SlotSkin, SlotState};
+use crate::item::{Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
+use crate::texture::{ItemTextureMap, UiTextureMap};
 
 /// 基础布局尺寸（像素）。
 const BASE_SLOT: f32 = 44.0;
@@ -22,27 +20,26 @@ const BASE_GAP: f32 = 6.0;
 const BASE_PADDING: f32 = 12.0;
 const BASE_TITLE: f32 = 24.0;
 const BASE_HOTBAR_GAP: f32 = 14.0;
+const BASE_INFO_GAP: f32 = 10.0;
+const BASE_INFO_HEIGHT: f32 = 38.0;
 const COLUMNS: usize = 9;
 const MAIN_ROWS: usize = 3;
+/// 标题字号。
+const TITLE_PIXEL: f32 = 2.4;
+/// 详情区字号。
+const INFO_PIXEL: f32 = 1.6;
+/// 拖动图标相对鼠标的偏移（像素）。
+const HELD_OFFSET: f32 = 8.0;
 
-const OVERLAY: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
-const PANEL_BORDER: [f32; 4] = [0.72, 0.74, 0.78, 0.95];
-const PANEL_BACKGROUND: [f32; 4] = [0.10, 0.11, 0.12, 0.94];
-const SLOT_BACKGROUND: [f32; 4] = [0.04, 0.05, 0.06, 0.85];
-const SLOT_BORDER: [f32; 4] = [0.42, 0.44, 0.48, 0.8];
-const SLOT_SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-const SLOT_HOVER: [f32; 4] = [0.85, 0.9, 1.0, 0.45];
-const COUNT_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-const TEXT_COLOR: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
-const TEXT_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.9];
-const TOOLTIP_BACKGROUND: [f32; 4] = [0.05, 0.05, 0.06, 0.95];
-
-/// 背包界面状态：开关、鼠标位置与正在拖动的物品。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// 背包界面状态：开关、鼠标位置、正在拖动的物品与按压反馈。
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InventoryUi {
     open: bool,
     cursor: (f32, f32),
     held: Option<ItemStack>,
+    press_slot: Option<usize>,
+    press: UiAnimation,
+    ui_textures: UiTextureMap,
 }
 
 impl InventoryUi {
@@ -50,12 +47,28 @@ impl InventoryUi {
         Self::default()
     }
 
+    /// 替换 UI 控件图集；资源加载或热重载后由状态管理器调用。
+    pub fn set_ui_textures(&mut self, textures: UiTextureMap) {
+        self.ui_textures = textures;
+    }
+
+    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.open
     }
 
     pub fn open(&mut self) {
         self.open = true;
+        self.press_slot = None;
+        self.press = UiAnimation::default();
+    }
+
+    /// 推进按压反馈动画。
+    pub fn update(&mut self, delta_secs: f32) {
+        self.press.update(delta_secs);
+        if !self.press.is_active() {
+            self.press_slot = None;
+        }
     }
 
     /// 尝试关闭界面：拖动中的物品先放回背包，放不下时保持界面开启，避免丢失。
@@ -69,6 +82,7 @@ impl InventoryUi {
         }
         self.held = None;
         self.open = false;
+        self.press_slot = None;
         true
     }
 
@@ -85,10 +99,11 @@ impl InventoryUi {
             }
         }
         self.open = false;
+        self.press_slot = None;
     }
 
     /// 当前拖动中的物品。
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn held(&self) -> Option<ItemStack> {
         self.held
     }
@@ -114,13 +129,16 @@ impl InventoryUi {
         if !self.open {
             return false;
         }
+        self.set_cursor(cursor.0, cursor.1);
         let Some(layout) = Layout::compute(viewport) else {
             return false;
         };
-        let Some(index) = slot_at(layout, cursor) else {
+        let Some(index) = layout.slot_at(cursor) else {
             return false;
         };
 
+        self.press_slot = Some(index);
+        self.press.start(theme::FEEDBACK_DURATION);
         match button {
             ClickButton::Left => self.left_click(inventory, index),
             ClickButton::Right => self.right_click(inventory, index),
@@ -181,7 +199,7 @@ impl InventoryUi {
     /// 生成背包面板几何；关闭时写入空列表。
     pub fn build(
         &self,
-        out: &mut Vec<HudVertex>,
+        out: &mut Vec<UiVertex>,
         inventory: &Inventory,
         selected_hotbar: usize,
         icons: &ItemTextureMap,
@@ -191,289 +209,182 @@ impl InventoryUi {
         if !self.open {
             return;
         }
-        let (width, height) = viewport;
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-            return;
-        }
         let Some(layout) = Layout::compute(viewport) else {
             return;
         };
-        let hovered = slot_at(layout, self.cursor);
+        let hovered = layout.slot_at(self.cursor);
 
         push_quad(
             out,
             viewport,
-            HudRect {
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
-            },
-            OVERLAY,
+            UiRect::new(0.0, 0.0, viewport.0, viewport.1),
+            theme::OVERLAY_LIGHT,
         );
-        push_quad(
+        widget::push_panel(
             out,
             viewport,
-            HudRect {
-                x: layout.x - 3.0,
-                y: layout.y - 3.0,
-                width: layout.width + 6.0,
-                height: layout.height + 6.0,
-            },
-            PANEL_BORDER,
-        );
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                x: layout.x,
-                y: layout.y,
-                width: layout.width,
-                height: layout.height,
-            },
-            PANEL_BACKGROUND,
+            layout.panel,
+            &self.ui_textures,
+            "inventory_panel",
         );
 
         font::push_text(
             out,
             viewport,
-            layout.x + layout.padding,
-            layout.y + layout.padding,
-            2.0,
-            TEXT_COLOR,
+            layout.panel.x + layout.padding,
+            layout.panel.y + layout.padding,
+            TITLE_PIXEL,
+            theme::TEXT_TITLE,
             "INVENTORY",
+        );
+        let hint = "E / ESC TO CLOSE";
+        let hint_width = font::text_width(hint, 1.4);
+        font::push_text(
+            out,
+            viewport,
+            layout.panel.x + layout.panel.width - layout.padding - hint_width,
+            layout.panel.y + layout.padding + 2.0,
+            1.4,
+            theme::TEXT_MUTED,
+            hint,
         );
 
         for index in 0..TOTAL_SLOTS {
             let rect = layout.slot_rect(index);
             let selected = index >= HOTBAR_OFFSET && index - HOTBAR_OFFSET == selected_hotbar;
-            let border = if selected { SLOT_SELECTED } else { SLOT_BORDER };
-            push_quad(out, viewport, rect, border);
-            push_quad(
+            let stack = inventory.slot(index);
+            let state = if selected {
+                SlotState::Selected
+            } else if Some(index) == hovered {
+                SlotState::Hover
+            } else if stack.is_some_and(ItemStack::is_broken) {
+                SlotState::Disabled
+            } else {
+                SlotState::Normal
+            };
+            widget::push_slot(
                 out,
                 viewport,
-                HudRect {
-                    x: rect.x + 2.0,
-                    y: rect.y + 2.0,
-                    width: rect.width - 4.0,
-                    height: rect.height - 4.0,
-                },
-                SLOT_BACKGROUND,
+                rect,
+                state,
+                stack,
+                icons,
+                &self.ui_textures,
+                SlotSkin::Inventory,
+                theme::SLOT_BACKGROUND,
             );
-
-            if Some(index) == hovered {
+            if self.press_slot == Some(index) && self.press.is_active() {
+                let alpha = 0.22 * self.press.decay();
                 push_quad(
                     out,
                     viewport,
-                    HudRect {
-                        x: rect.x + 2.0,
-                        y: rect.y + 2.0,
-                        width: rect.width - 4.0,
-                        height: rect.height - 4.0,
-                    },
-                    SLOT_HOVER,
+                    rect.inset(widget::SLOT_BORDER_THICKNESS),
+                    [1.0, 1.0, 1.0, alpha],
                 );
-            }
-
-            if let Some(stack) = inventory.slot(index) {
-                push_item_icon(out, viewport, rect, stack, icons);
-                push_slot_durability(out, viewport, rect, stack);
-                push_count(out, viewport, rect, stack);
             }
         }
 
+        let focus = hovered
+            .and_then(|index| inventory.slot(index))
+            .or(self.held)
+            .or_else(|| inventory.hotbar_stack(selected_hotbar));
+        push_info_area(out, viewport, layout, focus);
+
         if let Some(stack) = hovered.and_then(|index| inventory.slot(index)) {
-            push_tooltip(out, viewport, layout, stack);
+            widget::push_item_tooltip(out, viewport, self.cursor, stack, icons, &self.ui_textures);
         }
 
         if let Some(held) = self.held {
-            let size = layout.slot * 0.7;
-            let rect = HudRect {
-                x: self.cursor.0 + 8.0,
-                y: self.cursor.1 + 8.0,
-                width: size,
-                height: size,
-            };
-            push_item_icon(out, viewport, rect, held, icons);
-            push_slot_durability(out, viewport, rect, held);
+            let size = layout.slot * 0.72;
+            let rect = UiRect::new(
+                self.cursor.0 + HELD_OFFSET,
+                self.cursor.1 + HELD_OFFSET,
+                size,
+                size,
+            );
+            widget::push_icon(out, viewport, rect, held.item(), icons);
+            widget::push_durability_strip(out, viewport, rect, held);
             if held.count() > 1 {
                 let text = held.count().to_string();
                 let text_width = font::text_width(&text, 2.0);
-                let text_x = rect.x + rect.width - 2.0 - text_width;
-                let text_y = rect.y + rect.height - 2.0 - font::GLYPH_HEIGHT as f32 * 2.0;
+                let text_x = rect.right() - 2.0 - text_width;
+                let text_y = rect.bottom() - 2.0 - font::GLYPH_HEIGHT as f32 * 2.0;
                 font::push_text(
                     out,
                     viewport,
                     text_x + 1.0,
                     text_y + 1.0,
                     2.0,
-                    TEXT_SHADOW,
+                    theme::TEXT_SHADOW,
                     &text,
                 );
-                font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
+                font::push_text(out, viewport, text_x, text_y, 2.0, theme::COUNT_TEXT, &text);
             }
         }
     }
 }
 
-fn push_item_icon(
-    out: &mut Vec<HudVertex>,
+/// 底部详情区：显示悬停物品、拖动物品或当前快捷栏选中物品。
+fn push_info_area(
+    out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
-    rect: HudRect,
-    stack: ItemStack,
-    icons: &ItemTextureMap,
+    layout: Layout,
+    stack: Option<ItemStack>,
 ) {
-    let inset = rect.width * 0.14;
-    super::hud::push_item_icon(
-        out,
-        viewport,
-        HudRect {
-            x: rect.x + inset,
-            y: rect.y + inset,
-            width: rect.width - inset * 2.0,
-            height: rect.height - inset * 2.0,
-        },
-        stack.item(),
-        icons,
-    );
-}
-
-fn push_count(out: &mut Vec<HudVertex>, viewport: (f32, f32), rect: HudRect, stack: ItemStack) {
-    if stack.count() <= 1 {
-        return;
-    }
-    let text = stack.count().to_string();
-    let text_width = font::text_width(&text, 2.0);
-    let text_x = rect.x + rect.width - 3.0 - text_width;
-    let text_y = rect.y + rect.height - 3.0 - font::GLYPH_HEIGHT as f32 * 2.0;
-    font::push_text(
-        out,
-        viewport,
-        text_x + 1.0,
-        text_y + 1.0,
-        2.0,
-        TEXT_SHADOW,
-        &text,
-    );
-    font::push_text(out, viewport, text_x, text_y, 2.0, COUNT_TEXT, &text);
-}
-
-/// 槽位底部的耐久条；只有带独立耐久的工具绘制。
-fn push_slot_durability(
-    out: &mut Vec<HudVertex>,
-    viewport: (f32, f32),
-    rect: HudRect,
-    stack: ItemStack,
-) {
-    let Some(max) = stack.max_durability() else {
-        return;
-    };
-    if max == 0 {
-        return;
-    }
-
-    let current = stack.durability().unwrap_or(max);
-    let ratio = (current as f32 / max as f32).clamp(0.0, 1.0);
-    let bar_height = (rect.height * 0.08).max(3.0);
-    let inset = rect.width * 0.12;
-    let bar = HudRect {
-        x: rect.x + inset,
-        y: rect.y + rect.height - inset - bar_height,
-        width: rect.width - inset * 2.0,
-        height: bar_height,
-    };
-    let background = if current == 0 {
-        [0.55, 0.12, 0.12, 0.9]
-    } else {
-        [0.0, 0.0, 0.0, 0.75]
-    };
-    push_quad(out, viewport, bar, background);
-    if ratio > 0.0 {
-        push_quad(
-            out,
-            viewport,
-            HudRect {
-                width: bar.width * ratio,
-                ..bar
-            },
-            durability_color(ratio),
-        );
-    }
-}
-
-/// 悬停详情：物品名；工具额外显示类别/等级与当前、最大耐久。
-fn tooltip_lines(stack: ItemStack) -> Vec<String> {
-    let mut lines = vec![item_name(stack.item()).to_string()];
-    if let Some(definition) = tool_registry::definition(stack.item()) {
-        lines.push(format!(
-            "{} / {}",
-            definition.tool_type.name(),
-            definition.tier.name()
-        ));
-        let max = definition.max_durability;
-        let current = stack.durability().unwrap_or(max);
-        if current == 0 {
-            lines.push("BROKEN".to_string());
-        } else {
-            lines.push(format!("DURABILITY {}/{}", current, max));
-        }
-    }
-    lines
-}
-
-fn push_tooltip(out: &mut Vec<HudVertex>, viewport: (f32, f32), layout: Layout, stack: ItemStack) {
-    let lines = tooltip_lines(stack);
-    let line_height = font::GLYPH_HEIGHT as f32 * 2.0 + 4.0;
-    let text_width = lines
-        .iter()
-        .map(|line| font::text_width(line, 2.0))
-        .fold(0.0_f32, f32::max);
-    let width = text_width + 16.0;
-    let height = line_height * lines.len() as f32 + 8.0;
-    let x = layout.x + (layout.width - width) * 0.5;
-    let y = (layout.y - height - 8.0).max(4.0);
-    push_quad(
-        out,
-        viewport,
-        HudRect {
-            x,
-            y,
-            width,
-            height,
-        },
-        TOOLTIP_BACKGROUND,
-    );
-    for (index, line) in lines.iter().enumerate() {
+    let rect = layout.info;
+    push_quad(out, viewport, rect, [0.03, 0.03, 0.04, 0.85]);
+    push_border(out, viewport, rect, 1.0, theme::SLOT_BORDER);
+    let Some(stack) = stack else {
         font::push_text(
             out,
             viewport,
-            x + 8.0,
-            y + 4.0 + index as f32 * line_height,
-            2.0,
-            TEXT_COLOR,
+            rect.x + 8.0,
+            rect.y + 11.0,
+            INFO_PIXEL,
+            theme::TEXT_MUTED,
+            "EMPTY HAND",
+        );
+        return;
+    };
+    let lines = widget::item_summary_lines(stack);
+    let mut text_y = rect.y + 7.0;
+    for (index, line) in lines.iter().enumerate() {
+        let color = if index == 0 {
+            theme::TEXT
+        } else if stack.is_broken() {
+            theme::TOOL_BROKEN
+        } else {
+            theme::TEXT_MUTED
+        };
+        font::push_text(
+            out,
+            viewport,
+            rect.x + 9.0,
+            text_y + 1.0,
+            INFO_PIXEL,
+            theme::TEXT_SHADOW,
             line,
         );
+        font::push_text(out, viewport, rect.x + 8.0, text_y, INFO_PIXEL, color, line);
+        text_y += font::GLYPH_HEIGHT as f32 * INFO_PIXEL + 4.0;
     }
 }
 
 /// 当前视口下的面板布局。
 #[derive(Clone, Copy, Debug)]
 struct Layout {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    slot: f32,
-    gap: f32,
+    panel: UiRect,
     padding: f32,
     title: f32,
+    slot: f32,
+    gap: f32,
     hotbar_gap: f32,
+    info: UiRect,
 }
 
 impl Layout {
     fn compute(viewport: (f32, f32)) -> Option<Self> {
-        let (width, height) = viewport;
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        if !super::layout::valid_viewport(viewport.0, viewport.1) {
             return None;
         }
 
@@ -484,40 +395,55 @@ impl Layout {
             + MAIN_ROWS as f32 * BASE_SLOT
             + (MAIN_ROWS - 1) as f32 * BASE_GAP
             + BASE_HOTBAR_GAP
-            + BASE_SLOT;
-        let scale = ((width - 32.0) / base_width)
-            .min((height - 32.0) / base_height)
+            + BASE_SLOT
+            + BASE_INFO_GAP
+            + BASE_INFO_HEIGHT;
+        let scale = ((viewport.0 - 32.0) / base_width)
+            .min((viewport.1 - 32.0) / base_height)
             .clamp(0.4, 1.0);
 
-        let panel_width = base_width * scale;
-        let panel_height = base_height * scale;
-        let x = (width - panel_width) * 0.5;
-        let y = (height - panel_height) * 0.5;
+        let panel = centered_panel(viewport, base_width * scale, base_height * scale);
+        let padding = BASE_PADDING * scale;
+        let title = BASE_TITLE * scale;
+        let slot = BASE_SLOT * scale;
+        let gap = BASE_GAP * scale;
+        let hotbar_gap = BASE_HOTBAR_GAP * scale;
+        let info = UiRect::new(
+            panel.x + padding,
+            panel.y
+                + padding
+                + title
+                + MAIN_ROWS as f32 * slot
+                + (MAIN_ROWS - 1) as f32 * gap
+                + hotbar_gap
+                + slot
+                + BASE_INFO_GAP * scale,
+            panel.width - padding * 2.0,
+            BASE_INFO_HEIGHT * scale,
+        );
 
         Some(Self {
-            x,
-            y,
-            width: panel_width,
-            height: panel_height,
-            slot: BASE_SLOT * scale,
-            gap: BASE_GAP * scale,
-            padding: BASE_PADDING * scale,
-            title: BASE_TITLE * scale,
-            hotbar_gap: BASE_HOTBAR_GAP * scale,
+            panel,
+            padding,
+            title,
+            slot,
+            gap,
+            hotbar_gap,
+            info,
         })
     }
 
-    fn slot_rect(self, index: usize) -> HudRect {
+    fn slot_rect(self, index: usize) -> UiRect {
         let (column, row_y) = if index < HOTBAR_OFFSET {
             let row = index / COLUMNS;
             (
                 index % COLUMNS,
-                self.y + self.padding + self.title + row as f32 * (self.slot + self.gap),
+                self.panel.y + self.padding + self.title + row as f32 * (self.slot + self.gap),
             )
         } else {
             (
                 index - HOTBAR_OFFSET,
-                self.y
+                self.panel.y
                     + self.padding
                     + self.title
                     + MAIN_ROWS as f32 * self.slot
@@ -526,23 +452,17 @@ impl Layout {
             )
         };
 
-        HudRect {
-            x: self.x + self.padding + column as f32 * (self.slot + self.gap),
-            y: row_y,
-            width: self.slot,
-            height: self.slot,
-        }
+        UiRect::new(
+            self.panel.x + self.padding + column as f32 * (self.slot + self.gap),
+            row_y,
+            self.slot,
+            self.slot,
+        )
     }
-}
 
-fn slot_at(layout: Layout, cursor: (f32, f32)) -> Option<usize> {
-    (0..TOTAL_SLOTS).find(|index| {
-        let rect = layout.slot_rect(*index);
-        cursor.0 >= rect.x
-            && cursor.0 <= rect.x + rect.width
-            && cursor.1 >= rect.y
-            && cursor.1 <= rect.y + rect.height
-    })
+    fn slot_at(self, cursor: (f32, f32)) -> Option<usize> {
+        (0..TOTAL_SLOTS).find(|index| self.slot_rect(*index).contains(cursor.0, cursor.1))
+    }
 }
 
 #[cfg(test)]
@@ -566,10 +486,20 @@ mod tests {
     #[test]
     fn panels_fit_inside_small_viewports() {
         let layout = Layout::compute((480.0, 360.0)).expect("小视口也应有布局");
-        assert!(layout.x >= 0.0);
-        assert!(layout.y >= 0.0);
-        assert!(layout.x + layout.width <= 480.0);
-        assert!(layout.y + layout.height <= 360.0);
+        assert!(layout.panel.x >= 0.0);
+        assert!(layout.panel.y >= 0.0);
+        assert!(layout.panel.right() <= 480.0);
+        assert!(layout.panel.bottom() <= 360.0);
+        assert!(layout.info.bottom() <= layout.panel.bottom());
+    }
+
+    #[test]
+    fn layout_is_centered_at_supported_resolutions() {
+        for viewport in [(1280.0, 720.0), (1600.0, 900.0), (1920.0, 1080.0)] {
+            let layout = Layout::compute(viewport).expect("支持的分辨率");
+            assert!((layout.panel.x + layout.panel.width * 0.5 - viewport.0 * 0.5).abs() < 0.01);
+            assert!((layout.panel.y + layout.panel.height * 0.5 - viewport.1 * 0.5).abs() < 0.01);
+        }
     }
 
     #[test]
@@ -608,7 +538,6 @@ mod tests {
         let mut ui = InventoryUi::new();
         ui.open();
 
-        // 60 与 60 合并到 64，剩余 56 回到光标。
         ui.click_at(
             &mut inventory,
             ClickButton::Left,
@@ -624,7 +553,6 @@ mod tests {
         assert_eq!(inventory.slot(1).map(ItemStack::count), Some(64));
         assert_eq!(ui.held().map(ItemStack::count), Some(56));
 
-        // 不同物品交换。
         ui.click_at(
             &mut inventory,
             ClickButton::Left,
@@ -695,6 +623,7 @@ mod tests {
             (1280.0, 720.0)
         ));
         assert_eq!(inventory.slot(0).map(ItemStack::count), Some(1));
+        assert!(ui.press_slot.is_none());
     }
 
     #[test]
@@ -730,26 +659,9 @@ mod tests {
     fn every_slot_has_a_distinct_hit_area() {
         let layout = layout();
         for index in 0..TOTAL_SLOTS {
-            assert_eq!(slot_at(layout, cursor_on(index)), Some(index));
+            assert_eq!(layout.slot_at(cursor_on(index)), Some(index));
         }
-        assert_eq!(slot_at(layout, (0.0, 0.0)), None);
-    }
-
-    #[test]
-    fn tooltip_details_appear_only_for_tools() {
-        let stone_lines = tooltip_lines(stone(1));
-        assert_eq!(stone_lines, vec![item_name(ItemId::STONE).to_string()]);
-
-        let pickaxe = ItemStack::new(ItemId::STONE_PICKAXE, 1)
-            .expect("工具堆叠合法")
-            .with_durability(100);
-        let lines = tooltip_lines(pickaxe);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1], "PICKAXE / STONE");
-        assert_eq!(lines[2], "DURABILITY 100/132");
-
-        let broken = pickaxe.with_durability(0);
-        assert_eq!(tooltip_lines(broken)[2], "BROKEN");
+        assert_eq!(layout.slot_at((0.0, 0.0)), None);
     }
 
     #[test]
@@ -819,5 +731,52 @@ mod tests {
             block_vertices.len() + 12,
             "工具槽位额外绘制耐久条背景与填充"
         );
+    }
+
+    #[test]
+    fn the_info_area_reflects_the_selected_hotbar_item() {
+        let viewport = (1280.0, 720.0);
+        let mut ui = InventoryUi::new();
+        ui.open();
+        let mut inventory = Inventory::new();
+        inventory.set_slot(HOTBAR_OFFSET, Some(stone(12)));
+
+        let mut empty = Vec::new();
+        ui.build(
+            &mut empty,
+            &Inventory::new(),
+            0,
+            &ItemTextureMap::empty(),
+            viewport,
+        );
+        let mut selected = Vec::new();
+        ui.build(
+            &mut selected,
+            &inventory,
+            0,
+            &ItemTextureMap::empty(),
+            viewport,
+        );
+        assert!(
+            selected.len() > empty.len(),
+            "选中快捷栏物品时底部详情区应显示名称与类型"
+        );
+    }
+
+    #[test]
+    fn press_feedback_clears_after_the_animation() {
+        let mut inventory = Inventory::new();
+        inventory.set_slot(0, Some(stone(2)));
+        let mut ui = InventoryUi::new();
+        ui.open();
+        ui.click_at(
+            &mut inventory,
+            ClickButton::Left,
+            cursor_on(0),
+            (1280.0, 720.0),
+        );
+        assert!(ui.press_slot.is_some());
+        ui.update(theme::FEEDBACK_DURATION + 0.05);
+        assert!(ui.press_slot.is_none());
     }
 }

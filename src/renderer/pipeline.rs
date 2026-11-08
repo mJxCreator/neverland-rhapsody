@@ -2,8 +2,8 @@
 
 use wgpu::vertex_attr_array;
 
-use super::hud::HudVertex;
 use crate::mesh::{BlockVertex, Vertex};
+use crate::ui::UiVertex;
 
 /// 深度附件格式，渲染管线与深度纹理共用。
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -213,13 +213,13 @@ pub fn create_item_sprite_pipeline(
     })
 }
 
-const HUD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-    vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+const HUD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
 
-/// HUD 顶点布局：裁剪空间位置、图集 UV 与 RGBA 颜色。
+/// HUD 顶点布局：裁剪空间位置、图集 UV、RGBA 颜色与图集来源。
 pub fn hud_vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<HudVertex>() as wgpu::BufferAddress,
+        array_stride: std::mem::size_of::<UiVertex>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &HUD_VERTEX_ATTRIBUTES,
     }
