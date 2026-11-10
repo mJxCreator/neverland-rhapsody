@@ -37,6 +37,7 @@ use crate::player::{
 };
 use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
+use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
 use crate::ui::{ClickButton, UiIntent, UiManager, UiPointerAction, UiState};
 use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
@@ -120,6 +121,54 @@ pub struct App {
     next_texture_poll: Instant,
 }
 
+/// 尝试读取 `assets/textures/entities/<name>.png` 覆盖内置模型图集。
+///
+/// 文件缺失时静默使用内置生成纹理；读取或解码失败只告警，不影响启动。
+fn load_entity_texture(root: &str, name: &str) -> Option<TextureImage> {
+    let path = Path::new(root)
+        .join("textures")
+        .join("entities")
+        .join(format!("{name}.png"));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            debug!(path = %path.display(), "未提供实体贴图，使用内置生成图集");
+            return None;
+        }
+        Err(error) => {
+            warn!(path = %path.display(), error = %error, "实体贴图读取失败，使用内置生成图集");
+            return None;
+        }
+    };
+    match crate::texture::texture_loader::decode_png_bytes(&bytes, &path.display().to_string()) {
+        Ok(image) => {
+            if image.width != 64 || image.height != 64 {
+                warn!(
+                    path = %path.display(),
+                    width = image.width,
+                    height = image.height,
+                    "实体贴图建议为 64×64，其他尺寸会按归一化 UV 缩放"
+                );
+            }
+            info!(
+                path = %path.display(),
+                width = image.width,
+                height = image.height,
+                "实体贴图覆盖已启用"
+            );
+            Some(image)
+        }
+        Err(error) => {
+            warn!(
+                path = %path.display(),
+                error = %error,
+                "实体贴图解码失败，使用内置生成图集"
+            );
+            None
+        }
+    }
+}
+
 impl App {
     pub fn new(config: AppConfig) -> Self {
         let world = World::default();
@@ -158,8 +207,17 @@ impl App {
         // 模型目录中的 GLB 优先；缺失或损坏时由内置猪/牛保证正式 3D 外观。
         let models_dir = Path::new(&asset_root).join("models");
         let mut models = ModelRegistry::load_from_dir(&models_dir);
-        models.register_builtin("pig", builtin::pig());
-        models.register_builtin("cow", builtin::cow());
+        // 允许用同目录规范的 64×64 PNG 覆盖内置猪/牛图集；缺失时保留生成纹理。
+        let mut pig = builtin::pig();
+        let mut cow = builtin::cow();
+        if let Some(image) = load_entity_texture(&asset_root, "pig") {
+            builtin::override_texture(&mut pig, image);
+        }
+        if let Some(image) = load_entity_texture(&asset_root, "cow") {
+            builtin::override_texture(&mut cow, image);
+        }
+        models.register_builtin("pig", pig);
+        models.register_builtin("cow", cow);
         for error in models.errors() {
             warn!(error = %error, "模型文件加载失败");
         }

@@ -129,6 +129,19 @@ impl ModelAsset {
             .reduce(MeshBounds::union)
     }
 
+    /// 让模型脚底贴地的垂直补偿。
+    ///
+    /// 规范要求资源本身把原点放在脚底，但外部导出常有偏移；
+    /// 这里只按包围盒最低点校正 Y，不做水平居中：
+    /// 猪、牛等生物的头部前伸会让包围盒在 Z 轴上天然不对称，
+    /// 强行居中反而会把模型整体后移。
+    pub fn ground_offset(&self) -> Vec3 {
+        match self.bounds() {
+            Some(bounds) => Vec3::new(0.0, -bounds.min.y, 0.0),
+            None => Vec3::ZERO,
+        }
+    }
+
     /// 按名称查找动画片段（大小写不敏感）。
     pub fn animation_index(&self, name: &str) -> Option<usize> {
         self.animations

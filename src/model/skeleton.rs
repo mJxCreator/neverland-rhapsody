@@ -15,6 +15,11 @@ pub struct Joint {
     pub parent: Option<usize>,
     /// 绑定姿态下的局部变换。
     pub local: Transform,
+    /// 关节与父关节之间非关节祖先节点的累积变换。
+    ///
+    /// glTF 的动画通道直接写入节点自身 TRS，因此这里单独保存“祖先折叠”部分，
+    /// 保证绑定姿态与动画姿态使用同一套全局矩阵公式。
+    pub prefix: Transform,
 }
 
 /// 骨骼定义；同一模型的所有实例共享该定义。
@@ -111,12 +116,15 @@ fn resolve_global(
         .copied()
         .unwrap_or(Transform::IDENTITY)
         .to_matrix();
-    let matrix = match skeleton.joints[index].parent {
+    let joint = &skeleton.joints[index];
+    // 非关节祖先的静态变换叠在关节自身变换之外，动画只影响 `local`。
+    let combined = joint.prefix.to_matrix() * local;
+    let matrix = match joint.parent {
         Some(parent) => {
             resolve_global(parent, skeleton, locals, globals, resolved);
-            globals[parent] * local
+            globals[parent] * combined
         }
-        None => local,
+        None => combined,
     };
     globals[index] = matrix;
     resolved[index] = true;
@@ -192,16 +200,19 @@ mod tests {
                 name: "root".to_string(),
                 parent: None,
                 local: Transform::IDENTITY,
+                prefix: Transform::IDENTITY,
             },
             Joint {
                 name: "body".to_string(),
                 parent: Some(0),
                 local: Transform::new(Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, Vec3::ONE),
+                prefix: Transform::IDENTITY,
             },
             Joint {
                 name: "head".to_string(),
                 parent: Some(1),
                 local: Transform::new(Vec3::new(0.0, 0.0, 0.5), Quat::IDENTITY, Vec3::ONE),
+                prefix: Transform::IDENTITY,
             },
         ];
         let globals = {
@@ -235,6 +246,49 @@ mod tests {
             for (a, b) in actual.iter().zip(expected.iter()) {
                 assert!((a - b).abs() < 1e-4, "绑定姿态蒙皮矩阵应接近单位矩阵");
             }
+        }
+    }
+
+    #[test]
+    fn non_joint_ancestor_prefix_keeps_bind_pose_identity() {
+        // 模拟 Blender 的骨架节点：关节位于一个带旋转的 Armature 节点之下，
+        // 绑定姿态仍应是单位矩阵，且动画写入同一份局部变换后全局矩阵不变。
+        let joints = vec![
+            Joint {
+                name: "root".to_string(),
+                parent: None,
+                local: Transform::new(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Vec3::ONE),
+                prefix: Transform::new(
+                    Vec3::new(0.0, 0.5, 0.0),
+                    Quat::from_rotation_x(0.4),
+                    Vec3::ONE,
+                ),
+            },
+            Joint {
+                name: "child".to_string(),
+                parent: Some(0),
+                local: Transform::new(Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, Vec3::ONE),
+                prefix: Transform::IDENTITY,
+            },
+        ];
+        let mut skeleton = Skeleton {
+            joints,
+            inverse_bind: Vec::new(),
+        };
+        let bind_globals = skeleton.global_matrices(&skeleton.bind_locals());
+        skeleton.inverse_bind = bind_globals.iter().map(|matrix| matrix.inverse()).collect();
+
+        let bind = Pose::bind(&skeleton);
+        for (index, matrix) in bind.skin.iter().enumerate() {
+            assert!(
+                matrix.abs_diff_eq(Mat4::IDENTITY, 1e-4),
+                "关节 {index} 的绑定蒙皮矩阵应为单位矩阵"
+            );
+        }
+        // 动画只改变局部变换：用同样的局部变换重算，应与绑定姿态一致。
+        let again = Pose::from_locals(&skeleton, &skeleton.bind_locals());
+        for (a, b) in again.globals.iter().zip(bind.globals.iter()) {
+            assert!(a.abs_diff_eq(*b, 1e-4), "重复计算的全局矩阵应一致");
         }
     }
 

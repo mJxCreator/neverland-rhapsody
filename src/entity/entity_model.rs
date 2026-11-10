@@ -10,7 +10,9 @@ use glam::{Mat4, Quat, Vec3};
 use super::ai::AiState;
 use super::creature::Creature;
 use super::entity::{EntityId, EntityTypeId};
-use crate::model::{instance_draws, MeshBounds, ModelDraw, ModelId, ModelInstance, ModelRegistry};
+use crate::model::{
+    instance_draws, MeshBounds, ModelAsset, ModelDraw, ModelId, ModelInstance, ModelRegistry,
+};
 
 /// 实体模型参数。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +39,8 @@ pub struct EntityModelSet {
     models: HashMap<EntityTypeId, ModelId>,
     modeled: Vec<EntityTypeId>,
     instances: HashMap<EntityId, ModelInstance>,
+    /// 已提示过片段回退的（模型, 期望片段），避免每帧刷屏。
+    warned_clips: HashSet<(ModelId, &'static str)>,
     config: EntityModelConfig,
 }
 
@@ -55,6 +59,7 @@ impl EntityModelSet {
             models,
             modeled,
             instances: HashMap::new(),
+            warned_clips: HashSet::new(),
             config,
         }
     }
@@ -87,14 +92,32 @@ impl EntityModelSet {
             if instance.model != model_id {
                 instance.set_model(model_id);
             }
-            let name = animation_for(creature.brain.state());
-            if !instance.set_animation(&asset, name, true) {
-                // 外部模型可能只提供部分片段：退回行走/待机，避免静止。
-                if !instance.set_animation(&asset, "walk", true) {
-                    instance.set_animation(&asset, "idle", true);
+            let desired = animation_for(creature.brain.state());
+            let clip = resolve_clip(&asset, desired);
+            if let Some(clip) = clip {
+                if !clip.eq_ignore_ascii_case(desired)
+                    && self.warned_clips.insert((model_id, desired))
+                {
+                    let available = asset
+                        .animations
+                        .iter()
+                        .map(|clip| clip.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::warn!(
+                        model = %asset.name,
+                        desired,
+                        fallback = clip,
+                        available = %available,
+                        "模型缺少按状态命名的动画片段，已回退到最接近的片段"
+                    );
                 }
+                instance.set_animation(&asset, clip, true);
             }
-            instance.set_speed(playback_rate(name, creature.entity.velocity()));
+            instance.set_speed(playback_rate(
+                clip.unwrap_or_default(),
+                creature.entity.velocity(),
+            ));
             instance.update(&asset, delta);
         }
     }
@@ -146,6 +169,28 @@ fn animation_for(state: AiState) -> &'static str {
         AiState::Wandering => "walk",
         AiState::Idle | AiState::Avoiding | AiState::Dead => "idle",
     }
+}
+
+/// 解析实际可播放的片段名。
+///
+/// 外部模型的片段命名并不统一（例如 Blender 里存成 `stop`/`eat`），
+/// 因此按别名逐级回退，最后使用资源中的第一个片段，避免生物完全静止。
+fn resolve_clip<'a>(asset: &'a ModelAsset, desired: &str) -> Option<&'a str> {
+    let candidates: &[&str] = match desired {
+        "walk" => &["walk", "move", "run", "idle", "stop"],
+        "run" => &["run", "sprint", "walk", "move", "idle"],
+        _ => &["idle", "stand", "stop", "eat", "walk"],
+    };
+    for candidate in candidates {
+        if let Some(clip) = asset
+            .animations
+            .iter()
+            .find(|clip| clip.name.eq_ignore_ascii_case(candidate))
+        {
+            return Some(clip.name.as_str());
+        }
+    }
+    asset.animations.first().map(|clip| clip.name.as_str())
 }
 
 /// 行走片段按实际水平速度调整播放速率，避免滑步感。
@@ -250,6 +295,24 @@ mod tests {
         set.update(std::slice::from_ref(&pig), &registry, 0.1);
         let instance = set.instances.get(&pig.id()).unwrap();
         assert_eq!(instance.clip_name(&asset), Some("run"));
+    }
+
+    #[test]
+    fn missing_state_clips_fall_back_to_available_names() {
+        let mut asset = builtin::pig();
+        // 模拟外部导出常见的命名：只有 stop / run / eat。
+        asset.animations[0].name = "stop".to_string();
+        asset.animations[1].name = "eat".to_string();
+        assert_eq!(resolve_clip(&asset, "idle"), Some("stop"));
+        assert_eq!(resolve_clip(&asset, "walk"), Some("run"));
+        assert_eq!(resolve_clip(&asset, "run"), Some("run"));
+    }
+
+    #[test]
+    fn model_without_clips_yields_no_clip() {
+        let mut asset = builtin::pig();
+        asset.animations.clear();
+        assert_eq!(resolve_clip(&asset, "idle"), None);
     }
 
     #[test]

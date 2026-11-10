@@ -33,6 +33,16 @@ struct AnimalSpec {
     spots: bool,
 }
 
+/// 用外部 PNG 替换内置模型默认生成的 UV 图集。
+///
+/// 分区约定保持不变：左上身体、右上强调色（牛为斑点）、左下腿、右下头/脸。
+/// 图片尺寸任意，采样时按归一化 UV 缩放；建议保持 64×64 版式以匹配默认像素风。
+pub fn override_texture(asset: &mut ModelAsset, image: TextureImage) {
+    if let Some(texture) = asset.textures.first_mut() {
+        texture.image = image;
+    }
+}
+
 /// 内置猪模型。
 pub fn pig() -> ModelAsset {
     build(AnimalSpec {
@@ -356,16 +366,19 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
             name: "root".to_string(),
             parent: None,
             local: Transform::IDENTITY,
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "body".to_string(),
             parent: Some(0),
             local: Transform::new(body, Quat::IDENTITY, Vec3::ONE),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "head".to_string(),
             parent: Some(1),
             local: Transform::new(spec.head_center - body, Quat::IDENTITY, Vec3::ONE),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "tail".to_string(),
@@ -375,6 +388,7 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
                 Quat::IDENTITY,
                 Vec3::ONE,
             ),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "leg_front_left".to_string(),
@@ -384,6 +398,7 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
                 Quat::IDENTITY,
                 Vec3::ONE,
             ),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "leg_front_right".to_string(),
@@ -393,6 +408,7 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
                 Quat::IDENTITY,
                 Vec3::ONE,
             ),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "leg_back_left".to_string(),
@@ -402,6 +418,7 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
                 Quat::IDENTITY,
                 Vec3::ONE,
             ),
+            prefix: Transform::IDENTITY,
         },
         Joint {
             name: "leg_back_right".to_string(),
@@ -411,6 +428,7 @@ fn build_skeleton(spec: &AnimalSpec) -> Skeleton {
                 Quat::IDENTITY,
                 Vec3::ONE,
             ),
+            prefix: Transform::IDENTITY,
         },
     ];
     let skeleton = Skeleton {
@@ -662,5 +680,18 @@ mod tests {
         assert_eq!(image.width, 64);
         assert_eq!(image.height, 64);
         assert_eq!(image.pixels.len(), 64 * 64 * 4);
+    }
+
+    #[test]
+    fn external_texture_overrides_generated_atlas() {
+        let mut asset = pig();
+        let image = TextureImage::new(2, 2, vec![255u8; 2 * 2 * 4]).expect("有效尺寸");
+        override_texture(&mut asset, image);
+        assert_eq!(asset.textures[0].image.width, 2);
+        assert_eq!(asset.textures[0].image.height, 2);
+        assert_eq!(asset.textures[0].image.pixels.len(), 2 * 2 * 4);
+        // 覆盖只影响纹理，网格、骨骼与动画保持不变。
+        assert!(asset.skeleton.is_some());
+        assert_eq!(asset.meshes.len(), 1);
     }
 }

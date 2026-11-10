@@ -178,6 +178,7 @@ mod tests {
             name: "body".to_string(),
             parent: None,
             local: Transform::IDENTITY,
+            prefix: Transform::IDENTITY,
         }];
         let mut skeleton = Skeleton {
             joints,

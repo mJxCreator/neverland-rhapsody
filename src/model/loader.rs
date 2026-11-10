@@ -311,9 +311,16 @@ impl<'a> Loader<'a> {
                 }
                 cursor = parents[parent];
             }
-            let local_matrix = match anchor {
-                Some(parent) => worlds[parent].inverse() * worlds[*node_index],
-                None => worlds[*node_index],
+            let local_matrix = node_local_matrix(node)?;
+            let parent_node = parents[*node_index];
+            let prefix_matrix = match parent_node {
+                Some(parent_node) => {
+                    let anchor_world = anchor
+                        .map(|anchor| worlds[anchor].inverse())
+                        .unwrap_or(Mat4::IDENTITY);
+                    anchor_world * worlds[parent_node]
+                }
+                None => Mat4::IDENTITY,
             };
             let parent_joint = anchor.and_then(|parent| joint_lookup.get(&parent).copied());
             joints.push(Joint {
@@ -323,6 +330,7 @@ impl<'a> Loader<'a> {
                     .unwrap_or_else(|| format!("joint_{joint_index}")),
                 parent: parent_joint,
                 local: Transform::from_matrix(local_matrix),
+                prefix: Transform::from_matrix(prefix_matrix),
             });
         }
 

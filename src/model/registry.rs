@@ -61,6 +61,14 @@ impl ModelRegistry {
 
     /// 插入或替换模型；返回稳定 ID。
     pub fn insert(&mut self, asset: ModelAsset) -> ModelId {
+        let offset = asset.ground_offset();
+        if offset.length() > 0.05 {
+            tracing::warn!(
+                model = %asset.name,
+                offset = %offset,
+                "模型脚底不在原点平面，已自动贴地补偿；建议在建模软件中把原点放到脚底"
+            );
+        }
         if let Some(id) = self.by_name.get(&asset.name).copied() {
             if let Some(slot) = self.models.get_mut(id.raw() as usize) {
                 *slot = Arc::new(asset);

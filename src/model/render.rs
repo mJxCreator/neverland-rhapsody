@@ -70,6 +70,8 @@ pub fn instance_draws(
     out: &mut Vec<ModelDraw>,
 ) {
     let pose_skin = &instance.pose().skin;
+    // 外部模型的原点常不在脚底，按包围盒最低点补偿后再套用实例世界变换。
+    let transform = transform * Mat4::from_translation(asset.ground_offset());
     for (mesh_index, mesh) in asset.meshes.iter().enumerate() {
         for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
             let material = asset
@@ -81,14 +83,28 @@ pub fn instance_draws(
                 primitive.is_skinned() && asset.skeleton.is_some() && !pose_skin.is_empty();
             let geometry = if skinned {
                 let skinned_vertices = skin_primitive(primitive, pose_skin);
-                let vertices = skinned_vertices
-                    .iter()
-                    .zip(&primitive.uvs)
-                    .map(|(vertex, uv)| ModelVertex {
-                        position: vertex.position,
-                        normal: vertex.normal,
-                        uv: *uv,
-                        color: material.base_color,
+                // 动态路径直接把顶点交给三角形列表绘制，必须按索引展开：
+                // 否则方形只剩一个三角形，立方体相邻面顶点会被错连成退化三角形。
+                let order: Vec<u32> = if primitive.indices.is_empty() {
+                    (0..skinned_vertices.len() as u32).collect()
+                } else {
+                    primitive.indices.clone()
+                };
+                let vertices = order
+                    .into_iter()
+                    .filter_map(|index| {
+                        let vertex = skinned_vertices.get(index as usize)?;
+                        let uv = primitive
+                            .uvs
+                            .get(index as usize)
+                            .copied()
+                            .unwrap_or([0.0; 2]);
+                        Some(ModelVertex {
+                            position: vertex.position,
+                            normal: vertex.normal,
+                            uv,
+                            color: material.base_color,
+                        })
                     })
                     .collect();
                 ModelGeometry::Dynamic(vertices)
@@ -184,5 +200,48 @@ mod tests {
         let mut draws = Vec::new();
         instance_draws(&asset, &instance, Mat4::IDENTITY, &mut draws);
         assert_eq!(dynamic_vertex_count(&draws), 0);
+    }
+
+    #[test]
+    fn skinned_quad_is_expanded_by_indices() {
+        // 4 个顶点 + 6 个索引的方形，动态路径必须展开成 6 个顶点，
+        // 否则三角形列表只能画出半个方片。
+        let primitive = ModelPrimitive {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            tangents: None,
+            joints: Some(vec![[0, 0, 0, 0]; 4]),
+            weights: Some(vec![[1.0, 0.0, 0.0, 0.0]; 4]),
+            indices: vec![0, 1, 2, 0, 2, 3],
+            material: 0,
+        };
+        let mut asset = asset();
+        asset.meshes[0].primitives = vec![primitive];
+        asset.skeleton = Some(crate::model::skeleton::Skeleton {
+            joints: vec![crate::model::skeleton::Joint {
+                name: "root".to_string(),
+                parent: None,
+                local: Transform::IDENTITY,
+                prefix: Transform::IDENTITY,
+            }],
+            inverse_bind: vec![Mat4::IDENTITY],
+        });
+        let mut instance = ModelInstance::new(ModelId::new(0));
+        instance.update(&asset, 0.0);
+        let mut draws = Vec::new();
+        instance_draws(&asset, &instance, Mat4::IDENTITY, &mut draws);
+        let ModelGeometry::Dynamic(vertices) = &draws[0].geometry else {
+            panic!("蒙皮图元应走动态路径");
+        };
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(vertices[3].uv, [0.0, 0.0]);
+        assert_eq!(vertices[4].uv, [1.0, 1.0]);
+        assert_eq!(vertices[5].uv, [0.0, 1.0]);
     }
 }
