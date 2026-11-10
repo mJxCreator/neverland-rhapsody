@@ -57,16 +57,20 @@ pub struct ModelDraw {
     pub alpha: AlphaMode,
     /// 实例世界变换（已包含缩放到实体尺寸的缩放）。
     pub transform: Mat4,
+    /// 受击闪红强度，0 为正常，1 为全红。
+    pub flash: f32,
     pub geometry: ModelGeometry,
 }
 
 /// 把模型实例转换为绘制批次。
 ///
 /// 静态图元在网格为空或没有骨骼时使用缓存路径；蒙皮图元使用当前姿态。
+/// `flash` 为该实例的受击闪红强度，会写入逐批次 uniform。
 pub fn instance_draws(
     asset: &ModelAsset,
     instance: &ModelInstance,
     transform: Mat4,
+    flash: f32,
     out: &mut Vec<ModelDraw>,
 ) {
     let pose_skin = &instance.pose().skin;
@@ -119,6 +123,7 @@ pub fn instance_draws(
                 material: primitive.material,
                 alpha: material.alpha_mode,
                 transform,
+                flash: flash.clamp(0.0, 1.0),
                 geometry,
             });
         }
@@ -180,6 +185,7 @@ mod tests {
             &asset,
             &instance,
             Transform::IDENTITY.to_matrix(),
+            0.0,
             &mut draws,
         );
         assert_eq!(draws.len(), 1);
@@ -198,7 +204,7 @@ mod tests {
         let asset = asset();
         let instance = ModelInstance::new(ModelId::new(0));
         let mut draws = Vec::new();
-        instance_draws(&asset, &instance, Mat4::IDENTITY, &mut draws);
+        instance_draws(&asset, &instance, Mat4::IDENTITY, 0.0, &mut draws);
         assert_eq!(dynamic_vertex_count(&draws), 0);
     }
 
@@ -235,7 +241,7 @@ mod tests {
         let mut instance = ModelInstance::new(ModelId::new(0));
         instance.update(&asset, 0.0);
         let mut draws = Vec::new();
-        instance_draws(&asset, &instance, Mat4::IDENTITY, &mut draws);
+        instance_draws(&asset, &instance, Mat4::IDENTITY, 0.0, &mut draws);
         let ModelGeometry::Dynamic(vertices) = &draws[0].geometry else {
             panic!("蒙皮图元应走动态路径");
         };

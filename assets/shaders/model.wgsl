@@ -7,7 +7,7 @@ struct Scene {
 
 struct ModelParams {
     model: mat4x4<f32>,
-    // x = Alpha Mask 阈值，其余分量保留。
+    // x = Alpha Mask 阈值，y = 受击闪红强度，其余分量保留。
     params: vec4<f32>,
 };
 
@@ -45,7 +45,11 @@ fn shade(input: VertexOutput, texel: vec4<f32>) -> vec4<f32> {
     let color = input.color * texel;
     let light_dir = normalize(vec3<f32>(0.35, 0.9, 0.25));
     let lambert = 0.55 + 0.45 * max(dot(normalize(input.normal), light_dir), 0.0);
-    return vec4<f32>(color.rgb * lambert, color.a);
+    let lit = color.rgb * lambert;
+    // 受击瞬间整体偏红：保留明暗关系，只把颜色拉向红色，避免变成纯色剪纸。
+    let flash = clamp(model.params.y, 0.0, 1.0);
+    let red = vec3<f32>(0.9, 0.08, 0.08) * lambert;
+    return vec4<f32>(mix(lit, red, flash), color.a);
 }
 
 @fragment

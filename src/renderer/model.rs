@@ -205,6 +205,8 @@ impl ModelRenderer {
             let matrix = draw.transform.to_cols_array();
             uniform_bytes[base..base + 64].copy_from_slice(bytemuck::cast_slice(&matrix));
             uniform_bytes[base + 64..base + 68].copy_from_slice(&draw.alpha.cutoff().to_le_bytes());
+            // params.y = 受击闪红强度，其余分量保留给后续效果。
+            uniform_bytes[base + 68..base + 72].copy_from_slice(&draw.flash.to_le_bytes());
         }
         queue.write_buffer(&self.uniform_buffer, 0, &uniform_bytes);
 

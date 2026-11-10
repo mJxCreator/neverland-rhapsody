@@ -33,6 +33,9 @@ impl Default for EntityModelConfig {
 const MODEL_NAMES: [(EntityTypeId, &str); 2] =
     [(EntityTypeId::PIG, "pig"), (EntityTypeId::COW, "cow")];
 
+/// 受击闪红持续时间（秒）；期间颜色线性衰减回正常。
+const HURT_FLASH_DURATION: f32 = 0.2;
+
 /// 生物模型实例集合。
 pub struct EntityModelSet {
     /// 仅在注册表中真实存在的类型才会进入映射。
@@ -41,6 +44,10 @@ pub struct EntityModelSet {
     instances: HashMap<EntityId, ModelInstance>,
     /// 已提示过片段回退的（模型, 期望片段），避免每帧刷屏。
     warned_clips: HashSet<(ModelId, &'static str)>,
+    /// 上一帧记录的生命值，用于识别受击瞬间。
+    last_health: HashMap<EntityId, u32>,
+    /// 受击闪红剩余时间（秒）。
+    flash: HashMap<EntityId, f32>,
     config: EntityModelConfig,
 }
 
@@ -60,6 +67,8 @@ impl EntityModelSet {
             modeled,
             instances: HashMap::new(),
             warned_clips: HashSet::new(),
+            last_health: HashMap::new(),
+            flash: HashMap::new(),
             config,
         }
     }
@@ -77,8 +86,20 @@ impl EntityModelSet {
             .map(|creature| creature.id())
             .collect();
         self.instances.retain(|id, _| alive.contains(id));
+        self.last_health.retain(|id, _| alive.contains(id));
+        // 先衰减上一帧的闪红，本帧新受击再重新计时，保证受击当帧是全红。
+        self.flash.retain(|id, remaining| {
+            *remaining -= delta;
+            *remaining > 0.0 && alive.contains(id)
+        });
 
         for creature in creatures.iter().filter(|creature| creature.is_alive()) {
+            let health = creature.entity.health();
+            if let Some(previous) = self.last_health.insert(creature.id(), health) {
+                if health < previous {
+                    self.flash.insert(creature.id(), HURT_FLASH_DURATION);
+                }
+            }
             let Some(&model_id) = self.models.get(&creature.kind()) else {
                 continue;
             };
@@ -157,8 +178,22 @@ impl EntityModelSet {
                     continue;
                 }
             }
-            instance_draws(&asset, instance, transform, out);
+            instance_draws(
+                &asset,
+                instance,
+                transform,
+                self.flash_intensity(creature.id()),
+                out,
+            );
         }
+    }
+
+    /// 受击闪红强度：0 为正常，1 为全红。
+    pub fn flash_intensity(&self, id: EntityId) -> f32 {
+        self.flash
+            .get(&id)
+            .map(|remaining| (remaining / HURT_FLASH_DURATION).clamp(0.0, 1.0))
+            .unwrap_or(0.0)
     }
 }
 
@@ -306,6 +341,30 @@ mod tests {
         assert_eq!(resolve_clip(&asset, "idle"), Some("stop"));
         assert_eq!(resolve_clip(&asset, "walk"), Some("run"));
         assert_eq!(resolve_clip(&asset, "run"), Some("run"));
+    }
+
+    #[test]
+    fn damage_flashes_red_then_decays() {
+        let registry = registry();
+        let mut set = EntityModelSet::new(&registry, EntityModelConfig::default());
+        let mut pig = creature(EntityTypeId::PIG, 7, Vec3::ZERO);
+        set.update(std::slice::from_ref(&pig), &registry, 0.0);
+        assert_eq!(set.flash_intensity(pig.id()), 0.0);
+
+        pig.entity.take_damage(3);
+        set.update(std::slice::from_ref(&pig), &registry, 0.0);
+        assert!(set.flash_intensity(pig.id()) > 0.9, "受击当帧应接近全红");
+
+        set.update(
+            std::slice::from_ref(&pig),
+            &registry,
+            HURT_FLASH_DURATION * 0.5,
+        );
+        let half = set.flash_intensity(pig.id());
+        assert!(half > 0.0 && half < 0.9, "闪红应随时间内衰减");
+
+        set.update(std::slice::from_ref(&pig), &registry, HURT_FLASH_DURATION);
+        assert_eq!(set.flash_intensity(pig.id()), 0.0);
     }
 
     #[test]
