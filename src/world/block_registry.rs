@@ -8,13 +8,17 @@ use glam::Vec3;
 use super::block::{Block, Face};
 use crate::item::tool::ToolType;
 
-/// 方块渲染方式；当前只有不透明实体方块，为后续透明/交叉渲染预留。
+/// 方块渲染方式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderType {
     /// 不渲染，通常对应空气。
     None,
     /// 不透明实体方块。
     Opaque,
+    /// 半透明流体，走单独的透明管线。
+    Transparent,
+    /// 交叉面片，用于草、花等非实体植被。
+    Cross,
 }
 
 /// 挖掘类别；决定哪一类工具能对该方块提供效率加成。
@@ -92,6 +96,78 @@ impl BlockColors {
         top: Vec3::new(0.78, 0.20, 0.22),
         bottom: Vec3::new(0.42, 0.28, 0.18),
         side: Vec3::new(0.66, 0.18, 0.20),
+    };
+
+    const SAND: Self = Self {
+        top: Vec3::new(0.86, 0.80, 0.58),
+        bottom: Vec3::new(0.84, 0.78, 0.56),
+        side: Vec3::new(0.85, 0.79, 0.57),
+    };
+
+    const SANDSTONE: Self = Self {
+        top: Vec3::new(0.82, 0.74, 0.52),
+        bottom: Vec3::new(0.76, 0.68, 0.48),
+        side: Vec3::new(0.79, 0.71, 0.50),
+    };
+
+    const COAL_ORE: Self = Self {
+        top: Vec3::new(0.34, 0.34, 0.36),
+        bottom: Vec3::new(0.34, 0.34, 0.36),
+        side: Vec3::new(0.34, 0.34, 0.36),
+    };
+
+    const IRON_ORE: Self = Self {
+        top: Vec3::new(0.62, 0.55, 0.48),
+        bottom: Vec3::new(0.62, 0.55, 0.48),
+        side: Vec3::new(0.62, 0.55, 0.48),
+    };
+
+    const GOLD_ORE: Self = Self {
+        top: Vec3::new(0.72, 0.62, 0.30),
+        bottom: Vec3::new(0.72, 0.62, 0.30),
+        side: Vec3::new(0.72, 0.62, 0.30),
+    };
+
+    const DIAMOND_ORE: Self = Self {
+        top: Vec3::new(0.42, 0.74, 0.72),
+        bottom: Vec3::new(0.42, 0.74, 0.72),
+        side: Vec3::new(0.42, 0.74, 0.72),
+    };
+
+    const WATER: Self = Self {
+        top: Vec3::new(0.22, 0.44, 0.78),
+        bottom: Vec3::new(0.16, 0.34, 0.66),
+        side: Vec3::new(0.19, 0.39, 0.72),
+    };
+
+    const LEAVES: Self = Self {
+        top: Vec3::new(0.26, 0.52, 0.24),
+        bottom: Vec3::new(0.22, 0.46, 0.21),
+        side: Vec3::new(0.24, 0.49, 0.22),
+    };
+
+    const TALL_GRASS: Self = Self {
+        top: Vec3::new(0.34, 0.62, 0.28),
+        bottom: Vec3::new(0.30, 0.55, 0.25),
+        side: Vec3::new(0.32, 0.58, 0.26),
+    };
+
+    const FLOWER_RED: Self = Self {
+        top: Vec3::new(0.80, 0.24, 0.22),
+        bottom: Vec3::new(0.34, 0.56, 0.26),
+        side: Vec3::new(0.80, 0.24, 0.22),
+    };
+
+    const FLOWER_YELLOW: Self = Self {
+        top: Vec3::new(0.88, 0.78, 0.24),
+        bottom: Vec3::new(0.34, 0.56, 0.26),
+        side: Vec3::new(0.88, 0.78, 0.24),
+    };
+
+    const CACTUS: Self = Self {
+        top: Vec3::new(0.28, 0.52, 0.26),
+        bottom: Vec3::new(0.24, 0.46, 0.22),
+        side: Vec3::new(0.26, 0.49, 0.24),
     };
 
     /// 某个朝向面的基础颜色。
@@ -258,8 +334,220 @@ pub const BED: BlockProperties = BlockProperties {
     colors: BlockColors::BED,
 };
 
+pub const SAND: BlockProperties = BlockProperties {
+    id: 7,
+    name: "Sand",
+    hardness: 0.5,
+    mining_category: MiningCategory::Dirt,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::SAND,
+};
+
+pub const SANDSTONE: BlockProperties = BlockProperties {
+    id: 8,
+    name: "Sandstone",
+    hardness: 1.2,
+    mining_category: MiningCategory::Stone,
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 0,
+    drop_rule: DropRule::RequiresCorrectTool,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::SANDSTONE,
+};
+
+pub const COAL_ORE: BlockProperties = BlockProperties {
+    id: 9,
+    name: "Coal Ore",
+    hardness: 2.0,
+    mining_category: MiningCategory::Stone,
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 0,
+    drop_rule: DropRule::RequiresCorrectTool,
+    solid: true,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::COAL_ORE,
+};
+
+pub const IRON_ORE: BlockProperties = BlockProperties {
+    id: 10,
+    name: "Iron Ore",
+    hardness: 2.4,
+    mining_category: MiningCategory::Stone,
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 1,
+    drop_rule: DropRule::RequiresCorrectTool,
+    solid: true,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::IRON_ORE,
+};
+
+pub const GOLD_ORE: BlockProperties = BlockProperties {
+    id: 11,
+    name: "Gold Ore",
+    hardness: 2.8,
+    mining_category: MiningCategory::Stone,
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 2,
+    drop_rule: DropRule::RequiresCorrectTool,
+    solid: true,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::GOLD_ORE,
+};
+
+pub const DIAMOND_ORE: BlockProperties = BlockProperties {
+    id: 12,
+    name: "Diamond Ore",
+    hardness: 3.2,
+    mining_category: MiningCategory::Stone,
+    required_tool: Some(ToolType::Pickaxe),
+    harvest_level: 2,
+    drop_rule: DropRule::RequiresCorrectTool,
+    solid: true,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::DIAMOND_ORE,
+};
+
+pub const WATER: BlockProperties = BlockProperties {
+    id: 13,
+    name: "Water",
+    hardness: 0.0,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: false,
+    breakable: false,
+    placeable: false,
+    selectable: false,
+    render_type: RenderType::Transparent,
+    colors: BlockColors::WATER,
+};
+
+pub const LEAVES: BlockProperties = BlockProperties {
+    id: 14,
+    name: "Leaves",
+    hardness: 0.2,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: true,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::LEAVES,
+};
+
+pub const TALL_GRASS: BlockProperties = BlockProperties {
+    id: 15,
+    name: "Tall Grass",
+    hardness: 0.1,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: false,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Cross,
+    colors: BlockColors::TALL_GRASS,
+};
+
+pub const FLOWER_RED: BlockProperties = BlockProperties {
+    id: 16,
+    name: "Red Flower",
+    hardness: 0.1,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: false,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Cross,
+    colors: BlockColors::FLOWER_RED,
+};
+
+pub const FLOWER_YELLOW: BlockProperties = BlockProperties {
+    id: 17,
+    name: "Yellow Flower",
+    hardness: 0.1,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: false,
+    breakable: true,
+    placeable: false,
+    selectable: true,
+    render_type: RenderType::Cross,
+    colors: BlockColors::FLOWER_YELLOW,
+};
+
+pub const CACTUS: BlockProperties = BlockProperties {
+    id: 18,
+    name: "Cactus",
+    hardness: 0.4,
+    mining_category: MiningCategory::Dirt,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::CACTUS,
+};
+
 /// 全部方块属性，下标必须等于方块 ID。
-const DEFINITIONS: [BlockProperties; 7] = [AIR, STONE, DIRT, GRASS, WOOD, CAMPFIRE, BED];
+const DEFINITIONS: [BlockProperties; 19] = [
+    AIR,
+    STONE,
+    DIRT,
+    GRASS,
+    WOOD,
+    CAMPFIRE,
+    BED,
+    SAND,
+    SANDSTONE,
+    COAL_ORE,
+    IRON_ORE,
+    GOLD_ORE,
+    DIAMOND_ORE,
+    WATER,
+    LEAVES,
+    TALL_GRASS,
+    FLOWER_RED,
+    FLOWER_YELLOW,
+    CACTUS,
+];
 
 /// 按方块类型查询统一属性。
 pub fn properties(block: Block) -> &'static BlockProperties {
@@ -272,23 +560,30 @@ mod tests {
 
     #[test]
     fn block_ids_are_stable_and_unique() {
-        let definitions = [AIR, STONE, DIRT, GRASS, WOOD, CAMPFIRE, BED];
         let mut ids = Vec::new();
-        for (index, definition) in definitions.iter().enumerate() {
+        for (index, block) in Block::ALL.iter().enumerate() {
+            let definition = properties(*block);
             assert_eq!(definition.id as usize, index, "属性表顺序与 ID 不一致");
+            assert_eq!(block.id() as usize, index);
             ids.push(definition.id);
         }
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), definitions.len(), "方块 ID 必须唯一");
+        assert_eq!(ids.len(), Block::ALL.len(), "方块 ID 必须唯一");
 
-        assert_eq!(Block::Air.id(), 0);
-        assert_eq!(Block::Stone.id(), 1);
-        assert_eq!(Block::Dirt.id(), 2);
-        assert_eq!(Block::Grass.id(), 3);
-        assert_eq!(Block::Wood.id(), 4);
-        assert_eq!(Block::Campfire.id(), 5);
         assert_eq!(Block::Bed.id(), 6);
+        assert_eq!(Block::Sand.id(), 7);
+        assert_eq!(Block::Sandstone.id(), 8);
+        assert_eq!(Block::CoalOre.id(), 9);
+        assert_eq!(Block::IronOre.id(), 10);
+        assert_eq!(Block::GoldOre.id(), 11);
+        assert_eq!(Block::DiamondOre.id(), 12);
+        assert_eq!(Block::Water.id(), 13);
+        assert_eq!(Block::Leaves.id(), 14);
+        assert_eq!(Block::TallGrass.id(), 15);
+        assert_eq!(Block::FlowerRed.id(), 16);
+        assert_eq!(Block::FlowerYellow.id(), 17);
+        assert_eq!(Block::Cactus.id(), 18);
     }
 
     #[test]

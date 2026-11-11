@@ -57,6 +57,11 @@ impl ItemId {
     pub const BREAD: Self = Self(40);
     pub const CAMPFIRE: Self = Self(41);
     pub const BED: Self = Self(42);
+    pub const SAND: Self = Self(43);
+    pub const SANDSTONE: Self = Self(44);
+    pub const CACTUS: Self = Self(45);
+    pub const COAL: Self = Self(46);
+    pub const GOLD_INGOT: Self = Self(47);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {

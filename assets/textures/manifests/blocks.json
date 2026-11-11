@@ -37,6 +37,18 @@
       "north": "wood_side",
       "south": "wood_side",
       "default": "wood_side"
-    }
+    },
+    { "id": 7, "name": "sand", "default": "sand" },
+    { "id": 8, "name": "sandstone", "default": "sandstone" },
+    { "id": 9, "name": "coal_ore", "default": "coal_ore" },
+    { "id": 10, "name": "iron_ore", "default": "iron_ore" },
+    { "id": 11, "name": "gold_ore", "default": "gold_ore" },
+    { "id": 12, "name": "diamond_ore", "default": "diamond_ore" },
+    { "id": 13, "name": "water", "default": "water" },
+    { "id": 14, "name": "leaves", "default": "leaves" },
+    { "id": 15, "name": "tall_grass", "default": "tall_grass" },
+    { "id": 16, "name": "flower_red", "default": "flower_red" },
+    { "id": 17, "name": "flower_yellow", "default": "flower_yellow" },
+    { "id": 18, "name": "cactus", "default": "cactus" }
   ]
 }

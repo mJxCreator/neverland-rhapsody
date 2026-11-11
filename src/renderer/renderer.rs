@@ -32,8 +32,8 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 };
 
 /// 出生点在世界平面上的位置：初始区域中央偏后，面向 -Z 观察山地。
-const SPAWN_X: f32 = 48.0;
-const SPAWN_Z: f32 = 84.0;
+const SPAWN_X: f32 = crate::world::SPAWN_COLUMN.0 as f32;
+const SPAWN_Z: f32 = crate::world::SPAWN_COLUMN.1 as f32;
 /// 出生时的俯仰角，略微俯视。
 const SPAWN_PITCH: f32 = -0.45;
 
@@ -93,6 +93,7 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     block_pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     hud_texture_layout: wgpu::BindGroupLayout,
     block_atlas: GpuAtlasTexture,
@@ -122,6 +123,8 @@ pub struct Renderer {
     /// 模型资源：纹理、静态网格缓存、蒙皮顶点与实例矩阵。
     model: ModelRenderer,
     chunks: HashMap<ChunkPos, ChunkBuffers>,
+    /// 水面单独存放，按距离由远到近在不透明几何之后绘制。
+    water_chunks: HashMap<ChunkPos, ChunkBuffers>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     camera: Camera,
@@ -187,6 +190,8 @@ impl Renderer {
         let hud_texture_layout = create_hud_bind_group_layout(&device);
         let block_pipeline =
             pipeline::create_block_pipeline(&device, config.format, &texture_layout);
+        let water_pipeline =
+            pipeline::create_water_pipeline(&device, config.format, &texture_layout);
         let selection_pipeline =
             pipeline::create_selection_pipeline(&device, config.format, &bind_group_layout);
         let hud_pipeline =
@@ -257,7 +262,7 @@ impl Renderer {
             &ui_atlas,
             "hud bind group",
         );
-        let chunks = upload_chunk_meshes(&device, world, &textures.block_textures);
+        let (chunks, water_chunks) = upload_chunk_meshes(&device, world, &textures.block_textures);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene bind group"),
@@ -281,6 +286,7 @@ impl Renderer {
             depth_view,
             pipeline,
             block_pipeline,
+            water_pipeline,
             texture_layout,
             hud_texture_layout,
             block_atlas,
@@ -306,6 +312,7 @@ impl Renderer {
             entity_vertices: Vec::with_capacity(ENTITY_VERTEX_CAPACITY),
             model,
             chunks,
+            water_chunks,
             uniform_buffer,
             bind_group,
             camera,
@@ -412,6 +419,7 @@ impl Renderer {
                 None => {
                     // 区块已卸载，释放对应 GPU 资源。
                     self.chunks.remove(&pos);
+                    self.water_chunks.remove(&pos);
                     continue;
                 }
             };
@@ -422,6 +430,14 @@ impl Renderer {
                 None => {
                     // 区块已被挖空，移除其绘制缓冲。
                     self.chunks.remove(&pos);
+                }
+            }
+            match water_buffers(&self.device, &mesh) {
+                Some(buffers) => {
+                    self.water_chunks.insert(pos, buffers);
+                }
+                None => {
+                    self.water_chunks.remove(&pos);
                 }
             }
         }
@@ -464,7 +480,10 @@ impl Renderer {
         );
         self.hud_model.set_ui_textures(textures.ui_textures.clone());
         self.textures = textures;
-        self.chunks = upload_chunk_meshes(&self.device, world, &self.textures.block_textures);
+        let (chunks, water_chunks) =
+            upload_chunk_meshes(&self.device, world, &self.textures.block_textures);
+        self.chunks = chunks;
+        self.water_chunks = water_chunks;
         let summary = self.textures.summary();
         info!(
             block_textures = summary.block_textures,
@@ -479,6 +498,7 @@ impl Renderer {
     pub fn remove_chunks(&mut self, positions: &[ChunkPos]) {
         for pos in positions {
             self.chunks.remove(pos);
+            self.water_chunks.remove(pos);
         }
     }
 
@@ -607,6 +627,29 @@ impl Renderer {
                 render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
             }
 
+            // 水面在不透明几何之后绘制，按由远到近排序以得到稳定的半透明叠加。
+            if !self.water_chunks.is_empty() {
+                let eye = self.camera.position();
+                let mut water_positions: Vec<ChunkPos> =
+                    self.water_chunks.keys().copied().collect();
+                water_positions.sort_by(|a, b| {
+                    chunk_distance_squared(*b, eye)
+                        .partial_cmp(&chunk_distance_squared(*a, eye))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                render_pass.set_pipeline(&self.water_pipeline);
+                render_pass.set_bind_group(0, &self.block_atlas.bind_group, &[]);
+                for pos in water_positions {
+                    let Some(chunk) = self.water_chunks.get(&pos) else {
+                        continue;
+                    };
+                    render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                    render_pass
+                        .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+                }
+            }
+
             if particle_count > 0 {
                 render_pass.set_pipeline(&self.pipeline);
                 render_pass.set_bind_group(0, &self.bind_group, &[]);
@@ -662,27 +705,33 @@ fn upload_chunk_meshes(
     device: &wgpu::Device,
     world: &World,
     textures: &BlockTextureMap,
-) -> HashMap<ChunkPos, ChunkBuffers> {
-    world
-        .chunks()
-        .filter_map(|chunk| {
-            let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z), textures);
-            let buffers = chunk_buffers(device, &mesh)?;
-
+) -> (
+    HashMap<ChunkPos, ChunkBuffers>,
+    HashMap<ChunkPos, ChunkBuffers>,
+) {
+    let mut opaque = HashMap::new();
+    let mut water = HashMap::new();
+    for chunk in world.chunks() {
+        let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z), textures);
+        if let Some(buffers) = chunk_buffers(device, &mesh) {
             debug!(
                 chunk = ?chunk.pos(),
                 vertices = mesh.vertices.len(),
                 triangles = mesh.indices.len() / 3,
                 "区块网格已上传"
             );
-            Some((chunk.pos(), buffers))
-        })
-        .collect()
+            opaque.insert(chunk.pos(), buffers);
+        }
+        if let Some(buffers) = water_buffers(device, &mesh) {
+            water.insert(chunk.pos(), buffers);
+        }
+    }
+    (opaque, water)
 }
 
 /// 为一份网格创建 GPU 缓冲；空网格返回 `None`。
 fn chunk_buffers(device: &wgpu::Device, mesh: &ChunkMesh) -> Option<ChunkBuffers> {
-    if mesh.is_empty() {
+    if mesh.indices.is_empty() {
         return None;
     }
 
@@ -702,6 +751,38 @@ fn chunk_buffers(device: &wgpu::Device, mesh: &ChunkMesh) -> Option<ChunkBuffers
         index_buffer,
         index_count: mesh.indices.len() as u32,
     })
+}
+
+/// 为区块水面创建 GPU 缓冲；没有水面时返回 `None`。
+fn water_buffers(device: &wgpu::Device, mesh: &ChunkMesh) -> Option<ChunkBuffers> {
+    if !mesh.has_water() {
+        return None;
+    }
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("water vertices"),
+        contents: bytemuck::cast_slice(&mesh.water_vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("water indices"),
+        contents: bytemuck::cast_slice(&mesh.water_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    Some(ChunkBuffers {
+        vertex_buffer,
+        index_buffer,
+        index_count: mesh.water_indices.len() as u32,
+    })
+}
+
+/// 区块中心到视点的距离平方，用于透明水面从远到近排序。
+fn chunk_distance_squared(pos: ChunkPos, eye: Vec3) -> f32 {
+    let center = Vec3::new(
+        pos.x as f32 * crate::world::CHUNK_SIZE as f32 + 8.0,
+        pos.y as f32 * crate::world::CHUNK_SIZE as f32 + 8.0,
+        pos.z as f32 * crate::world::CHUNK_SIZE as f32 + 8.0,
+    );
+    center.distance_squared(eye)
 }
 
 /// 立方体的 12 条棱，用顶点下标成对表示。

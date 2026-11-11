@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use super::block::Block;
 use super::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
-use super::terrain::{TerrainGenerator, WORLD_HEIGHT};
+use super::terrain::WORLD_HEIGHT;
+use super::worldgen::{WorldGenStatsSnapshot, WorldGenerator, CURRENT_WORLD_GEN_VERSION};
 
 /// 竖直方向的区块层数：世界高度固定为 32，对应 2 层 16 高区块。
 pub const WORLD_CHUNKS_Y: i32 = WORLD_HEIGHT / CHUNK_SIZE;
@@ -15,16 +16,23 @@ pub const DEFAULT_SEED: u32 = 0x5EED;
 /// 动态世界：只持有当前已加载的区块，水平方向不设边界。
 pub struct World {
     seed: u32,
-    terrain: TerrainGenerator,
+    generation_version: u32,
+    generator: WorldGenerator,
     chunks: HashMap<ChunkPos, Chunk>,
 }
 
 impl World {
     /// 创建空世界；区块由区块管理器按玩家位置陆续加载。
     pub fn new(seed: u32) -> Self {
+        Self::with_generation(seed, CURRENT_WORLD_GEN_VERSION)
+    }
+
+    /// 按存档记录的地形版本创建世界；旧版本继续使用原有高度图。
+    pub fn with_generation(seed: u32, generation_version: u32) -> Self {
         Self {
             seed,
-            terrain: TerrainGenerator::new(seed),
+            generation_version,
+            generator: WorldGenerator::new(seed, generation_version),
             chunks: HashMap::new(),
         }
     }
@@ -32,6 +40,21 @@ impl World {
     /// 生成世界所用的种子，存档据此判断改动属于哪张地图。
     pub fn seed(&self) -> u32 {
         self.seed
+    }
+
+    /// 世界生成版本；旧存档据此保持原有地形。
+    pub fn generation_version(&self) -> u32 {
+        self.generation_version
+    }
+
+    /// 累计的世界生成耗时统计。
+    pub fn generation_stats(&self) -> WorldGenStatsSnapshot {
+        self.generator.stats()
+    }
+
+    /// 该列的主导生物群系。
+    pub fn biome_at(&self, world_x: i32, world_z: i32) -> super::worldgen::biome::BiomeId {
+        self.generator.biome_at(world_x, world_z)
     }
 
     /// 当前已加载的全部区块，顺序不保证。
@@ -61,7 +84,7 @@ impl World {
 
     /// 生成指定区块的地形数据，但不插入世界。
     pub fn generate_chunk(&self, pos: ChunkPos) -> Chunk {
-        self.terrain.generate_chunk(pos)
+        self.generator.generate_chunk(pos)
     }
 
     /// 插入区块；相同 ChunkPos 已存在或垂直层级越界时返回 `false`，避免重复实例。
@@ -84,7 +107,7 @@ impl World {
 
     /// 某一世界方柱的地表高度。
     pub fn height_at(&self, world_x: i32, world_z: i32) -> i32 {
-        self.terrain.height_at(world_x, world_z)
+        self.generator.height_at(world_x, world_z)
     }
 
     /// 读取世界坐标下的方块。

@@ -198,8 +198,10 @@ fn load_entity_texture(root: &str, name: &str) -> Option<TextureImage> {
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let world = World::default();
-        let save = WorldSave::load(WorldSave::default_path(), world.seed());
+        // 先读取存档版本再重建世界：旧档继续使用旧版地形，避免已建世界外观改变。
+        let default_world = World::default();
+        let save = WorldSave::load(WorldSave::default_path(), default_world.seed());
+        let world = World::with_generation(default_world.seed(), save.worldgen_version());
         // 物理参数集中管理，玩家碰撞体尺寸也由同一处提供。
         let physics = PhysicsSystem::new(PhysicsConfig::default());
         let (spawn, yaw, pitch) = spawn_pose(&world);
@@ -391,7 +393,22 @@ impl App {
                         .preload(player_chunk, &mut self.world, &mut |pos, world| {
                             self.save.apply_chunk(pos, world)
                         });
-                info!(chunks = self.world.chunk_count(), loaded, "初始区块已加载");
+                let stats = self.world.generation_stats();
+                info!(
+                    chunks = self.world.chunk_count(),
+                    loaded,
+                    generation_version = self.world.generation_version(),
+                    avg_generation_ms = stats.average_ms(),
+                    terrain_ms = stats.stage_average_ms(stats.terrain_ns),
+                    cave_ms = stats.stage_average_ms(stats.cave_ns),
+                    ore_ms = stats.stage_average_ms(stats.ore_ns),
+                    decoration_ms = stats.stage_average_ms(stats.decoration_ns),
+                    biome = self
+                        .world
+                        .biome_at(spawn.x.floor() as i32, spawn.z.floor() as i32)
+                        .name(),
+                    "初始区块已加载"
+                );
 
                 // 存档中属于已加载区块的掉落物与生物恢复为运行时实体。
                 let loaded_chunks: Vec<ChunkPos> = self.world.chunk_positions().collect();

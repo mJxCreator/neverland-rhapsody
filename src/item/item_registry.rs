@@ -439,8 +439,63 @@ const BED: ItemDefinition = ItemDefinition {
     item_type: ItemType::Block,
 };
 
+const SAND: ItemDefinition = ItemDefinition {
+    id: ItemId::SAND,
+    name: "Sand",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.85, 0.79, 0.57),
+    },
+    associated_block: Some(Block::Sand),
+    item_type: ItemType::Block,
+};
+
+const SANDSTONE: ItemDefinition = ItemDefinition {
+    id: ItemId::SANDSTONE,
+    name: "Sandstone",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.79, 0.71, 0.50),
+    },
+    associated_block: Some(Block::Sandstone),
+    item_type: ItemType::Block,
+};
+
+const CACTUS: ItemDefinition = ItemDefinition {
+    id: ItemId::CACTUS,
+    name: "Cactus",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.26, 0.49, 0.24),
+    },
+    associated_block: Some(Block::Cactus),
+    item_type: ItemType::Block,
+};
+
+const COAL: ItemDefinition = ItemDefinition {
+    id: ItemId::COAL,
+    name: "Coal",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.16, 0.16, 0.18),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
+const GOLD_INGOT: ItemDefinition = ItemDefinition {
+    id: ItemId::GOLD_INGOT,
+    name: "Gold Ingot",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.92, 0.76, 0.30),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 43] = [
+const DEFINITIONS: [ItemDefinition; 48] = [
     INVALID,
     STONE,
     DIRT,
@@ -484,6 +539,11 @@ const DEFINITIONS: [ItemDefinition; 43] = [
     BREAD,
     CAMPFIRE,
     BED,
+    SAND,
+    SANDSTONE,
+    CACTUS,
+    COAL,
+    GOLD_INGOT,
 ];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。

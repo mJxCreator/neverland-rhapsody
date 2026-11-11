@@ -121,14 +121,15 @@ fn axis_steps(
 mod tests {
     use super::*;
     use crate::world::world::WORLD_CHUNKS_Y;
-    use crate::world::{ChunkPos, World};
+    use crate::world::{ChunkPos, World, DEFAULT_SEED, LEGACY_WORLD_GEN_VERSION};
     use glam::Vec3;
 
     const MAX_DISTANCE: f32 = 200.0;
 
     /// 只加载测试坐标附近的区块，模拟动态世界。
     fn loaded_world() -> World {
-        let mut world = World::default();
+        // 射线用例依赖旧版高度图的固定地表高度。
+        let mut world = World::with_generation(DEFAULT_SEED, LEGACY_WORLD_GEN_VERSION);
         for chunk_y in 0..WORLD_CHUNKS_Y {
             for chunk_z in 0..2 {
                 for chunk_x in 0..2 {

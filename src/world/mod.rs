@@ -5,6 +5,7 @@ pub mod block_registry;
 pub mod chunk;
 pub mod chunk_manager;
 pub mod terrain;
+pub mod worldgen;
 // 需求文档约定世界主体位于 world/world.rs，保留同名子模块。
 #[allow(clippy::module_inception)]
 pub mod world;
@@ -15,3 +16,4 @@ pub use self::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
 pub use self::chunk_manager::{ChunkConfig, ChunkManager};
 pub use self::terrain::WORLD_HEIGHT;
 pub use self::world::{World, DEFAULT_SEED};
+pub use self::worldgen::{CURRENT_WORLD_GEN_VERSION, LEGACY_WORLD_GEN_VERSION, SPAWN_COLUMN};

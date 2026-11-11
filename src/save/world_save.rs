@@ -6,6 +6,8 @@
 //! v0.19（version 7）新增 `equipment`（四槽护甲），旧档缺省为空装备。
 //! v0.20（version 8）新增 `vitals`（饥饿/体力/床复活点）、`world_time`（昼夜时间）
 //! 与 `campfires`（营火烹饪状态）；旧档缺省为满饥饿、满体力与清晨。
+//! v0.21（version 9）新增 `worldgen_version`（地形版本）；旧档按 1 处理，
+//! 继续使用原有高度图地形，避免已建世界外观改变。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -21,12 +23,15 @@ use crate::item::{DroppedItemRecord, SavedInventory};
 use crate::player::SavedSurvival;
 use crate::survival::cooking::SavedCampfire;
 use crate::survival::{SavedVitals, SavedWorldTime};
-use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
+use crate::world::{
+    Block, ChunkPos, World, CHUNK_SIZE, CURRENT_WORLD_GEN_VERSION, DEFAULT_SEED,
+    LEGACY_WORLD_GEN_VERSION, WORLD_HEIGHT,
+};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备 + 生存。
-const SAVE_VERSION: u32 = 8;
+/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备 + 生存 + 地形版本。
+const SAVE_VERSION: u32 = 9;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -94,10 +99,17 @@ struct SaveFile {
     /// v0.20 起的营火烹饪状态。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     campfires: Vec<SavedCampfire>,
+    /// v0.21 起的世界生成版本；旧档缺省为 1（旧版高度图地形）。
+    #[serde(default = "default_worldgen_version")]
+    worldgen_version: u32,
 }
 
 fn default_seed() -> u32 {
     DEFAULT_SEED
+}
+
+fn default_worldgen_version() -> u32 {
+    LEGACY_WORLD_GEN_VERSION
 }
 
 /// 玩家改动的内存记录，与磁盘上的存档文件保持同步。
@@ -124,6 +136,8 @@ pub struct WorldSave {
     world_time: Option<SavedWorldTime>,
     /// 营火烹饪状态快照。
     campfires: Vec<SavedCampfire>,
+    /// 世界生成版本；新世界为当前版本，旧档按记录值继续生成。
+    worldgen_version: u32,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
     /// 主存档读取失败、本次数据来自备份时为 `true`。
@@ -155,6 +169,7 @@ impl WorldSave {
             vitals: None,
             world_time: None,
             campfires: Vec::new(),
+            worldgen_version: CURRENT_WORLD_GEN_VERSION,
             unsaved: false,
             primary_suspect: false,
         };
@@ -217,6 +232,15 @@ impl WorldSave {
         }
         if data.seed != self.seed {
             bail!("存档种子 {} 与世界种子 {} 不一致", data.seed, self.seed);
+        }
+        if !(LEGACY_WORLD_GEN_VERSION..=CURRENT_WORLD_GEN_VERSION).contains(&data.worldgen_version)
+        {
+            bail!(
+                "存档地形版本 {} 与当前支持的版本 {}..={} 不一致",
+                data.worldgen_version,
+                LEGACY_WORLD_GEN_VERSION,
+                CURRENT_WORLD_GEN_VERSION
+            );
         }
 
         let mut edits: HashMap<ChunkPos, HashMap<(i32, i32, i32), Block>> = HashMap::new();
@@ -287,6 +311,7 @@ impl WorldSave {
         self.vitals = data.vitals.map(SavedVitals::sanitized);
         self.world_time = data.world_time;
         self.campfires = data.campfires;
+        self.worldgen_version = data.worldgen_version;
         Ok(())
     }
 
@@ -458,6 +483,11 @@ impl WorldSave {
         &self.campfires
     }
 
+    /// 世界生成版本；上层据此选择旧版或现代地形。
+    pub fn worldgen_version(&self) -> u32 {
+        self.worldgen_version
+    }
+
     /// 同时更新生存数据、世界时间与营火状态并只写盘一次。
     pub fn set_survival_state(
         &mut self,
@@ -575,6 +605,7 @@ impl WorldSave {
             vitals: self.vitals,
             world_time: self.world_time,
             campfires: self.campfires.clone(),
+            worldgen_version: self.worldgen_version,
             populated_chunks,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
@@ -767,7 +798,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 8"));
+        assert!(text.contains("\"version\": 9"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -1276,6 +1307,40 @@ mod tests {
         assert!((reloaded.world_time().time_of_day - 0.75).abs() < 1e-6);
         assert_eq!(reloaded.campfires().len(), 1);
         assert_eq!(reloaded.campfires()[0].input.as_ref().unwrap().count, 2);
+
+        remove_all(&path);
+    }
+
+    #[test]
+    fn worldgen_version_defaults_to_legacy_and_round_trips() {
+        let path = temp_path("worldgen-version");
+        remove_all(&path);
+
+        // 无存档时按当前版本创建新世界。
+        let fresh = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(fresh.worldgen_version(), CURRENT_WORLD_GEN_VERSION);
+
+        // v8 旧档没有该字段，按旧版地形处理。
+        let legacy = r#"{
+            "version": 8,
+            "seed": 24301,
+            "player": {"slots": [], "selected_hotbar": 0}
+        }"#;
+        fs::write(&path, legacy).expect("写入旧档失败");
+        let loaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(loaded.worldgen_version(), LEGACY_WORLD_GEN_VERSION);
+
+        // 写盘后版本字段保留，重新加载不丢失。
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        save.record(BlockEdit {
+            x: 1,
+            y: 5,
+            z: 1,
+            block: Block::Stone,
+        })
+        .expect("写盘应成功");
+        let reloaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(reloaded.worldgen_version(), LEGACY_WORLD_GEN_VERSION);
 
         remove_all(&path);
     }

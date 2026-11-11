@@ -53,6 +53,48 @@ const BED_DROPS: [BlockDrop; 1] = [BlockDrop {
     weight: 1,
 }];
 
+const SAND_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::SAND,
+    count: 1,
+    weight: 1,
+}];
+
+const SANDSTONE_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::SANDSTONE,
+    count: 1,
+    weight: 1,
+}];
+
+const CACTUS_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::CACTUS,
+    count: 1,
+    weight: 1,
+}];
+
+const COAL_ORE_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::COAL,
+    count: 1,
+    weight: 1,
+}];
+
+const IRON_ORE_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::IRON_INGOT,
+    count: 1,
+    weight: 1,
+}];
+
+const GOLD_ORE_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::GOLD_INGOT,
+    count: 1,
+    weight: 1,
+}];
+
+const DIAMOND_ORE_DROPS: [BlockDrop; 1] = [BlockDrop {
+    item: ItemId::DIAMOND,
+    count: 1,
+    weight: 1,
+}];
+
 /// 指定方块被破坏后的掉落列表；不可掉落方块返回空列表。
 pub fn drops_for_block(block: Block) -> &'static [BlockDrop] {
     match block {
@@ -63,6 +105,18 @@ pub fn drops_for_block(block: Block) -> &'static [BlockDrop] {
         Block::Wood => &WOOD_DROPS,
         Block::Campfire => &CAMPFIRE_DROPS,
         Block::Bed => &BED_DROPS,
+        Block::Sand => &SAND_DROPS,
+        Block::Sandstone => &SANDSTONE_DROPS,
+        Block::CoalOre => &COAL_ORE_DROPS,
+        Block::IronOre => &IRON_ORE_DROPS,
+        Block::GoldOre => &GOLD_ORE_DROPS,
+        Block::DiamondOre => &DIAMOND_ORE_DROPS,
+        Block::Cactus => &CACTUS_DROPS,
+        Block::Water
+        | Block::Leaves
+        | Block::TallGrass
+        | Block::FlowerRed
+        | Block::FlowerYellow => &[],
     }
 }
 
@@ -80,6 +134,9 @@ mod tests {
             Block::Wood,
             Block::Campfire,
             Block::Bed,
+            Block::Sand,
+            Block::Sandstone,
+            Block::Cactus,
         ] {
             let drops = drops_for_block(block);
             assert!(!drops.is_empty(), "{block:?} 必须配置掉落");
@@ -98,5 +155,20 @@ mod tests {
     #[test]
     fn air_drops_nothing() {
         assert!(drops_for_block(Block::Air).is_empty());
+    }
+
+    #[test]
+    fn ores_drop_their_materials() {
+        let cases = [
+            (Block::CoalOre, ItemId::COAL),
+            (Block::IronOre, ItemId::IRON_INGOT),
+            (Block::GoldOre, ItemId::GOLD_INGOT),
+            (Block::DiamondOre, ItemId::DIAMOND),
+        ];
+        for (block, item) in cases {
+            let drops = drops_for_block(block);
+            assert_eq!(drops.len(), 1);
+            assert_eq!(drops[0].item, item);
+        }
     }
 }

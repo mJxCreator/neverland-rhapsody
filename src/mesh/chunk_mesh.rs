@@ -3,6 +3,7 @@
 use glam::Vec3;
 
 use crate::texture::BlockTextureMap;
+use crate::world::block_registry::RenderType;
 use crate::world::{Block, Chunk, Face, CHUNK_SIZE};
 
 /// 带面色的顶点：位置与颜色，供粒子/掉落物等纯色几何使用。
@@ -26,15 +27,20 @@ pub struct BlockVertex {
 }
 
 /// 一个区块提取出的三角形网格，位置已转换到世界坐标。
+///
+/// 不透明/交叉面与水面分开存放：水面需要独立的透明管线与排序。
 #[derive(Debug, Default)]
 pub struct ChunkMesh {
     pub vertices: Vec<BlockVertex>,
     pub indices: Vec<u32>,
+    pub water_vertices: Vec<BlockVertex>,
+    pub water_indices: Vec<u32>,
 }
 
 impl ChunkMesh {
-    pub fn is_empty(&self) -> bool {
-        self.indices.is_empty()
+    /// 是否包含需要透明管线绘制的水面。
+    pub fn has_water(&self) -> bool {
+        !self.water_indices.is_empty()
     }
 }
 
@@ -58,11 +64,35 @@ pub fn build_chunk_mesh(
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
                 let block = chunk.block_at(x, y, z);
-                if !block.is_solid() {
+                let render_type = block.render_type();
+                if render_type == RenderType::None {
                     continue;
                 }
 
                 let min = origin + Vec3::new(x as f32, y as f32, z as f32);
+                if render_type == RenderType::Cross {
+                    push_cross(&mut mesh, block, min, textures);
+                    continue;
+                }
+                if render_type == RenderType::Transparent {
+                    for face in Face::ALL {
+                        let normal = face.normal();
+                        let neighbor = block_at_world(
+                            base_x + x + normal.x as i32,
+                            base_y + y + normal.y as i32,
+                            base_z + z + normal.z as i32,
+                        );
+                        if neighbor == Block::Water || neighbor.is_solid() {
+                            continue;
+                        }
+                        push_water_face(&mut mesh, block, face, min, textures);
+                    }
+                    continue;
+                }
+                if !block.is_solid() {
+                    continue;
+                }
+
                 for face in Face::ALL {
                     let normal = face.normal();
                     let neighbor = block_at_world(
@@ -95,6 +125,71 @@ fn push_face(
     let uvs = textures.face_uv(block, face);
     let base = mesh.vertices.len() as u32;
     for (index, corner) in face_corners(face, min).into_iter().enumerate() {
+        mesh.vertices.push(BlockVertex {
+            position: corner.to_array(),
+            color,
+            uv: uvs[index],
+        });
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn push_water_face(
+    mesh: &mut ChunkMesh,
+    block: Block,
+    face: Face,
+    min: Vec3,
+    textures: &BlockTextureMap,
+) {
+    let brightness = face.shade() * block_variation(min);
+    let color = [brightness; 3];
+    let uvs = textures.face_uv(block, face);
+    let base = mesh.water_vertices.len() as u32;
+    for (index, corner) in face_corners(face, min).into_iter().enumerate() {
+        mesh.water_vertices.push(BlockVertex {
+            position: corner.to_array(),
+            color,
+            uv: uvs[index],
+        });
+    }
+    mesh.water_indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// 交叉植被：两片对角平面，双面写入，避免背面剔除造成消失。
+fn push_cross(mesh: &mut ChunkMesh, block: Block, min: Vec3, textures: &BlockTextureMap) {
+    let brightness = 0.92 * block_variation(min);
+    let color = [brightness; 3];
+    let uvs = textures.face_uv(block, Face::PosY);
+    let inset = 0.15;
+    let low = inset;
+    let high = 1.0 - inset;
+
+    // 平面 A：左下 → 右上。
+    let a = [
+        min + Vec3::new(low, 0.0, low),
+        min + Vec3::new(high, 0.0, high),
+        min + Vec3::new(high, 1.0, high),
+        min + Vec3::new(low, 1.0, low),
+    ];
+    push_quad(mesh, a, uvs, color);
+    push_quad(mesh, [a[0], a[3], a[2], a[1]], uvs, color);
+
+    // 平面 B：右下 → 左上。
+    let b = [
+        min + Vec3::new(low, 0.0, high),
+        min + Vec3::new(high, 0.0, low),
+        min + Vec3::new(high, 1.0, low),
+        min + Vec3::new(low, 1.0, high),
+    ];
+    push_quad(mesh, b, uvs, color);
+    push_quad(mesh, [b[0], b[3], b[2], b[1]], uvs, color);
+}
+
+fn push_quad(mesh: &mut ChunkMesh, corners: [Vec3; 4], uvs: [[f32; 2]; 4], color: [f32; 3]) {
+    let base = mesh.vertices.len() as u32;
+    for (index, corner) in corners.into_iter().enumerate() {
         mesh.vertices.push(BlockVertex {
             position: corner.to_array(),
             color,
@@ -182,7 +277,8 @@ mod tests {
     #[test]
     fn empty_chunk_has_no_geometry() {
         let mesh = mesh_of(&Chunk::new(ChunkPos::new(0, 0, 0)));
-        assert!(mesh.is_empty());
+        assert!(mesh.vertices.is_empty() && mesh.indices.is_empty());
+        assert!(!mesh.has_water());
     }
 
     #[test]
@@ -283,6 +379,42 @@ mod tests {
         let faces = 6 * (CHUNK_SIZE * CHUNK_SIZE) as usize;
         assert_eq!(mesh.vertices.len(), faces * 4);
         assert_eq!(mesh.indices.len(), faces * 6);
+    }
+
+    #[test]
+    fn water_is_extracted_into_the_transparent_buffer() {
+        let mesh = mesh_of(&chunk_with(&[(1, 1, 1, Block::Water)]));
+        assert!(mesh.indices.is_empty(), "水面不应进入不透明缓冲");
+        assert_eq!(mesh.water_vertices.len(), 24);
+        assert_eq!(mesh.water_indices.len(), 36);
+        assert!(mesh.has_water());
+    }
+
+    #[test]
+    fn adjacent_water_hides_shared_faces() {
+        let mesh = mesh_of(&chunk_with(&[
+            (1, 1, 1, Block::Water),
+            (2, 1, 1, Block::Water),
+        ]));
+        assert_eq!(mesh.water_vertices.len(), 40);
+        assert_eq!(mesh.water_indices.len(), 60);
+    }
+
+    #[test]
+    fn cross_plants_emit_two_double_sided_planes() {
+        let mesh = mesh_of(&chunk_with(&[(1, 1, 1, Block::TallGrass)]));
+        // 两片平面 × 双面 × 4 顶点。
+        assert_eq!(mesh.vertices.len(), 16);
+        assert_eq!(mesh.indices.len(), 24);
+    }
+
+    #[test]
+    fn non_rendered_and_non_solid_blocks_are_skipped() {
+        let mesh = mesh_of(&chunk_with(&[
+            (1, 1, 1, Block::Air),
+            (2, 1, 1, Block::FlowerRed),
+        ]));
+        assert_eq!(mesh.vertices.len(), 16, "只有花生成交叉面");
     }
 
     #[test]

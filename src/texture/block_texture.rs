@@ -111,7 +111,28 @@ pub fn builtin_manifest() -> BlockManifest {
                 default_texture: Some("wood_side".to_string()),
                 ..BlockManifestEntry::default()
             },
+            simple_entry(Block::Sand, "sand"),
+            simple_entry(Block::Sandstone, "sandstone"),
+            simple_entry(Block::CoalOre, "coal_ore"),
+            simple_entry(Block::IronOre, "iron_ore"),
+            simple_entry(Block::GoldOre, "gold_ore"),
+            simple_entry(Block::DiamondOre, "diamond_ore"),
+            simple_entry(Block::Water, "water"),
+            simple_entry(Block::Leaves, "leaves"),
+            simple_entry(Block::TallGrass, "tall_grass"),
+            simple_entry(Block::FlowerRed, "flower_red"),
+            simple_entry(Block::FlowerYellow, "flower_yellow"),
+            simple_entry(Block::Cactus, "cactus"),
         ],
+    }
+}
+
+fn simple_entry(block: Block, texture: &str) -> BlockManifestEntry {
+    BlockManifestEntry {
+        id: block.id(),
+        name: Some(texture.to_string()),
+        default_texture: Some(texture.to_string()),
+        ..BlockManifestEntry::default()
     }
 }
 
@@ -145,8 +166,8 @@ impl BlockTextureMap {
     /// 所有面都使用整张纹理的测试/占位映射。
     pub fn placeholder() -> Self {
         Self {
-            ids: vec![[TextureId::INVALID; 6]; 7],
-            faces: vec![[UVRect::FULL; 6]; 7],
+            ids: vec![[TextureId::INVALID; 6]; Block::ALL.len()],
+            faces: vec![[UVRect::FULL; 6]; Block::ALL.len()],
         }
     }
 
@@ -160,17 +181,9 @@ impl BlockTextureMap {
         fallback: TextureId,
         warnings: &mut Vec<String>,
     ) -> Result<Self, BlockTextureError> {
-        let max_id = manifest
-            .blocks
-            .iter()
-            .map(|entry| entry.id)
-            .max()
-            .unwrap_or(0)
-            .max(Block::Wood.id())
-            .max(Block::Campfire.id())
-            .max(Block::Bed.id());
-        let mut ids = vec![[fallback; 6]; max_id as usize + 1];
-        let mut faces = vec![[UVRect::ZERO; 6]; max_id as usize + 1];
+        let last_block_id = Block::ALL.len() as u8 - 1;
+        let mut ids = vec![[fallback; 6]; Block::ALL.len()];
+        let mut faces = vec![[UVRect::ZERO; 6]; Block::ALL.len()];
 
         let mut seen_ids: Vec<u8> = Vec::new();
         for entry in &manifest.blocks {
@@ -178,7 +191,7 @@ impl BlockTextureMap {
                 return Err(BlockTextureError::DuplicateBlock { id: entry.id });
             }
             seen_ids.push(entry.id);
-            if entry.id == Block::Air.id() || entry.id > Block::Bed.id() {
+            if entry.id == Block::Air.id() || entry.id > last_block_id {
                 warnings.push(format!(
                     "方块纹理配置 ID {} 不在当前方块注册表中，已忽略",
                     entry.id
@@ -216,14 +229,7 @@ impl BlockTextureMap {
 
         // 未出现在配置中的方块整体回退到占位纹理。
         let fallback_uv = registry.get(fallback).map_or(UVRect::ZERO, |info| info.uv);
-        for block in [
-            Block::Stone,
-            Block::Dirt,
-            Block::Grass,
-            Block::Wood,
-            Block::Campfire,
-            Block::Bed,
-        ] {
+        for block in Block::ALL.into_iter().filter(|block| *block != Block::Air) {
             if !manifest.blocks.iter().any(|entry| entry.id == block.id()) {
                 warnings.push(format!("方块 {} 缺少纹理配置，使用占位纹理", block.id()));
                 ids[block.id() as usize] = [fallback; 6];
@@ -347,6 +353,18 @@ mod tests {
             "grass_side",
             "wood_top",
             "wood_side",
+            "sand",
+            "sandstone",
+            "coal_ore",
+            "iron_ore",
+            "gold_ore",
+            "diamond_ore",
+            "water",
+            "leaves",
+            "tall_grass",
+            "flower_red",
+            "flower_yellow",
+            "cactus",
         ]);
         let mut warnings = Vec::new();
         let map = BlockTextureMap::from_manifest(
@@ -375,6 +393,18 @@ mod tests {
                 .expect("dirt 已登记")
         );
         assert!(warnings.is_empty(), "内置映射不应产生缺失警告");
+    }
+
+    #[test]
+    fn builtin_manifest_covers_every_rendered_block() {
+        let manifest = builtin_manifest();
+        for block in Block::ALL.into_iter().filter(|block| *block != Block::Air) {
+            assert!(
+                manifest.blocks.iter().any(|entry| entry.id == block.id()),
+                "方块 {} 缺少内置纹理配置",
+                block.id()
+            );
+        }
     }
 
     #[test]

@@ -61,12 +61,59 @@ pub enum Block {
     Wood,
     Campfire,
     Bed,
+    Sand,
+    Sandstone,
+    #[serde(rename = "coal_ore")]
+    CoalOre,
+    #[serde(rename = "iron_ore")]
+    IronOre,
+    #[serde(rename = "gold_ore")]
+    GoldOre,
+    #[serde(rename = "diamond_ore")]
+    DiamondOre,
+    Water,
+    Leaves,
+    #[serde(rename = "tall_grass")]
+    TallGrass,
+    #[serde(rename = "flower_red")]
+    FlowerRed,
+    #[serde(rename = "flower_yellow")]
+    FlowerYellow,
+    Cactus,
 }
 
 impl Block {
+    /// 全部方块，顺序与稳定 ID 一致；遍历与注册表校验共用。
+    pub const ALL: [Block; 19] = [
+        Block::Air,
+        Block::Stone,
+        Block::Dirt,
+        Block::Grass,
+        Block::Wood,
+        Block::Campfire,
+        Block::Bed,
+        Block::Sand,
+        Block::Sandstone,
+        Block::CoalOre,
+        Block::IronOre,
+        Block::GoldOre,
+        Block::DiamondOre,
+        Block::Water,
+        Block::Leaves,
+        Block::TallGrass,
+        Block::FlowerRed,
+        Block::FlowerYellow,
+        Block::Cactus,
+    ];
+
     /// 稳定的方块 ID，与存档数据和属性注册表共用。
     pub fn id(self) -> u8 {
         self as u8
+    }
+
+    /// 渲染方式；网格提取按该字段选择实体面、水面或交叉面。
+    pub fn render_type(self) -> super::block_registry::RenderType {
+        self.properties().render_type
     }
 
     /// 统一的方块属性；所有模块都应通过该接口查询，而不是各自维护条件判断。

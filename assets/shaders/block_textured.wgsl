@@ -36,5 +36,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // 图集提供方块基色，顶点色只保留朝向明暗与稳定变化。
     let sampled = textureSample(atlas_texture, atlas_sampler, input.uv);
+    // 交叉植被使用带透明边缘的纹理，低 Alpha 像素直接丢弃。
+    if (sampled.a < 0.5) {
+        discard;
+    }
     return vec4<f32>(sampled.rgb * input.color, 1.0);
 }
