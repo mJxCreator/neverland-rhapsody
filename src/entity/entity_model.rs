@@ -30,8 +30,11 @@ impl Default for EntityModelConfig {
 }
 
 /// 实体类型到模型名称的固定映射。
-const MODEL_NAMES: [(EntityTypeId, &str); 2] =
-    [(EntityTypeId::PIG, "pig"), (EntityTypeId::COW, "cow")];
+const MODEL_NAMES: [(EntityTypeId, &str); 3] = [
+    (EntityTypeId::PIG, "pig"),
+    (EntityTypeId::COW, "cow"),
+    (EntityTypeId::ZOMBIE, "zombie"),
+];
 
 /// 受击闪红持续时间（秒）；期间颜色线性衰减回正常。
 const HURT_FLASH_DURATION: f32 = 0.2;
@@ -200,9 +203,12 @@ impl EntityModelSet {
 /// 按 AI 状态选择片段名：逃跑用奔跑，游荡用行走，其余待机。
 fn animation_for(state: AiState) -> &'static str {
     match state {
-        AiState::Fleeing => "run",
+        AiState::Fleeing | AiState::Chase | AiState::Return | AiState::Patrol => "run",
         AiState::Wandering => "walk",
-        AiState::Idle | AiState::Avoiding | AiState::Dead => "idle",
+        AiState::Attack => "attack",
+        AiState::Hurt => "hurt",
+        AiState::Dead => "death",
+        AiState::Idle | AiState::Avoiding => "idle",
     }
 }
 
@@ -214,6 +220,9 @@ fn resolve_clip<'a>(asset: &'a ModelAsset, desired: &str) -> Option<&'a str> {
     let candidates: &[&str] = match desired {
         "walk" => &["walk", "move", "run", "idle", "stop"],
         "run" => &["run", "sprint", "walk", "move", "idle"],
+        "attack" => &["attack", "hit", "walk", "idle"],
+        "hurt" => &["hurt", "attack", "idle"],
+        "death" => &["death", "hurt", "idle"],
         _ => &["idle", "stand", "stop", "eat", "walk"],
     };
     for candidate in candidates {

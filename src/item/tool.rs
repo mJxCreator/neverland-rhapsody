@@ -131,10 +131,10 @@ pub enum Wear {
 ///
 /// `amount` 为 0 时按一次最小磨损处理，防止调用方传入 0 导致“无消耗挖掘”。
 pub fn apply_wear(stack: &mut ItemStack, amount: u32) -> Wear {
-    let Some(max) = stack.max_durability() else {
+    let Some(definition) = super::tool_registry::definition(stack.item()) else {
         return Wear::NotATool;
     };
-    let current = stack.durability().unwrap_or(max);
+    let current = stack.durability().unwrap_or(definition.max_durability);
     if current == 0 {
         return Wear::Broken;
     }

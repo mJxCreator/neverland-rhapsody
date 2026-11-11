@@ -22,6 +22,22 @@ impl RecipeId {
     pub const WOODEN_SHOVEL: Self = Self(8);
     pub const STONE_SHOVEL: Self = Self(9);
     pub const IRON_SHOVEL: Self = Self(10);
+    pub const WOODEN_SWORD: Self = Self(11);
+    pub const STONE_SWORD: Self = Self(12);
+    pub const IRON_SWORD: Self = Self(13);
+    pub const DIAMOND_SWORD: Self = Self(14);
+    pub const LEATHER_HELMET: Self = Self(15);
+    pub const LEATHER_CHESTPLATE: Self = Self(16);
+    pub const LEATHER_LEGGINGS: Self = Self(17);
+    pub const LEATHER_BOOTS: Self = Self(18);
+    pub const IRON_HELMET: Self = Self(19);
+    pub const IRON_CHESTPLATE: Self = Self(20);
+    pub const IRON_LEGGINGS: Self = Self(21);
+    pub const IRON_BOOTS: Self = Self(22);
+    pub const DIAMOND_HELMET: Self = Self(23);
+    pub const DIAMOND_CHESTPLATE: Self = Self(24);
+    pub const DIAMOND_LEGGINGS: Self = Self(25);
+    pub const DIAMOND_BOOTS: Self = Self(26);
 }
 
 /// 配方分类：用于合成界面的分类查询与后续解锁规则。

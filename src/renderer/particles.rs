@@ -88,6 +88,28 @@ impl ParticleSystem {
         }
     }
 
+    /// 在命中位置生成少量血红色碎块，用于近战反馈。
+    pub fn spawn_hit(&mut self, position: Vec3, color: Vec3) {
+        for _ in 0..6 {
+            let direction = self.random_direction();
+            let speed = 0.8 + self.random() * 1.8;
+            let life = 0.25 + self.random() * 0.25;
+            let size = 0.04 + self.random() * 0.04;
+            let tint = color * (0.85 + self.random() * 0.3);
+            self.particles.push(Particle {
+                position: position + direction * 0.2,
+                velocity: direction * speed + Vec3::Y * 1.2,
+                life,
+                size,
+                color: tint.to_array(),
+            });
+        }
+        if self.particles.len() > MAX_PARTICLES {
+            let excess = self.particles.len() - MAX_PARTICLES;
+            self.particles.drain(..excess);
+        }
+    }
+
     /// 推进粒子生命周期并清理过期粒子。
     pub fn update(&mut self, delta_secs: f32) {
         let delta = if delta_secs.is_finite() {

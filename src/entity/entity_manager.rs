@@ -10,10 +10,20 @@ use super::creature::Creature;
 use super::entity::{chunk_of, DamageResult, Entity, EntityId, EntityTypeId};
 use super::entity_registry;
 use super::entity_save::EntityRecord;
+use crate::combat::damage::HURT_INVULNERABILITY;
 use crate::world::{ChunkPos, World};
 
 /// 死亡实体在掉落结算后保留的时间，随后销毁。
 pub const DEATH_LINGER_SECONDS: f32 = 0.6;
+
+/// 敌对生物一次命中玩家的攻击事件。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostileAttack {
+    /// 攻击者。
+    pub attacker: EntityId,
+    /// 伤害值。
+    pub damage: u32,
+}
 
 /// 实体管理器。
 pub struct EntityManager {
@@ -65,6 +75,15 @@ impl EntityManager {
             .count()
     }
 
+    /// 存活的敌对生物数量。
+    pub fn hostile_alive_count(&self) -> usize {
+        self.entities
+            .iter()
+            .filter(|creature| creature.is_alive())
+            .filter(|creature| Self::is_hostile(creature.kind()))
+            .count()
+    }
+
     /// 按 ID 查询。
     pub fn get(&self, id: EntityId) -> Option<&Creature> {
         self.entities.iter().find(|creature| creature.id() == id)
@@ -97,7 +116,7 @@ impl EntityManager {
         Some(id)
     }
 
-    /// 结算伤害并让目标逃离伤害来源；重复命中已死亡目标返回 [`DamageResult::Ignored`]。
+    /// 结算伤害并刷新无敌帧；敌对生物进入受击硬直，被动生物逃离伤害来源。
     pub fn apply_damage(
         &mut self,
         id: EntityId,
@@ -113,10 +132,14 @@ impl EntityManager {
             return DamageResult::Ignored;
         }
         let position = creature.entity.position();
-        let result = creature.entity.take_damage(amount);
+        let result = creature.entity.receive_hit(amount, HURT_INVULNERABILITY);
         match result {
             DamageResult::Applied { .. } => {
-                creature.brain.flee(position, source, flee_seconds);
+                if Self::is_hostile(creature.kind()) {
+                    creature.brain.hurt(source, 0.35);
+                } else {
+                    creature.brain.flee(position, source, flee_seconds);
+                }
             }
             DamageResult::Killed => creature.mark_dead(),
             DamageResult::Ignored => {}
@@ -124,17 +147,22 @@ impl EntityManager {
         result
     }
 
-    /// 让所有存活生物的 AI 推进一次；决策频率由 [`AiConfig`] 控制。
+    pub fn is_hostile(kind: EntityTypeId) -> bool {
+        entity_registry::definition(kind).is_some_and(|definition| definition.combat.is_some())
+    }
+
+    /// 让所有存活生物的 AI 推进一次；返回本次帧内敌对生物命中的攻击。
     pub fn update_ai(
         &mut self,
         delta: f32,
         player_position: Vec3,
         world: &World,
         config: &AiConfig,
-    ) {
+    ) -> Vec<HostileAttack> {
         if !delta.is_finite() || delta <= 0.0 {
-            return;
+            return Vec::new();
         }
+        let mut attacks = Vec::new();
         for creature in self
             .entities
             .iter_mut()
@@ -155,16 +183,26 @@ impl EntityManager {
                 config,
                 delta,
             );
+            if creature.brain.take_attack() {
+                if let Some(combat) = definition.combat {
+                    attacks.push(HostileAttack {
+                        attacker: creature.id(),
+                        damage: combat.attack_damage,
+                    });
+                }
+            }
         }
+        attacks
     }
 
-    /// 推进死亡计时并移除到期实体；避免在遍历中修改列表。
+    /// 推进状态计时与死亡计时并移除到期实体；避免在遍历中修改列表。
     pub fn update_deaths(&mut self, delta: f32) -> usize {
         let mut removed = 0;
         let mut index = 0;
         while index < self.entities.len() {
             let expired = {
                 let creature = &mut self.entities[index];
+                creature.entity.tick_status(delta);
                 creature.is_dead() && creature.entity.tick_death(delta, DEATH_LINGER_SECONDS)
             };
             if expired {
@@ -315,6 +353,12 @@ mod tests {
             manager.apply_damage(id, 4, Vec3::ZERO, 3.0),
             DamageResult::Applied { remaining: 6 }
         );
+        // 无敌帧内重复攻击不会扣血。
+        assert_eq!(
+            manager.apply_damage(id, 4, Vec3::ZERO, 3.0),
+            DamageResult::Ignored
+        );
+        manager.update_deaths(HURT_INVULNERABILITY + 0.1);
         assert_eq!(
             manager.apply_damage(id, 20, Vec3::ZERO, 3.0),
             DamageResult::Killed

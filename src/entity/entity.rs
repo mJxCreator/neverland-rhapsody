@@ -35,6 +35,8 @@ impl EntityTypeId {
     pub const PIG: Self = Self(1);
     /// 牛。
     pub const COW: Self = Self(2);
+    /// 僵尸。
+    pub const ZOMBIE: Self = Self(3);
 
     /// 由原始数值构造。
     pub const fn new(raw: u16) -> Self {
@@ -101,6 +103,8 @@ pub struct Entity {
     chunk: ChunkPos,
     /// 死亡后经过的时间，用于延迟销毁。
     death_elapsed: f32,
+    /// 受击后的无敌帧剩余时间；期间再次受击被忽略。
+    invulnerability: f32,
 }
 
 impl Entity {
@@ -127,6 +131,7 @@ impl Entity {
             grounded: false,
             chunk: chunk_of(position),
             death_elapsed: 0.0,
+            invulnerability: 0.0,
         }
     }
 
@@ -239,6 +244,28 @@ impl Entity {
             DamageResult::Killed
         } else {
             DamageResult::Applied { remaining }
+        }
+    }
+
+    /// 实际受击入口：先检查无敌帧，再结算伤害并刷新无敌帧。
+    ///
+    /// 无敌帧期间返回 [`DamageResult::Ignored`]，因此同一帧或短时间内的重复攻击
+    /// 不会重复扣血。
+    pub fn receive_hit(&mut self, amount: u32, invulnerability: f32) -> DamageResult {
+        if self.invulnerability > 0.0 {
+            return DamageResult::Ignored;
+        }
+        let result = self.take_damage(amount);
+        if !matches!(result, DamageResult::Ignored) {
+            self.invulnerability = invulnerability.max(0.0);
+        }
+        result
+    }
+
+    /// 推进无敌帧计时。
+    pub fn tick_status(&mut self, delta: f32) {
+        if self.invulnerability > 0.0 {
+            self.invulnerability = (self.invulnerability - delta.max(0.0)).max(0.0);
         }
     }
 

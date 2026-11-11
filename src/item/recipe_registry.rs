@@ -36,6 +36,36 @@ const IRON_STICK_TWO_SHOVEL: [Ingredient; 2] = [
     Ingredient::new(ItemId::STICK, 2),
 ];
 
+const WOOD_SWORD: [Ingredient; 2] = [
+    Ingredient::new(ItemId::WOOD, 2),
+    Ingredient::new(ItemId::STICK, 1),
+];
+const STONE_SWORD: [Ingredient; 2] = [
+    Ingredient::new(ItemId::STONE, 2),
+    Ingredient::new(ItemId::STICK, 1),
+];
+const IRON_SWORD: [Ingredient; 2] = [
+    Ingredient::new(ItemId::IRON_INGOT, 2),
+    Ingredient::new(ItemId::STICK, 1),
+];
+const DIAMOND_SWORD: [Ingredient; 2] = [
+    Ingredient::new(ItemId::DIAMOND, 2),
+    Ingredient::new(ItemId::STICK, 1),
+];
+
+const LEATHER_HELMET: [Ingredient; 1] = [Ingredient::new(ItemId::LEATHER, 5)];
+const LEATHER_CHESTPLATE: [Ingredient; 1] = [Ingredient::new(ItemId::LEATHER, 8)];
+const LEATHER_LEGGINGS: [Ingredient; 1] = [Ingredient::new(ItemId::LEATHER, 7)];
+const LEATHER_BOOTS: [Ingredient; 1] = [Ingredient::new(ItemId::LEATHER, 4)];
+const IRON_HELMET: [Ingredient; 1] = [Ingredient::new(ItemId::IRON_INGOT, 5)];
+const IRON_CHESTPLATE: [Ingredient; 1] = [Ingredient::new(ItemId::IRON_INGOT, 8)];
+const IRON_LEGGINGS: [Ingredient; 1] = [Ingredient::new(ItemId::IRON_INGOT, 7)];
+const IRON_BOOTS: [Ingredient; 1] = [Ingredient::new(ItemId::IRON_INGOT, 4)];
+const DIAMOND_HELMET: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 5)];
+const DIAMOND_CHESTPLATE: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 8)];
+const DIAMOND_LEGGINGS: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 7)];
+const DIAMOND_BOOTS: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 4)];
+
 /// 全部配方；顺序决定合成界面的展示顺序。
 static RECIPES: OnceLock<Vec<Recipe>> = OnceLock::new();
 
@@ -60,6 +90,8 @@ fn hand_recipe(
 fn build_recipes() -> Vec<Recipe> {
     let tools = RecipeCategory::Tools;
     let materials = RecipeCategory::Materials;
+    let weapons = RecipeCategory::Weapons;
+    let armor = RecipeCategory::Armor;
     let recipes = vec![
         hand_recipe(RecipeId::STICK, ItemId::STICK, 2, &WOOD_TWO, materials),
         hand_recipe(
@@ -124,6 +156,118 @@ fn build_recipes() -> Vec<Recipe> {
             1,
             &IRON_STICK_TWO_SHOVEL,
             tools,
+        ),
+        hand_recipe(
+            RecipeId::WOODEN_SWORD,
+            ItemId::WOODEN_SWORD,
+            1,
+            &WOOD_SWORD,
+            weapons,
+        ),
+        hand_recipe(
+            RecipeId::STONE_SWORD,
+            ItemId::STONE_SWORD,
+            1,
+            &STONE_SWORD,
+            weapons,
+        ),
+        hand_recipe(
+            RecipeId::IRON_SWORD,
+            ItemId::IRON_SWORD,
+            1,
+            &IRON_SWORD,
+            weapons,
+        ),
+        hand_recipe(
+            RecipeId::DIAMOND_SWORD,
+            ItemId::DIAMOND_SWORD,
+            1,
+            &DIAMOND_SWORD,
+            weapons,
+        ),
+        hand_recipe(
+            RecipeId::LEATHER_HELMET,
+            ItemId::LEATHER_HELMET,
+            1,
+            &LEATHER_HELMET,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::LEATHER_CHESTPLATE,
+            ItemId::LEATHER_CHESTPLATE,
+            1,
+            &LEATHER_CHESTPLATE,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::LEATHER_LEGGINGS,
+            ItemId::LEATHER_LEGGINGS,
+            1,
+            &LEATHER_LEGGINGS,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::LEATHER_BOOTS,
+            ItemId::LEATHER_BOOTS,
+            1,
+            &LEATHER_BOOTS,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::IRON_HELMET,
+            ItemId::IRON_HELMET,
+            1,
+            &IRON_HELMET,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::IRON_CHESTPLATE,
+            ItemId::IRON_CHESTPLATE,
+            1,
+            &IRON_CHESTPLATE,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::IRON_LEGGINGS,
+            ItemId::IRON_LEGGINGS,
+            1,
+            &IRON_LEGGINGS,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::IRON_BOOTS,
+            ItemId::IRON_BOOTS,
+            1,
+            &IRON_BOOTS,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::DIAMOND_HELMET,
+            ItemId::DIAMOND_HELMET,
+            1,
+            &DIAMOND_HELMET,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::DIAMOND_CHESTPLATE,
+            ItemId::DIAMOND_CHESTPLATE,
+            1,
+            &DIAMOND_CHESTPLATE,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::DIAMOND_LEGGINGS,
+            ItemId::DIAMOND_LEGGINGS,
+            1,
+            &DIAMOND_LEGGINGS,
+            armor,
+        ),
+        hand_recipe(
+            RecipeId::DIAMOND_BOOTS,
+            ItemId::DIAMOND_BOOTS,
+            1,
+            &DIAMOND_BOOTS,
+            armor,
         ),
     ];
 

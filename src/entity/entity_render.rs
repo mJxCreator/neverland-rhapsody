@@ -97,6 +97,41 @@ fn push_model(out: &mut Vec<Vertex>, definition: &EntityDefinition, feet: Vec3, 
     let body = definition.body_color;
     let accent = definition.accent_color;
     match definition.model {
+        CreatureModel::Zombie => {
+            // 人形：双腿、躯干、头部与向前伸出的双臂。
+            for sx in [-0.14f32, 0.14] {
+                push_box(
+                    out,
+                    feet + Vec3::new(sx, 0.35, 0.0),
+                    Vec3::new(0.22, 0.7, 0.24),
+                    yaw,
+                    body,
+                );
+            }
+            push_box(
+                out,
+                feet + Vec3::new(0.0, 1.15, 0.0),
+                Vec3::new(0.56, 0.7, 0.3),
+                yaw,
+                body,
+            );
+            push_box(
+                out,
+                feet + Vec3::new(0.0, 1.65, 0.0),
+                Vec3::new(0.5, 0.5, 0.5),
+                yaw,
+                accent,
+            );
+            for sx in [-0.38f32, 0.38] {
+                push_box(
+                    out,
+                    feet + Vec3::new(sx, 1.18, 0.22),
+                    Vec3::new(0.18, 0.62, 0.18),
+                    yaw,
+                    accent,
+                );
+            }
+        }
         CreatureModel::Pig => {
             for sx in [-0.24f32, 0.24] {
                 for sz in [-0.3f32, 0.3] {

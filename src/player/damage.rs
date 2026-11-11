@@ -17,8 +17,7 @@ pub enum DamageSource {
     /// 环境伤害（例如溺水、岩浆）；当前版本尚无环境伤害来源，预留给后续版本。
     #[allow(dead_code)]
     Environmental,
-    /// 实体伤害；当前版本尚无攻击型实体，预留给后续版本。
-    #[allow(dead_code)]
+    /// 实体伤害（敌对生物近战）。
     Entity,
     /// 脚本或命令造成的伤害。
     #[allow(dead_code)]
@@ -90,6 +89,24 @@ pub fn fall_damage(distance: f32) -> Option<Damage> {
 /// 统一伤害入口：检查存活状态、无敌帧与数值后扣血。
 pub fn apply(survival: &mut Survival, damage: Damage) -> DamageOutcome {
     survival.receive_damage(damage)
+}
+
+/// 带护甲减伤的伤害入口。
+///
+/// 坠落/环境伤害不受护甲影响；近战与投射物按防御力折算后再进入统一入口，
+/// 仍然遵守生存系统的无敌帧规则。
+pub fn apply_mitigated(
+    survival: &mut Survival,
+    amount: u32,
+    source: DamageSource,
+    kind: crate::combat::damage::DamageKind,
+    defense: u32,
+) -> DamageOutcome {
+    let amount = crate::combat::damage::mitigate(amount, kind, defense);
+    match Damage::new(amount, source) {
+        Some(damage) => apply(survival, damage),
+        None => DamageOutcome::Ignored,
+    }
 }
 
 #[cfg(test)]

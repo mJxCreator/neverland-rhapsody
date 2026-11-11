@@ -5,7 +5,7 @@
 use glam::Vec3;
 
 use super::entity::EntityTypeId;
-use super::entity_registry::{CreatureModel, EntityDefinition, ItemDrop};
+use super::entity_registry::{CreatureModel, EntityDefinition, HostileCombat, ItemDrop};
 use crate::item::ItemId;
 
 /// 猪的掉落：生猪肉 1–2 个。
@@ -42,6 +42,7 @@ pub const PIG: EntityDefinition = EntityDefinition {
     body_color: Vec3::new(0.95, 0.62, 0.64),
     accent_color: Vec3::new(0.83, 0.42, 0.47),
     model: CreatureModel::Pig,
+    combat: None,
 };
 
 /// 牛：高大体型、14 点生命、移动稍慢、生成权重较低。
@@ -57,6 +58,36 @@ pub const COW: EntityDefinition = EntityDefinition {
     body_color: Vec3::new(0.93, 0.92, 0.88),
     accent_color: Vec3::new(0.24, 0.19, 0.16),
     model: CreatureModel::Cow,
+    combat: None,
+};
+
+/// 僵尸的掉落：腐肉 0–1 个。
+pub const ZOMBIE_DROPS: [ItemDrop; 1] = [ItemDrop {
+    item: ItemId::ROTTEN_FLESH,
+    min: 0,
+    max: 1,
+}];
+
+/// 僵尸：人形敌对生物，近战攻击，白天也会生成。
+pub const ZOMBIE: EntityDefinition = EntityDefinition {
+    kind: EntityTypeId::ZOMBIE,
+    name: "Zombie",
+    width: 0.6,
+    height: 1.8,
+    max_health: 20,
+    move_speed: 1.4,
+    drops: &ZOMBIE_DROPS,
+    spawn_weight: 2,
+    body_color: Vec3::new(0.22, 0.48, 0.26),
+    accent_color: Vec3::new(0.36, 0.62, 0.38),
+    model: CreatureModel::Zombie,
+    combat: Some(HostileCombat {
+        attack_damage: 3,
+        attack_range: 1.8,
+        attack_cooldown: 1.0,
+        detection_range: 12.0,
+        lose_range: 20.0,
+    }),
 };
 
 /// 参与自然生成的生物定义列表。

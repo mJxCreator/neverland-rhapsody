@@ -194,6 +194,16 @@ impl Player {
         self.fall_peak_y = position.y;
     }
 
+    /// 叠加一次外部冲量（击退、爆炸等）；不改变位置与落地状态。
+    pub fn apply_impulse(&mut self, impulse: Vec3) {
+        if !impulse.is_finite() {
+            return;
+        }
+        self.velocity += impulse;
+        // 限制单次冲量，避免异常数值把玩家弹飞。
+        self.velocity = self.velocity.clamp_length_max(24.0);
+    }
+
     /// 记录本次物理步开始时的位置，供摄像机插值。
     pub(crate) fn snapshot_previous_position(&mut self) {
         self.previous_position = self.position;

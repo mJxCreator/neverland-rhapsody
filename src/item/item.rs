@@ -33,6 +33,24 @@ impl ItemId {
     pub const RAW_PORKCHOP: Self = Self(16);
     pub const RAW_BEEF: Self = Self(17);
     pub const LEATHER: Self = Self(18);
+    pub const DIAMOND: Self = Self(19);
+    pub const WOODEN_SWORD: Self = Self(20);
+    pub const STONE_SWORD: Self = Self(21);
+    pub const IRON_SWORD: Self = Self(22);
+    pub const DIAMOND_SWORD: Self = Self(23);
+    pub const LEATHER_HELMET: Self = Self(24);
+    pub const LEATHER_CHESTPLATE: Self = Self(25);
+    pub const LEATHER_LEGGINGS: Self = Self(26);
+    pub const LEATHER_BOOTS: Self = Self(27);
+    pub const IRON_HELMET: Self = Self(28);
+    pub const IRON_CHESTPLATE: Self = Self(29);
+    pub const IRON_LEGGINGS: Self = Self(30);
+    pub const IRON_BOOTS: Self = Self(31);
+    pub const DIAMOND_HELMET: Self = Self(32);
+    pub const DIAMOND_CHESTPLATE: Self = Self(33);
+    pub const DIAMOND_LEGGINGS: Self = Self(34);
+    pub const DIAMOND_BOOTS: Self = Self(35);
+    pub const ROTTEN_FLESH: Self = Self(36);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {
@@ -59,6 +77,10 @@ pub enum ItemType {
     Tool,
     Material,
     Consumable,
+    /// 近战武器（剑）；带有独立耐久。
+    Weapon,
+    /// 护甲；带有独立耐久并可装备到护甲槽。
+    Armor,
 }
 
 /// 物品图标；当前用纯色表示，后续可替换为图集索引。
@@ -116,8 +138,7 @@ impl ItemStack {
         if count == 0 || count > max {
             return None;
         }
-        let durability =
-            super::tool_registry::definition(item).map(|definition| definition.max_durability);
+        let durability = super::durability::max_durability(item);
         Some(Self {
             item,
             count,
@@ -158,14 +179,14 @@ impl ItemStack {
         self.durability
     }
 
-    /// 该物品是否为工具。
+    /// 该物品是否携带独立耐久（工具、武器或护甲）。
     pub fn is_tool(self) -> bool {
         self.durability.is_some()
     }
 
-    /// 工具的最大耐久；普通物品返回 `None`。
+    /// 工具/武器/护甲的最大耐久；普通物品返回 `None`。
     pub fn max_durability(self) -> Option<u32> {
-        super::tool_registry::definition(self.item).map(|definition| definition.max_durability)
+        super::durability::max_durability(self.item)
     }
 
     /// 工具是否已经损坏；普通物品始终为 `false`。

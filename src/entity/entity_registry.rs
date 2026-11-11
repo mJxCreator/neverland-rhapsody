@@ -30,6 +30,21 @@ impl ItemDrop {
     }
 }
 
+/// 敌对生物的战斗参数；被动生物为 `None`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostileCombat {
+    /// 单次攻击伤害。
+    pub attack_damage: u32,
+    /// 进入攻击状态的距离。
+    pub attack_range: f32,
+    /// 两次攻击之间的冷却时间（秒）。
+    pub attack_cooldown: f32,
+    /// 发现玩家的距离。
+    pub detection_range: f32,
+    /// 丢失玩家的距离。
+    pub lose_range: f32,
+}
+
 /// 实体使用的模型类型，渲染模块据此选择盒状拼装形状。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreatureModel {
@@ -37,6 +52,8 @@ pub enum CreatureModel {
     Pig,
     /// 牛。
     Cow,
+    /// 僵尸（人形）。
+    Zombie,
 }
 
 /// 实体类型定义。
@@ -64,6 +81,8 @@ pub struct EntityDefinition {
     pub accent_color: Vec3,
     /// 盒状模型类型。
     pub model: CreatureModel,
+    /// 敌对战斗参数；被动生物为 `None`。
+    pub combat: Option<HostileCombat>,
 }
 
 impl EntityDefinition {
@@ -73,7 +92,11 @@ impl EntityDefinition {
     }
 }
 
-const DEFINITIONS: [EntityDefinition; 2] = [creature_registry::PIG, creature_registry::COW];
+const DEFINITIONS: [EntityDefinition; 3] = [
+    creature_registry::PIG,
+    creature_registry::COW,
+    creature_registry::ZOMBIE,
+];
 
 /// 所有已注册实体定义。
 pub fn all() -> &'static [EntityDefinition] {

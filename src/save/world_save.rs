@@ -3,6 +3,7 @@
 //!
 //! v0.15（version 6）新增 `entities`（随区块保存的生物状态）与 `populated_chunks`
 //! （已自然生成过的水平区块列），旧档缺省为空，不会触发重复生成。
+//! v0.19（version 7）新增 `equipment`（四槽护甲），旧档缺省为空装备。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -13,14 +14,15 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::entity::EntityRecord;
+use crate::equipment::SavedEquipment;
 use crate::item::{DroppedItemRecord, SavedInventory};
 use crate::player::SavedSurvival;
 use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态。
-const SAVE_VERSION: u32 = 6;
+/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备。
+const SAVE_VERSION: u32 = 7;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -76,6 +78,9 @@ struct SaveFile {
     /// v0.15 起记录已自然生成过的水平区块列（y 恒为 0）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     populated_chunks: Vec<[i32; 3]>,
+    /// v0.19 起的四个护甲槽；旧档缺省为空装备。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    equipment: Option<SavedEquipment>,
 }
 
 fn default_seed() -> u32 {
@@ -98,6 +103,8 @@ pub struct WorldSave {
     player: Option<SavedInventory>,
     /// 玩家生存状态；旧档尚未提供时为 `None`。
     survival: Option<SavedSurvival>,
+    /// 玩家装备；旧档尚未提供时为 `None`。
+    equipment: Option<SavedEquipment>,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
     /// 主存档读取失败、本次数据来自备份时为 `true`。
@@ -125,6 +132,7 @@ impl WorldSave {
             populated_chunks: HashSet::new(),
             player: None,
             survival: None,
+            equipment: None,
             unsaved: false,
             primary_suspect: false,
         };
@@ -253,6 +261,7 @@ impl WorldSave {
         self.populated_chunks = populated_chunks;
         self.player = data.player;
         self.survival = data.survival.map(SavedSurvival::sanitized);
+        self.equipment = data.equipment;
         Ok(())
     }
 
@@ -404,14 +413,21 @@ impl WorldSave {
         self.survival
     }
 
-    /// 同时更新背包与生存状态并只写盘一次。
+    /// 玩家装备存档；旧档尚未提供时为 `None`。
+    pub fn equipment(&self) -> Option<&SavedEquipment> {
+        self.equipment.as_ref()
+    }
+
+    /// 同时更新背包、生存状态与装备并只写盘一次。
     pub fn set_player_state(
         &mut self,
         player: SavedInventory,
         survival: SavedSurvival,
+        equipment: SavedEquipment,
     ) -> Result<()> {
         self.player = Some(player);
         self.survival = Some(survival.sanitized());
+        self.equipment = Some(equipment);
         self.unsaved = true;
         self.persist()
     }
@@ -501,6 +517,7 @@ impl WorldSave {
             chunk_edits,
             player: self.player.clone(),
             survival: self.survival,
+            equipment: self.equipment.clone(),
             populated_chunks,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
@@ -692,7 +709,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 6"));
+        assert!(text.contains("\"version\": 7"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -944,6 +961,7 @@ mod tests {
                 max_health: 20,
                 current_health: 20,
             },
+            SavedEquipment::default(),
         )
         .expect("保存玩家背包应成功");
 
@@ -998,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn a_v012_save_restores_tools_and_upgrades_to_version_6() {
+    fn a_v012_save_restores_tools_and_upgrades_to_current_version() {
         let path = temp_path("v012");
         remove_all(&path);
         let legacy = r#"{
@@ -1032,7 +1050,7 @@ mod tests {
             "普通物品没有耐久"
         );
 
-        // 首次写盘把格式升级到 version 5，且保留玩家数据。
+        // 首次写盘把格式升级到当前版本，且保留玩家数据。
         save.record(BlockEdit {
             x: 2,
             y: 5,
@@ -1042,7 +1060,7 @@ mod tests {
         .expect("写盘应成功");
         let text = fs::read_to_string(&path).expect("读取新存档失败");
         let data: SaveFile = serde_json::from_str(&text).expect("解析新存档失败");
-        assert_eq!(data.version, 6);
+        assert_eq!(data.version, 7);
         assert!(data.survival.is_none(), "旧档升级时不应伪造生存数据");
 
         remove_all(&path);
@@ -1061,6 +1079,7 @@ mod tests {
                 max_health: 20,
                 current_health: 12,
             },
+            SavedEquipment::default(),
         )
         .expect("写盘应成功");
 
@@ -1072,6 +1091,68 @@ mod tests {
                 current_health: 12,
             })
         );
+        remove_all(&path);
+    }
+
+    #[test]
+    fn equipment_round_trips_with_durability() {
+        use crate::equipment::Equipment;
+        use crate::item::inventory::SavedSlot;
+        use crate::item::{ItemId, ItemStack};
+
+        let path = temp_path("equipment");
+        remove_all(&path);
+
+        let mut save = WorldSave::load(&path, DEFAULT_SEED);
+        let inventory = crate::item::Inventory::new().to_saved(0);
+        let equipment = SavedEquipment {
+            slots: vec![
+                Some(SavedSlot {
+                    item: ItemId::IRON_HELMET.raw(),
+                    count: 1,
+                    durability: Some(120),
+                }),
+                None,
+                Some(SavedSlot {
+                    item: ItemId::DIAMOND_LEGGINGS.raw(),
+                    count: 1,
+                    durability: None,
+                }),
+                Some(SavedSlot {
+                    item: ItemId::LEATHER_BOOTS.raw(),
+                    count: 1,
+                    durability: Some(0),
+                }),
+            ],
+        };
+        save.set_player_state(
+            inventory,
+            SavedSurvival {
+                max_health: 20,
+                current_health: 20,
+            },
+            equipment,
+        )
+        .expect("写盘应成功");
+
+        let reloaded = WorldSave::load(&path, DEFAULT_SEED);
+        let saved = reloaded.equipment().expect("应保存装备");
+        let restored = Equipment::from_saved(saved);
+        assert_eq!(
+            restored.get(crate::equipment::EquipmentSlot::Head),
+            ItemStack::new(ItemId::IRON_HELMET, 1).map(|stack| stack.with_durability(120))
+        );
+        assert_eq!(
+            restored.get(crate::equipment::EquipmentSlot::Chest),
+            None,
+            "空槽保持为空"
+        );
+        assert_eq!(
+            restored.get(crate::equipment::EquipmentSlot::Feet),
+            ItemStack::new(ItemId::LEATHER_BOOTS, 1).map(|stack| stack.with_durability(0)),
+            "耐久归零的护甲同样保留"
+        );
+
         remove_all(&path);
     }
 
@@ -1088,6 +1169,7 @@ mod tests {
 
         let save = WorldSave::load(&path, DEFAULT_SEED);
         assert!(save.survival().is_none(), "旧档缺省生存状态");
+        assert!(save.equipment().is_none(), "旧档缺省装备");
         assert!(save.player().is_some(), "旧档仍应保留背包");
         remove_all(&path);
     }
@@ -1258,6 +1340,7 @@ mod tests {
                 max_health: 20,
                 current_health: 20,
             },
+            SavedEquipment::default(),
         )
         .expect("写盘应成功");
 

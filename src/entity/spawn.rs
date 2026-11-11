@@ -28,6 +28,10 @@ pub struct SpawnConfig {
     pub max_attempts: u32,
     /// 与玩家的最小水平距离。
     pub min_player_distance: f32,
+    /// 敌对生物存活数量上限。
+    pub hostile_limit: usize,
+    /// 敌对生物与玩家的最小水平距离，避免贴脸出现。
+    pub hostile_min_player_distance: f32,
 }
 
 impl Default for SpawnConfig {
@@ -39,6 +43,8 @@ impl Default for SpawnConfig {
             cooldown_seconds: 2.0,
             max_attempts: 8,
             min_player_distance: 6.0,
+            hostile_limit: 4,
+            hostile_min_player_distance: 12.0,
         }
     }
 }
@@ -128,11 +134,24 @@ impl Spawner {
 
         let horizontal =
             Vec3::new(feet.x - player_position.x, 0.0, feet.z - player_position.z).length();
-        if horizontal < self.config.min_player_distance {
+
+        let definition = self.pick_definition()?;
+        if definition.combat.is_some() {
+            if manager.hostile_alive_count() >= self.config.hostile_limit {
+                return None;
+            }
+            if horizontal
+                < self
+                    .config
+                    .hostile_min_player_distance
+                    .max(self.config.min_player_distance)
+            {
+                return None;
+            }
+        } else if horizontal < self.config.min_player_distance {
             return None;
         }
 
-        let definition = self.pick_definition()?;
         let entity_aabb = Aabb::from_feet(feet, definition.width, definition.height);
         if entity_collision::overlaps(entity_aabb, player_aabb) {
             return None;
@@ -242,6 +261,8 @@ mod tests {
             cooldown_seconds: 0.0,
             max_attempts: 8,
             min_player_distance: 4.0,
+            hostile_limit: 4,
+            hostile_min_player_distance: 12.0,
         }
     }
 
@@ -421,5 +442,63 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    /// 在中心周围铺一圈草方块区块，让敌对生物有足够远的落点。
+    fn grass_world_around(radius: i32) -> World {
+        let mut world = World::new(DEFAULT_SEED);
+        for cx in -radius..=radius {
+            for cz in -radius..=radius {
+                assert!(world.insert_chunk(Chunk::new(ChunkPos::new(cx, 0, cz))));
+                for x in 0..CHUNK_SIZE {
+                    for z in 0..CHUNK_SIZE {
+                        world.set_block(cx * CHUNK_SIZE + x, 9, cz * CHUNK_SIZE + z, Block::Grass);
+                    }
+                }
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn hostile_spawns_respect_distance_and_limit() {
+        let world = grass_world_around(2);
+        let mut manager = EntityManager::new();
+        let (player_pos, player_box) = near_player();
+        let mut config = test_config();
+        config.radius = 32;
+        config.global_limit = 40;
+        config.hostile_limit = 2;
+        let mut spawner = Spawner::new(config, 99);
+        for _ in 0..120 {
+            spawner.update(
+                &mut manager,
+                &world,
+                player_pos,
+                player_box,
+                &|_| false,
+                1.0,
+            );
+        }
+
+        let hostiles: Vec<Vec3> = manager
+            .creatures()
+            .iter()
+            .filter(|creature| EntityManager::is_hostile(creature.kind()))
+            .map(|creature| creature.entity.position())
+            .collect();
+        assert!(!hostiles.is_empty(), "多轮生成后应至少出现一只敌对生物");
+        assert!(
+            hostiles.len() <= config.hostile_limit,
+            "不得超过敌对生物上限"
+        );
+        for position in hostiles {
+            let delta = position - player_pos;
+            let horizontal = Vec3::new(delta.x, 0.0, delta.z).length();
+            assert!(
+                horizontal >= config.hostile_min_player_distance - 1e-3,
+                "敌对生物不得在玩家附近生成"
+            );
+        }
     }
 }

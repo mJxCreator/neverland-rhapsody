@@ -17,11 +17,15 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use super::config::AppConfig;
 use super::time::FrameTimer;
+use crate::combat::{
+    damage::DamageKind, hit_detection, knockback, AttackController, CombatConfig, WeaponStats,
+};
 use crate::entity::{
     entity_collision, entity_registry, entity_render, AiConfig, DamageResult, EntityId,
     EntityManager, EntityModelConfig, EntityModelSet, EntityPhysicsConfig, EntityPhysicsSystem,
     EntityRenderConfig, SpawnConfig, Spawner,
 };
+use crate::equipment::Equipment;
 use crate::interaction::{
     drops_for_harvest, placement_cell, primary_use, raycast, secondary_use, HarvestTool, Hotbar,
     ItemUse, MiningOutcome, MiningState, MiningTarget, RayHit,
@@ -48,8 +52,6 @@ const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 const SELECTION_REACH: f32 = 8.0;
 /// 生物交互距离：准星在该距离内命中生物时可造成伤害。
 const ENTITY_REACH: f32 = 4.0;
-/// 单次测试攻击的基础伤害；只用于验证伤害与掉落闭环。
-const CREATURE_TEST_DAMAGE: u32 = 3;
 /// 存档写入失败后的重试间隔，避免每帧都重复写盘。
 const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 /// 纹理热重载轮询间隔；开发期修改 PNG 后约 1 秒内生效。
@@ -80,6 +82,10 @@ pub struct App {
     ui: UiManager,
     /// 生命值、死亡状态与无敌帧。
     survival: Survival,
+    /// 四个护甲槽。
+    equipment: Equipment,
+    /// 玩家攻击状态机：前摇、判定窗口与冷却。
+    combat: AttackController,
     /// 初始出生点；用于重生时的安全落点搜索。
     spawn_anchor: Vec3,
     /// 世界掉落物。
@@ -188,6 +194,10 @@ impl App {
             .survival()
             .map(Survival::from_saved)
             .unwrap_or_default();
+        let equipment = save
+            .equipment()
+            .map(Equipment::from_saved)
+            .unwrap_or_default();
         let spawn_seed = world.seed();
         let asset_root =
             std::env::var(ASSET_ROOT_ENV).unwrap_or_else(|_| DEFAULT_ASSET_ROOT.to_string());
@@ -210,14 +220,19 @@ impl App {
         // 允许用同目录规范的 64×64 PNG 覆盖内置猪/牛图集；缺失时保留生成纹理。
         let mut pig = builtin::pig();
         let mut cow = builtin::cow();
+        let mut zombie = builtin::zombie();
         if let Some(image) = load_entity_texture(&asset_root, "pig") {
             builtin::override_texture(&mut pig, image);
         }
         if let Some(image) = load_entity_texture(&asset_root, "cow") {
             builtin::override_texture(&mut cow, image);
         }
+        if let Some(image) = load_entity_texture(&asset_root, "zombie") {
+            builtin::override_texture(&mut zombie, image);
+        }
         models.register_builtin("pig", pig);
         models.register_builtin("cow", cow);
+        models.register_builtin("zombie", zombie);
         for error in models.errors() {
             warn!(error = %error, "模型文件加载失败");
         }
@@ -254,6 +269,8 @@ impl App {
             inventory,
             ui,
             survival,
+            equipment,
+            combat: AttackController::new(CombatConfig::default()),
             spawn_anchor: spawn,
             dropped: DroppedItemStore::new(),
             drop_config: DroppedItemConfig::default(),
@@ -284,6 +301,10 @@ impl App {
         let mut inventory = Inventory::new();
         if let Some(stack) = ItemStack::new(ItemId::IRON_INGOT, 4) {
             inventory.set_slot(HOTBAR_OFFSET, Some(stack));
+        }
+        // 钻石暂无自然来源，先作为装备测试材料发放。
+        if let Some(stack) = ItemStack::new(ItemId::DIAMOND, 6) {
+            inventory.set_slot(HOTBAR_OFFSET + 1, Some(stack));
         }
         inventory
     }
@@ -501,6 +522,80 @@ impl App {
         outcome
     }
 
+    /// 敌对生物近战命中玩家：护甲减伤、击退、耐久消耗与 HUD 反馈。
+    fn apply_entity_attack(&mut self, attacker: EntityId, raw_damage: u32) {
+        if self.survival.is_dead() {
+            return;
+        }
+        let Some(attacker_position) = self
+            .entities
+            .get(attacker)
+            .map(|creature| creature.entity.position())
+        else {
+            return;
+        };
+        let defense = self.equipment.defense();
+        let direction = self.damage_direction_angle(attacker_position);
+        let outcome = damage::apply_mitigated(
+            &mut self.survival,
+            raw_damage,
+            DamageSource::Entity,
+            DamageKind::Melee,
+            defense,
+        );
+        match outcome {
+            DamageOutcome::Ignored => {}
+            DamageOutcome::Applied { .. } => {
+                if defense > 0 {
+                    self.equipment.wear_all();
+                }
+                let impulse = knockback::player_impulse(attacker_position, self.player.position());
+                self.player.apply_impulse(impulse);
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.hud_mut().show_damage();
+                    renderer.hud_mut().show_damage_direction(direction);
+                }
+                self.persist_player();
+                info!(
+                    attacker = attacker.raw(),
+                    raw = raw_damage,
+                    defense,
+                    health = self.survival.health(),
+                    "玩家受到敌对生物攻击"
+                );
+            }
+            DamageOutcome::Killed => {
+                if defense > 0 {
+                    self.equipment.wear_all();
+                }
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.hud_mut().show_damage();
+                    renderer.hud_mut().show_damage_direction(direction);
+                }
+                self.persist_player();
+                info!(attacker = attacker.raw(), "玩家被敌对生物击杀");
+                self.enter_death(DamageSource::Entity);
+            }
+        }
+    }
+
+    /// 攻击来源相对镜头朝向的水平方向角；0 为正前方，正值在右。
+    fn damage_direction_angle(&self, attacker_position: Vec3) -> f32 {
+        let forward = self
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.camera().forward())
+            .unwrap_or(Vec3::new(0.0, 0.0, -1.0));
+        let flat = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        if flat == Vec3::ZERO {
+            return 0.0;
+        }
+        let right = Vec3::new(-flat.z, 0.0, flat.x);
+        let delta = attacker_position - self.player.position();
+        let to_attacker = Vec3::new(delta.x, 0.0, delta.z);
+        to_attacker.dot(right).atan2(to_attacker.dot(flat))
+    }
+
     /// 进入死亡状态：关闭其他界面、释放输入并显示死亡界面。
     fn enter_death(&mut self, source: DamageSource) {
         if self.ui.state() == UiState::Death {
@@ -520,6 +615,7 @@ impl App {
         self.player.teleport(position);
         self.physics.reset();
         self.survival.respawn();
+        self.combat.reset();
         self.ui.leave_death();
         self.controller.reset();
         self.persist_player();
@@ -605,22 +701,114 @@ impl App {
         Some(hit.0)
     }
 
-    /// 对生物造成一次基础测试伤害；击杀时只结算一次掉落。
-    fn attack_creature(&mut self, id: EntityId) {
-        let Some((kind, position)) = self
-            .entities
-            .get(id)
-            .map(|creature| (creature.kind(), creature.entity.position()))
+    /// 当前手持物品的攻击参数；空手或损坏武器回退为空手。
+    fn current_weapon(&self) -> WeaponStats {
+        let index = HOTBAR_OFFSET + self.hotbar.selected_index();
+        WeaponStats::for_stack(self.inventory.slot(index))
+    }
+
+    /// 发起一次攻击；冷却中或玩家已死亡时忽略。
+    fn start_attack(&mut self) {
+        if self.survival.is_dead() || self.ui.state() != UiState::Gameplay {
+            return;
+        }
+        if self.combat.try_start(self.current_weapon()).is_ok() {
+            debug!(
+                state = self.combat.state().label(),
+                damage = self.combat.stats().damage,
+                "玩家发起攻击"
+            );
+        }
+    }
+
+    /// 推进攻击状态机；判定窗口打开时结算一次锥形命中。
+    fn update_combat(&mut self, delta: f32) {
+        if !self.combat.tick(delta) {
+            return;
+        }
+        let stats = self.combat.stats();
+        let Some((camera_position, camera_forward)) = self
+            .renderer
+            .as_ref()
+            .map(|renderer| (renderer.camera().position(), renderer.camera().forward()))
         else {
             return;
         };
-        let source = self.player.eye_position();
-        match self.entities.apply_damage(
-            id,
-            CREATURE_TEST_DAMAGE,
-            source,
-            self.ai_config.flee_seconds,
-        ) {
+        let query = hit_detection::HitQuery::new(
+            camera_position,
+            camera_forward,
+            stats.range,
+            stats.angle_deg,
+        );
+        let targets = {
+            let world = &self.world;
+            let is_occluded = |origin: Vec3, direction: Vec3, distance: f32| -> bool {
+                let Some(hit) = raycast(world, origin, direction, distance) else {
+                    return false;
+                };
+                entity_collision::ray_block_distance(origin, direction, hit.block, distance)
+                    .is_some_and(|block_distance| block_distance < distance - 0.05)
+            };
+            hit_detection::find_targets(self.entities.creatures(), query, &is_occluded)
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let mut hit_count = 0;
+        for id in targets {
+            if self.hit_creature(id, stats.damage, stats.knockback) {
+                hit_count += 1;
+            }
+        }
+        if hit_count > 0 {
+            self.wear_weapon(stats);
+            info!(
+                targets = hit_count,
+                damage = stats.damage,
+                armed = stats.is_armed(),
+                "近战攻击命中"
+            );
+        }
+    }
+
+    /// 对单个生物结算一次伤害与击退；返回是否实际命中。
+    fn hit_creature(&mut self, id: EntityId, damage: u32, knockback_strength: f32) -> bool {
+        let Some((kind, position, attacker)) = self.entities.get(id).map(|creature| {
+            (
+                creature.kind(),
+                creature.entity.position(),
+                self.player.eye_position(),
+            )
+        }) else {
+            return false;
+        };
+        let result = self
+            .entities
+            .apply_damage(id, damage, attacker, self.ai_config.flee_seconds);
+        if matches!(result, DamageResult::Ignored) {
+            return false;
+        }
+        if let Some(creature) = self.entities.get_mut(id) {
+            knockback::apply_to_entity(&mut creature.entity, attacker, knockback_strength);
+        }
+        if let Some(definition) = entity_registry::definition(kind) {
+            let remaining = match result {
+                DamageResult::Applied { remaining } => remaining,
+                DamageResult::Killed | DamageResult::Ignored => 0,
+            };
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer
+                    .hud_mut()
+                    .show_target(definition.name, remaining, definition.max_health);
+            }
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            let color = entity_registry::definition(kind)
+                .map(|definition| definition.accent_color)
+                .unwrap_or(Vec3::new(0.7, 0.15, 0.15));
+            renderer.spawn_hit_particles(position + Vec3::Y * 1.0, color);
+        }
+        match result {
             DamageResult::Killed => {
                 info!(entity = id.raw(), ?kind, "生物已被击杀");
                 self.spawn_creature_drops(kind, position, id);
@@ -630,6 +818,23 @@ impl App {
             }
             DamageResult::Ignored => {}
         }
+        true
+    }
+
+    /// 命中后消耗 1 点武器耐久；损坏的武器留在快捷栏中。
+    fn wear_weapon(&mut self, stats: WeaponStats) {
+        if !stats.is_armed() {
+            return;
+        }
+        let index = HOTBAR_OFFSET + self.hotbar.selected_index();
+        let Some(stack) = self.inventory.slot(index) else {
+            return;
+        };
+        let worn = stats.wear(stack);
+        if worn.is_broken() && !stack.is_broken() {
+            info!(item = ?worn.item(), "武器已损坏");
+        }
+        self.inventory.set_slot(index, Some(worn));
     }
 
     /// 按实体定义生成生物掉落物；数量由定义固定配置。
@@ -885,7 +1090,10 @@ impl App {
     /// 把当前背包、快捷栏选择与生存状态写入存档；失败只记录日志，不中断游戏。
     fn persist_player(&mut self) {
         let saved = self.inventory.to_saved(self.hotbar.selected_index());
-        if let Err(err) = self.save.set_player_state(saved, self.survival.to_saved()) {
+        if let Err(err) =
+            self.save
+                .set_player_state(saved, self.survival.to_saved(), self.equipment.to_saved())
+        {
             warn!(error = %format!("{err:#}"), "玩家状态写入存档失败");
         }
     }
@@ -987,12 +1195,16 @@ impl App {
         }
 
         // AI 决策频率由距离控制，移动仍由物理步执行。
-        self.entities.update_ai(
+        let hostile_attacks = self.entities.update_ai(
             delta_secs,
             self.player.position(),
             &self.world,
             &self.ai_config,
         );
+        for attack in hostile_attacks {
+            self.apply_entity_attack(attack.attacker, attack.damage);
+        }
+        self.update_combat(delta_secs);
         self.entities.update_deaths(delta_secs);
 
         // 摄像机用物理插值系数跟随玩家，避免固定步长与渲染帧率不同步产生抖动。
@@ -1097,11 +1309,31 @@ impl App {
             selection = None;
         }
 
+        // 准星指向敌对生物时持续刷新名牌，离开准星后由 HUD 自行淡出。
+        let aim_target = if ui_blocking {
+            None
+        } else {
+            self.targeted_creature().and_then(|id| {
+                let creature = self.entities.get(id)?;
+                if !EntityManager::is_hostile(creature.kind()) {
+                    return None;
+                }
+                let definition = entity_registry::definition(creature.kind())?;
+                Some((
+                    definition.name,
+                    creature.entity.health(),
+                    definition.max_health,
+                ))
+            })
+        };
         let slots = self.inventory.hotbar_slots();
         let selected_slot = self.hotbar.selected_index();
         let progress = self.mining.progress();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.hud_mut().update(delta_secs);
+            if let Some((name, health, max_health)) = aim_target {
+                renderer.hud_mut().show_target(name, health, max_health);
+            }
             renderer
                 .hud_mut()
                 .set_health(self.survival.health(), self.survival.max_health());
@@ -1138,9 +1370,10 @@ impl App {
             );
             let viewport = renderer.viewport();
             let mut ui_vertices = Vec::new();
-            self.ui.build(
+            self.ui.build_with_equipment(
                 &mut ui_vertices,
                 &self.inventory,
+                &self.equipment,
                 selected_slot,
                 &self.textures.item_textures,
                 viewport,
@@ -1251,10 +1484,11 @@ impl ApplicationHandler for App {
                         _ => None,
                     };
                     if let Some(click) = click {
-                        match self.ui.click(
+                        match self.ui.click_with_equipment(
                             click,
                             state == ElementState::Pressed,
                             &mut self.inventory,
+                            &mut self.equipment,
                             viewport,
                             recipe_registry::all(),
                         ) {
@@ -1283,8 +1517,8 @@ impl ApplicationHandler for App {
                     // 主要使用入口只用于识别物品语义；徒手与方块物品仍可徒手挖掘，
                     // 实际效率由 Mining 依据当前工具倍率计算。
                     (MouseButton::Left, ElementState::Pressed) => {
-                        if let Some(target) = self.targeted_creature() {
-                            self.attack_creature(target);
+                        if self.targeted_creature().is_some() {
+                            self.start_attack();
                             self.mining_held = false;
                             self.mining.cancel();
                         } else {

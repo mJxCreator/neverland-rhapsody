@@ -78,6 +78,12 @@ pub const HEART_FULL: [f32; 4] = [0.86, 0.16, 0.16, 0.95];
 pub const HEART_EMPTY: [f32; 4] = [0.28, 0.09, 0.09, 0.85];
 /// 受伤边缘反馈。
 pub const DAMAGE_FLASH: [f32; 4] = [0.72, 0.03, 0.03, 0.46];
+/// 受击方向指示。
+pub const DAMAGE_DIRECTION: [f32; 4] = [0.95, 0.12, 0.10, 0.85];
+/// 敌对生物血条背景。
+pub const TARGET_BAR_BACKGROUND: [f32; 4] = [0.05, 0.05, 0.06, 0.86];
+/// 敌对生物血条填充。
+pub const TARGET_BAR_FILL: [f32; 4] = [0.80, 0.16, 0.16, 0.95];
 
 /// 提示框背景。
 pub const TOOLTIP_BACKGROUND: [f32; 4] = [0.04, 0.05, 0.07, 0.97];

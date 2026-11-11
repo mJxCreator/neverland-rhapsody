@@ -221,8 +221,160 @@ const LEATHER: ItemDefinition = ItemDefinition {
     item_type: ItemType::Material,
 };
 
+const DIAMOND: ItemDefinition = ItemDefinition {
+    id: ItemId::DIAMOND,
+    name: "Diamond",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.35, 0.85, 0.86),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
+const WOODEN_SWORD: ItemDefinition = ItemDefinition {
+    id: ItemId::WOODEN_SWORD,
+    name: "Wooden Sword",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.66, 0.46, 0.25),
+    },
+    associated_block: None,
+    item_type: ItemType::Weapon,
+};
+
+const STONE_SWORD: ItemDefinition = ItemDefinition {
+    id: ItemId::STONE_SWORD,
+    name: "Stone Sword",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.60, 0.60, 0.64),
+    },
+    associated_block: None,
+    item_type: ItemType::Weapon,
+};
+
+const IRON_SWORD: ItemDefinition = ItemDefinition {
+    id: ItemId::IRON_SWORD,
+    name: "Iron Sword",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.84, 0.86, 0.92),
+    },
+    associated_block: None,
+    item_type: ItemType::Weapon,
+};
+
+const DIAMOND_SWORD: ItemDefinition = ItemDefinition {
+    id: ItemId::DIAMOND_SWORD,
+    name: "Diamond Sword",
+    max_stack_size: TOOL_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.40, 0.92, 0.92),
+    },
+    associated_block: None,
+    item_type: ItemType::Weapon,
+};
+
+macro_rules! armor_definition {
+    ($name:ident, $id:expr, $label:expr, $color:expr) => {
+        const $name: ItemDefinition = ItemDefinition {
+            id: $id,
+            name: $label,
+            max_stack_size: TOOL_MAX_STACK_SIZE,
+            icon: ItemIcon { color: $color },
+            associated_block: None,
+            item_type: ItemType::Armor,
+        };
+    };
+}
+
+armor_definition!(
+    LEATHER_HELMET,
+    ItemId::LEATHER_HELMET,
+    "Leather Helmet",
+    Vec3::new(0.58, 0.39, 0.23)
+);
+armor_definition!(
+    LEATHER_CHESTPLATE,
+    ItemId::LEATHER_CHESTPLATE,
+    "Leather Chestplate",
+    Vec3::new(0.60, 0.40, 0.24)
+);
+armor_definition!(
+    LEATHER_LEGGINGS,
+    ItemId::LEATHER_LEGGINGS,
+    "Leather Leggings",
+    Vec3::new(0.56, 0.37, 0.22)
+);
+armor_definition!(
+    LEATHER_BOOTS,
+    ItemId::LEATHER_BOOTS,
+    "Leather Boots",
+    Vec3::new(0.54, 0.36, 0.21)
+);
+armor_definition!(
+    IRON_HELMET,
+    ItemId::IRON_HELMET,
+    "Iron Helmet",
+    Vec3::new(0.82, 0.84, 0.88)
+);
+armor_definition!(
+    IRON_CHESTPLATE,
+    ItemId::IRON_CHESTPLATE,
+    "Iron Chestplate",
+    Vec3::new(0.84, 0.86, 0.90)
+);
+armor_definition!(
+    IRON_LEGGINGS,
+    ItemId::IRON_LEGGINGS,
+    "Iron Leggings",
+    Vec3::new(0.80, 0.82, 0.86)
+);
+armor_definition!(
+    IRON_BOOTS,
+    ItemId::IRON_BOOTS,
+    "Iron Boots",
+    Vec3::new(0.78, 0.80, 0.84)
+);
+armor_definition!(
+    DIAMOND_HELMET,
+    ItemId::DIAMOND_HELMET,
+    "Diamond Helmet",
+    Vec3::new(0.38, 0.90, 0.90)
+);
+armor_definition!(
+    DIAMOND_CHESTPLATE,
+    ItemId::DIAMOND_CHESTPLATE,
+    "Diamond Chestplate",
+    Vec3::new(0.42, 0.94, 0.94)
+);
+armor_definition!(
+    DIAMOND_LEGGINGS,
+    ItemId::DIAMOND_LEGGINGS,
+    "Diamond Leggings",
+    Vec3::new(0.36, 0.88, 0.88)
+);
+armor_definition!(
+    DIAMOND_BOOTS,
+    ItemId::DIAMOND_BOOTS,
+    "Diamond Boots",
+    Vec3::new(0.34, 0.86, 0.86)
+);
+
+const ROTTEN_FLESH: ItemDefinition = ItemDefinition {
+    id: ItemId::ROTTEN_FLESH,
+    name: "Rotten Flesh",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.45, 0.28, 0.26),
+    },
+    associated_block: None,
+    item_type: ItemType::Material,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 19] = [
+const DEFINITIONS: [ItemDefinition; 37] = [
     INVALID,
     STONE,
     DIRT,
@@ -242,6 +394,24 @@ const DEFINITIONS: [ItemDefinition; 19] = [
     RAW_PORKCHOP,
     RAW_BEEF,
     LEATHER,
+    DIAMOND,
+    WOODEN_SWORD,
+    STONE_SWORD,
+    IRON_SWORD,
+    DIAMOND_SWORD,
+    LEATHER_HELMET,
+    LEATHER_CHESTPLATE,
+    LEATHER_LEGGINGS,
+    LEATHER_BOOTS,
+    IRON_HELMET,
+    IRON_CHESTPLATE,
+    IRON_LEGGINGS,
+    IRON_BOOTS,
+    DIAMOND_HELMET,
+    DIAMOND_CHESTPLATE,
+    DIAMOND_LEGGINGS,
+    DIAMOND_BOOTS,
+    ROTTEN_FLESH,
 ];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。

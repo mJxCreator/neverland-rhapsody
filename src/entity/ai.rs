@@ -13,6 +13,16 @@ pub enum AiState {
     Avoiding,
     /// 受击后逃离伤害来源。
     Fleeing,
+    /// 敌对生物在出生区域巡逻。
+    Patrol,
+    /// 敌对生物追击玩家。
+    Chase,
+    /// 敌对生物进入攻击动作。
+    Attack,
+    /// 敌对生物脱战后返回活动区域。
+    Return,
+    /// 敌对生物受击硬直。
+    Hurt,
     /// 已死亡。
     Dead,
 }
@@ -26,6 +36,11 @@ impl AiState {
             Self::Avoiding => 2,
             Self::Fleeing => 3,
             Self::Dead => 4,
+            Self::Patrol => 5,
+            Self::Chase => 6,
+            Self::Attack => 7,
+            Self::Return => 8,
+            Self::Hurt => 9,
         }
     }
 
@@ -36,8 +51,21 @@ impl AiState {
             2 => Self::Avoiding,
             3 => Self::Fleeing,
             4 => Self::Dead,
+            5 => Self::Patrol,
+            6 => Self::Chase,
+            7 => Self::Attack,
+            8 => Self::Return,
+            9 => Self::Hurt,
             _ => Self::Idle,
         }
+    }
+
+    /// 是否处于会主动移动的状态。
+    pub const fn is_moving(self) -> bool {
+        matches!(
+            self,
+            Self::Wandering | Self::Fleeing | Self::Patrol | Self::Chase | Self::Return
+        )
     }
 }
 
@@ -68,6 +96,12 @@ pub struct AiConfig {
     pub obstacle_probe: f32,
     /// 前方悬崖探测的向下深度。
     pub cliff_probe_depth: f32,
+    /// 敌对生物的活动半径。
+    pub hostile_activity_radius: f32,
+    /// 受击硬直时间。
+    pub hurt_seconds: f32,
+    /// 敌对生物攻击前摇。
+    pub attack_windup: f32,
 }
 
 impl Default for AiConfig {
@@ -85,6 +119,9 @@ impl Default for AiConfig {
             far_decision_interval: 0.6,
             obstacle_probe: 0.8,
             cliff_probe_depth: 0.7,
+            hostile_activity_radius: 16.0,
+            hurt_seconds: 0.35,
+            attack_windup: 0.35,
         }
     }
 }
@@ -111,6 +148,11 @@ mod tests {
             AiState::Wandering,
             AiState::Avoiding,
             AiState::Fleeing,
+            AiState::Patrol,
+            AiState::Chase,
+            AiState::Attack,
+            AiState::Return,
+            AiState::Hurt,
             AiState::Dead,
         ] {
             assert_eq!(AiState::from_code(state.code()), state);

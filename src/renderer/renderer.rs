@@ -391,6 +391,11 @@ impl Renderer {
     }
 
     /// 推进破坏粒子的生命周期。
+    /// 生成一次生物命中粒子。
+    pub fn spawn_hit_particles(&mut self, position: Vec3, color: Vec3) {
+        self.particles.spawn_hit(position, color);
+    }
+
     pub fn update_particles(&mut self, delta_secs: f32) {
         self.particles.update(delta_secs);
     }

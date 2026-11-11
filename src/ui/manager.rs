@@ -11,6 +11,7 @@ use super::death::{DeathAction, DeathUi};
 use super::draw::UiVertex;
 use super::input::ClickButton;
 use super::inventory::InventoryUi;
+use crate::equipment::Equipment;
 use crate::item::{Inventory, Recipe, RecipeId};
 use crate::player::DamageSource;
 use crate::texture::{ItemTextureMap, UiTextureMap};
@@ -194,11 +195,35 @@ impl UiManager {
     /// 按当前状态路由一次鼠标点击。
     ///
     /// 返回的副作用由游戏层执行；未打开对应界面时直接忽略。
+    ///
+    /// 该入口仅供不涉及装备的测试使用。
+    #[cfg(test)]
     pub fn click(
         &mut self,
         button: ClickButton,
         pressed: bool,
         inventory: &mut Inventory,
+        viewport: (f32, f32),
+        recipes: &[Recipe],
+    ) -> UiPointerAction {
+        let mut equipment = Equipment::default();
+        self.click_with_equipment(
+            button,
+            pressed,
+            inventory,
+            &mut equipment,
+            viewport,
+            recipes,
+        )
+    }
+
+    /// 按当前状态路由一次鼠标点击，并允许操作装备槽。
+    pub fn click_with_equipment(
+        &mut self,
+        button: ClickButton,
+        pressed: bool,
+        inventory: &mut Inventory,
+        equipment: &mut Equipment,
         viewport: (f32, f32),
         recipes: &[Recipe],
     ) -> UiPointerAction {
@@ -231,10 +256,13 @@ impl UiManager {
                 }
             }
             UiState::Inventory => {
-                if self
-                    .inventory
-                    .click_at(inventory, button, self.inventory.cursor(), viewport)
-                {
+                if self.inventory.click_at_with_equipment(
+                    inventory,
+                    equipment,
+                    button,
+                    self.inventory.cursor(),
+                    viewport,
+                ) {
                     UiPointerAction::InventoryChanged
                 } else {
                     UiPointerAction::None
@@ -244,6 +272,8 @@ impl UiManager {
     }
 
     /// 生成当前界面的全部 UI 顶点；绘制顺序由状态保证。
+    /// 不携带装备参数的重载，仅供不显示装备槽的测试使用。
+    #[cfg(test)]
     pub fn build(
         &self,
         out: &mut Vec<UiVertex>,
@@ -253,12 +283,44 @@ impl UiManager {
         viewport: (f32, f32),
         recipes: &[Recipe],
     ) {
+        let equipment = Equipment::default();
+        self.build_with_equipment(
+            out,
+            inventory,
+            &equipment,
+            selected_hotbar,
+            icons,
+            viewport,
+            recipes,
+        );
+    }
+
+    /// 生成当前界面的全部 UI 顶点，并在背包界面显示装备槽。
+    ///
+    /// 参数较多是因为渲染需要背包、装备、图标与尺寸等独立数据源。
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_equipment(
+        &self,
+        out: &mut Vec<UiVertex>,
+        inventory: &Inventory,
+        equipment: &Equipment,
+        selected_hotbar: usize,
+        icons: &ItemTextureMap,
+        viewport: (f32, f32),
+        recipes: &[Recipe],
+    ) {
         out.clear();
         match self.state {
             UiState::Gameplay => {}
             UiState::Inventory => {
-                self.inventory
-                    .build(out, inventory, selected_hotbar, icons, viewport);
+                self.inventory.build_with_equipment(
+                    out,
+                    inventory,
+                    equipment,
+                    selected_hotbar,
+                    icons,
+                    viewport,
+                );
             }
             UiState::Crafting => {
                 self.crafting

@@ -2,8 +2,10 @@
 //!
 //! 当前里程碑 v0.18：模型资源系统（GLB 导入、网格渲染、骨骼蒙皮与生物动画）。
 
+mod combat;
 mod core;
 mod entity;
+mod equipment;
 mod interaction;
 mod item;
 mod mesh;

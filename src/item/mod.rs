@@ -4,6 +4,7 @@
 pub mod block_drop;
 pub mod crafting;
 pub mod dropped_item;
+pub mod durability;
 pub mod inventory;
 // 物品定义文件沿用 item.rs 命名，模块名与父模块相同。
 #[allow(clippy::module_inception)]

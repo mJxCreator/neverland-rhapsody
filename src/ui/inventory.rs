@@ -11,6 +11,7 @@ use super::input::ClickButton;
 use super::layout::{centered_panel, UiRect};
 use super::theme;
 use super::widget::{self, SlotSkin, SlotState};
+use crate::equipment::{Equipment, EquipmentSlot, EQUIPMENT_SLOT_COUNT};
 use crate::item::{Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
 use crate::texture::{ItemTextureMap, UiTextureMap};
 
@@ -22,8 +23,14 @@ const BASE_TITLE: f32 = 24.0;
 const BASE_HOTBAR_GAP: f32 = 14.0;
 const BASE_INFO_GAP: f32 = 10.0;
 const BASE_INFO_HEIGHT: f32 = 38.0;
+/// 主背包与装备列之间的间距。
+const BASE_EQUIPMENT_GAP: f32 = 20.0;
 const COLUMNS: usize = 9;
 const MAIN_ROWS: usize = 3;
+/// 装备槽位在 UI 中的起始索引。
+const EQUIPMENT_SLOT_BASE: usize = TOTAL_SLOTS;
+/// 背包界面可点击槽位总数（36 个背包/快捷栏 + 4 个装备）。
+const UI_SLOTS: usize = TOTAL_SLOTS + EQUIPMENT_SLOT_COUNT;
 /// 标题字号。
 const TITLE_PIXEL: f32 = 2.4;
 /// 详情区字号。
@@ -118,10 +125,26 @@ impl InventoryUi {
         self.cursor
     }
 
-    /// 处理一次点击；返回背包内容是否发生变化。
+    /// 处理一次点击；返回背包或装备是否发生变化。
+    ///
+    /// 该入口不携带装备参数，仅供不涉及装备的测试使用；装备槽点击会被忽略。
+    #[cfg(test)]
     pub fn click_at(
         &mut self,
         inventory: &mut Inventory,
+        button: ClickButton,
+        cursor: (f32, f32),
+        viewport: (f32, f32),
+    ) -> bool {
+        let mut equipment = Equipment::default();
+        self.click_at_with_equipment(inventory, &mut equipment, button, cursor, viewport)
+    }
+
+    /// 处理一次点击；装备槽与背包槽都通过手持物品交换，保证原子性。
+    pub fn click_at_with_equipment(
+        &mut self,
+        inventory: &mut Inventory,
+        equipment: &mut Equipment,
         button: ClickButton,
         cursor: (f32, f32),
         viewport: (f32, f32),
@@ -139,9 +162,37 @@ impl InventoryUi {
 
         self.press_slot = Some(index);
         self.press.start(theme::FEEDBACK_DURATION);
+        if index >= EQUIPMENT_SLOT_BASE {
+            let slot = EquipmentSlot::from_code((index - EQUIPMENT_SLOT_BASE) as u8)
+                .expect("布局保证装备索引合法");
+            return self.click_equipment(equipment, slot);
+        }
         match button {
             ClickButton::Left => self.left_click(inventory, index),
             ClickButton::Right => self.right_click(inventory, index),
+        }
+    }
+
+    /// 装备槽点击：空手取下、手持对应护甲则装备并换回原物品。
+    fn click_equipment(&mut self, equipment: &mut Equipment, slot: EquipmentSlot) -> bool {
+        match (self.held, equipment.get(slot)) {
+            (None, None) => false,
+            (None, Some(_)) => {
+                self.held = equipment.unequip(slot);
+                true
+            }
+            (Some(held), _) => {
+                if !Equipment::accepts(slot, held.item()) {
+                    return false;
+                }
+                match equipment.equip(slot, held) {
+                    Ok(previous) => {
+                        self.held = previous;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
         }
     }
 
@@ -197,10 +248,27 @@ impl InventoryUi {
     }
 
     /// 生成背包面板几何；关闭时写入空列表。
+    ///
+    /// 不携带装备参数的重载，仅供不显示装备槽的测试使用。
+    #[cfg(test)]
     pub fn build(
         &self,
         out: &mut Vec<UiVertex>,
         inventory: &Inventory,
+        selected_hotbar: usize,
+        icons: &ItemTextureMap,
+        viewport: (f32, f32),
+    ) {
+        let equipment = Equipment::default();
+        self.build_with_equipment(out, inventory, &equipment, selected_hotbar, icons, viewport);
+    }
+
+    /// 生成背包与装备面板几何。
+    pub fn build_with_equipment(
+        &self,
+        out: &mut Vec<UiVertex>,
+        inventory: &Inventory,
+        equipment: &Equipment,
         selected_hotbar: usize,
         icons: &ItemTextureMap,
         viewport: (f32, f32),
@@ -284,13 +352,77 @@ impl InventoryUi {
             }
         }
 
-        let focus = hovered
-            .and_then(|index| inventory.slot(index))
+        // 装备列：四个护甲槽，顶部标注 ARMOR，空槽显示槽位首字母。
+        let equipment_x = layout.equipment_column_x();
+        font::push_text(
+            out,
+            viewport,
+            equipment_x,
+            layout.panel.y + layout.padding,
+            1.4,
+            theme::TEXT_MUTED,
+            "ARMOR",
+        );
+        for slot in EquipmentSlot::ALL {
+            let index = EQUIPMENT_SLOT_BASE + slot.index();
+            let rect = layout.slot_rect(index);
+            let stack = equipment.get(slot);
+            let state = if Some(index) == hovered {
+                SlotState::Hover
+            } else if stack.is_some_and(ItemStack::is_broken) {
+                SlotState::Disabled
+            } else {
+                SlotState::Normal
+            };
+            widget::push_slot(
+                out,
+                viewport,
+                rect,
+                state,
+                stack,
+                icons,
+                &self.ui_textures,
+                SlotSkin::Inventory,
+                theme::SLOT_BACKGROUND,
+            );
+            if stack.is_none() {
+                let label = &slot.label()[..1];
+                let text_width = font::text_width(label, 1.8);
+                font::push_text(
+                    out,
+                    viewport,
+                    rect.x + (rect.width - text_width) * 0.5,
+                    rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * 1.8) * 0.5,
+                    1.8,
+                    theme::TEXT_MUTED,
+                    label,
+                );
+            }
+            if self.press_slot == Some(index) && self.press.is_active() {
+                let alpha = 0.22 * self.press.decay();
+                push_quad(
+                    out,
+                    viewport,
+                    rect.inset(widget::SLOT_BORDER_THICKNESS),
+                    [1.0, 1.0, 1.0, alpha],
+                );
+            }
+        }
+
+        let hovered_stack = hovered.and_then(|index| {
+            if index >= EQUIPMENT_SLOT_BASE {
+                EquipmentSlot::from_code((index - EQUIPMENT_SLOT_BASE) as u8)
+                    .and_then(|slot| equipment.get(slot))
+            } else {
+                inventory.slot(index)
+            }
+        });
+        let focus = hovered_stack
             .or(self.held)
             .or_else(|| inventory.hotbar_stack(selected_hotbar));
         push_info_area(out, viewport, layout, focus);
 
-        if let Some(stack) = hovered.and_then(|index| inventory.slot(index)) {
+        if let Some(stack) = hovered_stack {
             widget::push_item_tooltip(out, viewport, self.cursor, stack, icons, &self.ui_textures);
         }
 
@@ -379,6 +511,7 @@ struct Layout {
     slot: f32,
     gap: f32,
     hotbar_gap: f32,
+    equipment_gap: f32,
     info: UiRect,
 }
 
@@ -388,8 +521,11 @@ impl Layout {
             return None;
         }
 
-        let base_width =
-            BASE_PADDING * 2.0 + COLUMNS as f32 * BASE_SLOT + (COLUMNS - 1) as f32 * BASE_GAP;
+        let base_width = BASE_PADDING * 2.0
+            + COLUMNS as f32 * BASE_SLOT
+            + (COLUMNS - 1) as f32 * BASE_GAP
+            + BASE_EQUIPMENT_GAP
+            + BASE_SLOT;
         let base_height = BASE_PADDING * 2.0
             + BASE_TITLE
             + MAIN_ROWS as f32 * BASE_SLOT
@@ -408,6 +544,7 @@ impl Layout {
         let slot = BASE_SLOT * scale;
         let gap = BASE_GAP * scale;
         let hotbar_gap = BASE_HOTBAR_GAP * scale;
+        let equipment_gap = BASE_EQUIPMENT_GAP * scale;
         let info = UiRect::new(
             panel.x + padding,
             panel.y
@@ -429,11 +566,26 @@ impl Layout {
             slot,
             gap,
             hotbar_gap,
+            equipment_gap,
             info,
         })
     }
 
+    /// 装备列第一个槽位的横坐标。
+    fn equipment_column_x(self) -> f32 {
+        self.panel.x + self.padding + COLUMNS as f32 * (self.slot + self.gap) + self.equipment_gap
+    }
+
     fn slot_rect(self, index: usize) -> UiRect {
+        if index >= EQUIPMENT_SLOT_BASE {
+            let row = index - EQUIPMENT_SLOT_BASE;
+            return UiRect::new(
+                self.equipment_column_x(),
+                self.panel.y + self.padding + self.title + row as f32 * (self.slot + self.gap),
+                self.slot,
+                self.slot,
+            );
+        }
         let (column, row_y) = if index < HOTBAR_OFFSET {
             let row = index / COLUMNS;
             (
@@ -461,7 +613,7 @@ impl Layout {
     }
 
     fn slot_at(self, cursor: (f32, f32)) -> Option<usize> {
-        (0..TOTAL_SLOTS).find(|index| self.slot_rect(*index).contains(cursor.0, cursor.1))
+        (0..UI_SLOTS).find(|index| self.slot_rect(*index).contains(cursor.0, cursor.1))
     }
 }
 
@@ -764,19 +916,83 @@ mod tests {
     }
 
     #[test]
-    fn press_feedback_clears_after_the_animation() {
+    fn equipment_slots_swap_with_held_armor_atomically() {
+        let viewport = (1280.0, 720.0);
+        let head = EQUIPMENT_SLOT_BASE;
+        let helmet = ItemStack::new(ItemId::IRON_HELMET, 1).expect("合法护甲");
+
         let mut inventory = Inventory::new();
-        inventory.set_slot(0, Some(stone(2)));
+        inventory.set_slot(0, Some(helmet));
+        let mut equipment = Equipment::default();
         let mut ui = InventoryUi::new();
         ui.open();
-        ui.click_at(
+
+        // 从背包拾起头盔并放入头盔槽。
+        ui.click_at_with_equipment(
             &mut inventory,
+            &mut equipment,
             ClickButton::Left,
             cursor_on(0),
-            (1280.0, 720.0),
+            viewport,
         );
-        assert!(ui.press_slot.is_some());
-        ui.update(theme::FEEDBACK_DURATION + 0.05);
-        assert!(ui.press_slot.is_none());
+        assert_eq!(ui.held(), Some(helmet));
+        assert!(ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(head),
+            viewport,
+        ));
+        assert_eq!(equipment.get(EquipmentSlot::Head), Some(helmet));
+        assert_eq!(ui.held(), None);
+
+        // 空手点击装备槽即卸下。
+        assert!(ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(head),
+            viewport,
+        ));
+        assert_eq!(equipment.get(EquipmentSlot::Head), None);
+        assert_eq!(ui.held(), Some(helmet));
+
+        // 放回背包，再验证非护甲被拒绝且手持物品不丢失。
+        ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(0),
+            viewport,
+        );
+        assert_eq!(ui.held(), None);
+
+        let stone = stone(3);
+        inventory.set_slot(1, Some(stone));
+        ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(1),
+            viewport,
+        );
+        assert_eq!(ui.held(), Some(stone));
+        assert!(!ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(head),
+            viewport,
+        ));
+        assert_eq!(equipment.get(EquipmentSlot::Head), None);
+        assert_eq!(ui.held(), Some(stone), "装备失败时手持物品保持不变");
+        ui.click_at_with_equipment(
+            &mut inventory,
+            &mut equipment,
+            ClickButton::Left,
+            cursor_on(1),
+            viewport,
+        );
+        assert_eq!(inventory.slot(1), Some(stone));
     }
 }

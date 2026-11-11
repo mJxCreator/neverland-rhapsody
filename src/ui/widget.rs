@@ -280,7 +280,11 @@ pub fn item_summary_lines(stack: ItemStack) -> Vec<String> {
     } else {
         name.to_string()
     };
-    let second = if stack.is_tool() {
+    let second = if crate::combat::weapon_registry::definition(stack.item()).is_some() {
+        weapon_summary(stack)
+    } else if crate::equipment::equipment_registry::definition(stack.item()).is_some() {
+        armor_summary(stack)
+    } else if stack.is_tool() {
         tool_summary(stack)
     } else {
         type_label(stack.item()).to_string()
@@ -299,7 +303,13 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
     };
     lines.push((first, theme::TEXT));
     lines.push((type_label(stack.item()).to_string(), theme::TEXT_MUTED));
-    if stack.is_tool() {
+    if stack.is_broken() {
+        lines.push(("BROKEN".to_string(), theme::TOOL_BROKEN));
+    } else if crate::combat::weapon_registry::definition(stack.item()).is_some() {
+        lines.push((weapon_summary(stack), tool_summary_color(stack)));
+    } else if crate::equipment::equipment_registry::definition(stack.item()).is_some() {
+        lines.push((armor_summary(stack), tool_summary_color(stack)));
+    } else if stack.is_tool() {
         lines.push((tool_summary(stack), tool_summary_color(stack)));
     } else if stack.max_stack_size() > 1 {
         lines.push((
@@ -314,6 +324,8 @@ fn type_label(item: ItemId) -> &'static str {
     match definition(item).map(|definition| definition.item_type) {
         Some(crate::item::item::ItemType::Block) => "BLOCK",
         Some(crate::item::item::ItemType::Tool) => "TOOL",
+        Some(crate::item::item::ItemType::Weapon) => "WEAPON",
+        Some(crate::item::item::ItemType::Armor) => "ARMOR",
         Some(crate::item::item::ItemType::Consumable) => "CONSUMABLE",
         _ => "MATERIAL",
     }
@@ -332,6 +344,30 @@ fn tool_summary(stack: ItemStack) -> String {
     } else {
         format!("{} {}/{}", kind, current, max)
     }
+}
+
+fn weapon_summary(stack: ItemStack) -> String {
+    let Some(definition) = crate::combat::weapon_registry::definition(stack.item()) else {
+        return "WEAPON".to_string();
+    };
+    let current = stack.durability().unwrap_or(definition.max_durability);
+    let kind = definition.weapon_type.name();
+    if current == 0 {
+        format!("{} {} DMG BROKEN", kind, definition.damage)
+    } else {
+        format!(
+            "{} {} DMG {}/{}",
+            kind, definition.damage, current, definition.max_durability
+        )
+    }
+}
+
+fn armor_summary(stack: ItemStack) -> String {
+    let Some(definition) = crate::equipment::equipment_registry::definition(stack.item()) else {
+        return "ARMOR".to_string();
+    };
+    let current = stack.durability().unwrap_or(definition.max_durability);
+    definition.summary(current)
 }
 
 fn tool_summary_color(stack: ItemStack) -> [f32; 4] {

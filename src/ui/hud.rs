@@ -53,6 +53,18 @@ const HEART_GAP: f32 = 2.0;
 const DAMAGE_FLASH_DURATION: f32 = 0.35;
 /// 伤害闪屏边缘厚度（像素）。
 const DAMAGE_FLASH_THICKNESS: f32 = 26.0;
+/// 敌对生物名牌在停止攻击/离开准星后的显示时长（秒）。
+const TARGET_DURATION: f32 = 2.5;
+/// 敌对生物血条宽度（像素）。
+const TARGET_BAR_WIDTH: f32 = 180.0;
+/// 敌对生物血条高度（像素）。
+const TARGET_BAR_HEIGHT: f32 = 9.0;
+/// 敌对生物名牌与生命值之间的垂直距离（像素）。
+const TARGET_GAP: f32 = 34.0;
+/// 受击方向指示的显示时长（秒）。
+const DAMAGE_DIRECTION_DURATION: f32 = 0.8;
+/// 受击方向指示的单块边长（像素）。
+const DAMAGE_DIRECTION_SIZE: f32 = 18.0;
 /// 选中格光晕的呼吸速度。
 const SELECTED_PULSE_SPEED: f32 = 4.0;
 
@@ -77,6 +89,14 @@ struct Toast {
     remaining: f32,
 }
 
+/// 当前显示血量的敌对生物。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TargetHealth {
+    name: &'static str,
+    health: u32,
+    max_health: u32,
+}
+
 /// 每帧由上层写入的 HUD 数据。
 #[derive(Clone, Debug, PartialEq)]
 pub struct HudModel {
@@ -91,6 +111,12 @@ pub struct HudModel {
     /// 最大生命值（1 点 = 半颗心）。
     pub max_health: u32,
     damage_flash_remaining: f32,
+    /// 当前显示血量的敌对生物；`None` 时不绘制名牌。
+    target: Option<TargetHealth>,
+    target_remaining: f32,
+    /// 受击方向（弧度，0 为屏幕正前方，正值在右）；`None` 时不绘制。
+    damage_direction: Option<f32>,
+    damage_direction_remaining: f32,
     toast: Option<Toast>,
     clock: UiClock,
     /// UI 控件图集；为空时全部回退纯色绘制。
@@ -107,6 +133,10 @@ impl Default for HudModel {
             health: 20,
             max_health: 20,
             damage_flash_remaining: 0.0,
+            target: None,
+            target_remaining: 0.0,
+            damage_direction: None,
+            damage_direction_remaining: 0.0,
             toast: None,
             clock: UiClock::default(),
             ui_textures: UiTextureMap::empty(),
@@ -143,6 +173,28 @@ impl HudModel {
     /// 受到伤害时触发短暂红色边缘反馈。
     pub fn show_damage(&mut self) {
         self.damage_flash_remaining = DAMAGE_FLASH_DURATION;
+    }
+
+    /// 显示敌对生物血量；持续 2.5 秒，重复调用会刷新计时。
+    pub fn show_target(&mut self, name: &'static str, health: u32, max_health: u32) {
+        if max_health == 0 {
+            return;
+        }
+        self.target = Some(TargetHealth {
+            name,
+            health: health.min(max_health),
+            max_health,
+        });
+        self.target_remaining = TARGET_DURATION;
+    }
+
+    /// 显示受击方向；`angle` 为相对镜头朝向的弧度（0 为正前方，正值在右）。
+    pub fn show_damage_direction(&mut self, angle: f32) {
+        if !angle.is_finite() {
+            return;
+        }
+        self.damage_direction = Some(angle);
+        self.damage_direction_remaining = DAMAGE_DIRECTION_DURATION;
     }
 
     /// 显示一条拾取提示；同一物品重复拾取会合并数量并刷新计时。
@@ -185,6 +237,18 @@ impl HudModel {
         }
         self.clock.update(delta_secs);
         self.damage_flash_remaining = (self.damage_flash_remaining - delta_secs).max(0.0);
+        if self.target_remaining > 0.0 {
+            self.target_remaining -= delta_secs;
+            if self.target_remaining <= 0.0 {
+                self.target = None;
+            }
+        }
+        if self.damage_direction_remaining > 0.0 {
+            self.damage_direction_remaining -= delta_secs;
+            if self.damage_direction_remaining <= 0.0 {
+                self.damage_direction = None;
+            }
+        }
         let Some(toast) = &mut self.toast else {
             return;
         };
@@ -201,13 +265,101 @@ impl HudModel {
             return;
         }
 
+        self.push_target_health(out, width, height);
         self.push_health(out, width, height);
         self.push_hotbar(out, width, height, icons);
         self.push_selected_name(out, width, height);
         self.push_toast(out, width, height, icons);
         self.push_progress(out, width, height);
+        self.push_damage_direction(out, width, height);
         self.push_damage_flash(out, width, height);
         push_crosshair(out, width, height, &self.ui_textures);
+    }
+
+    /// 敌对生物名牌与血条，绘制在生命值上方。
+    fn push_target_health(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+        let Some(target) = self.target else {
+            return;
+        };
+        if self.target_remaining <= 0.0 {
+            return;
+        }
+        let viewport = (width, height);
+        let alpha = (self.target_remaining / 0.35).clamp(0.0, 1.0);
+        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
+        let hp_top = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size - 13.0;
+        let name_y = hp_top - TARGET_GAP;
+
+        let label = format!("{} {}/{}", target.name, target.health, target.max_health);
+        let label_width = font::text_width(&label, 1.3);
+        let mut label_color = theme::TEXT;
+        label_color[3] *= alpha;
+        font::push_text(
+            out,
+            viewport,
+            (width - label_width) * 0.5,
+            name_y,
+            1.3,
+            label_color,
+            &label,
+        );
+
+        let x = (width - TARGET_BAR_WIDTH) * 0.5;
+        let y = name_y + 14.0;
+        let mut background = theme::TARGET_BAR_BACKGROUND;
+        background[3] *= alpha;
+        push_quad(
+            out,
+            viewport,
+            UiRect::new(x, y, TARGET_BAR_WIDTH, TARGET_BAR_HEIGHT),
+            background,
+        );
+        let ratio = target.health.min(target.max_health) as f32 / target.max_health as f32;
+        if ratio > 0.0 {
+            let mut fill = theme::TARGET_BAR_FILL;
+            fill[3] *= alpha;
+            push_quad(
+                out,
+                viewport,
+                UiRect::new(x, y, TARGET_BAR_WIDTH * ratio, TARGET_BAR_HEIGHT),
+                fill,
+            );
+        }
+    }
+
+    /// 受击方向：从屏幕中心向攻击来源方向偏移的红色标记。
+    fn push_damage_direction(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+        let Some(angle) = self.damage_direction else {
+            return;
+        };
+        if self.damage_direction_remaining <= 0.0 {
+            return;
+        }
+        let viewport = (width, height);
+        let alpha = (self.damage_direction_remaining / DAMAGE_DIRECTION_DURATION).clamp(0.0, 1.0);
+        let (sin, cos) = angle.sin_cos();
+        let direction = (sin, -cos);
+        let center = (
+            width * 0.5 + direction.0 * width * 0.32,
+            height * 0.5 + direction.1 * height * 0.32,
+        );
+        for step in 0..3 {
+            let offset = step as f32 * DAMAGE_DIRECTION_SIZE * 0.55;
+            let size = DAMAGE_DIRECTION_SIZE * (1.0 - step as f32 * 0.25);
+            let mut color = theme::DAMAGE_DIRECTION;
+            color[3] *= alpha * (1.0 - step as f32 * 0.25);
+            push_quad(
+                out,
+                viewport,
+                UiRect::new(
+                    center.0 + direction.0 * offset - size * 0.5,
+                    center.1 + direction.1 * offset - size * 0.5,
+                    size,
+                    size,
+                ),
+                color,
+            );
+        }
     }
 
     /// 心形生命值：满心、半心与空心按 2 点生命值换算，并在上方显示数值。
