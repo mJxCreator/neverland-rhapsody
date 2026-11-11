@@ -82,6 +82,18 @@ impl BlockColors {
         side: Vec3::new(0.48, 0.32, 0.18),
     };
 
+    const CAMPFIRE: Self = Self {
+        top: Vec3::new(0.95, 0.52, 0.16),
+        bottom: Vec3::new(0.35, 0.24, 0.14),
+        side: Vec3::new(0.46, 0.30, 0.16),
+    };
+
+    const BED: Self = Self {
+        top: Vec3::new(0.78, 0.20, 0.22),
+        bottom: Vec3::new(0.42, 0.28, 0.18),
+        side: Vec3::new(0.66, 0.18, 0.20),
+    };
+
     /// 某个朝向面的基础颜色。
     pub fn face_color(self, face: Face) -> Vec3 {
         match face {
@@ -214,8 +226,40 @@ pub const WOOD: BlockProperties = BlockProperties {
     colors: BlockColors::WOOD,
 };
 
+pub const CAMPFIRE: BlockProperties = BlockProperties {
+    id: 5,
+    name: "Campfire",
+    hardness: 0.4,
+    mining_category: MiningCategory::Wood,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::CAMPFIRE,
+};
+
+pub const BED: BlockProperties = BlockProperties {
+    id: 6,
+    name: "Bed",
+    hardness: 0.3,
+    mining_category: MiningCategory::Wood,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Always,
+    solid: true,
+    breakable: true,
+    placeable: true,
+    selectable: true,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::BED,
+};
+
 /// 全部方块属性，下标必须等于方块 ID。
-const DEFINITIONS: [BlockProperties; 5] = [AIR, STONE, DIRT, GRASS, WOOD];
+const DEFINITIONS: [BlockProperties; 7] = [AIR, STONE, DIRT, GRASS, WOOD, CAMPFIRE, BED];
 
 /// 按方块类型查询统一属性。
 pub fn properties(block: Block) -> &'static BlockProperties {
@@ -228,7 +272,7 @@ mod tests {
 
     #[test]
     fn block_ids_are_stable_and_unique() {
-        let definitions = [AIR, STONE, DIRT, GRASS, WOOD];
+        let definitions = [AIR, STONE, DIRT, GRASS, WOOD, CAMPFIRE, BED];
         let mut ids = Vec::new();
         for (index, definition) in definitions.iter().enumerate() {
             assert_eq!(definition.id as usize, index, "属性表顺序与 ID 不一致");
@@ -243,6 +287,8 @@ mod tests {
         assert_eq!(Block::Dirt.id(), 2);
         assert_eq!(Block::Grass.id(), 3);
         assert_eq!(Block::Wood.id(), 4);
+        assert_eq!(Block::Campfire.id(), 5);
+        assert_eq!(Block::Bed.id(), 6);
     }
 
     #[test]
@@ -299,7 +345,14 @@ mod tests {
 
     #[test]
     fn solid_blocks_are_breakable_placeable_and_selectable() {
-        for block in [Block::Stone, Block::Dirt, Block::Grass, Block::Wood] {
+        for block in [
+            Block::Stone,
+            Block::Dirt,
+            Block::Grass,
+            Block::Wood,
+            Block::Campfire,
+            Block::Bed,
+        ] {
             let definition = properties(block);
             assert!(definition.solid);
             assert!(definition.breakable);

@@ -160,6 +160,18 @@ impl Survival {
         self.invulnerability_seconds = 0.0;
     }
 
+    /// 统一生命恢复入口：死亡状态不恢复，数值不会超过最大生命值。
+    ///
+    /// 食物与自然恢复都必须经由此方法，避免绕过生命值上限。
+    pub fn heal(&mut self, amount: u32) -> u32 {
+        if self.state == SurvivalState::Dead || amount == 0 {
+            return 0;
+        }
+        let before = self.health;
+        self.health = self.health.saturating_add(amount).min(self.max_health);
+        self.health - before
+    }
+
     /// 统一伤害结算入口；仅允许 [`super::damage`] 调用。
     pub(crate) fn receive_damage(&mut self, damage: Damage) -> DamageOutcome {
         if self.state == SurvivalState::Dead || damage.amount() == 0 {
@@ -259,6 +271,24 @@ mod tests {
             damage::apply(&mut survival, critical),
             DamageOutcome::Applied { health: 17 }
         );
+    }
+
+    #[test]
+    fn healing_is_clamped_to_max_health() {
+        let mut survival = Survival::default();
+        let _ = damage::apply(&mut survival, fall(5));
+        assert_eq!(survival.heal(10), 5);
+        assert_eq!(survival.health(), DEFAULT_MAX_HEALTH);
+        assert_eq!(survival.heal(3), 0);
+    }
+
+    #[test]
+    fn dead_players_cannot_heal() {
+        let mut survival = Survival::new(4);
+        let _ = damage::apply(&mut survival, fall(5));
+        assert!(survival.is_dead());
+        assert_eq!(survival.heal(2), 0);
+        assert_eq!(survival.health(), 0);
     }
 
     #[test]

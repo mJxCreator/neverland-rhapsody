@@ -1,11 +1,14 @@
 //! UI 状态管理器：统一维护界面状态、输入优先级与绘制顺序。
 //!
-//! 界面状态只有四种，且任意时刻最多一个全屏界面：
-//! `Gameplay` → `Inventory` / `Crafting` → `Death`。
-//! 死亡优先级最高，进入死亡会强制关闭其他界面；背包与合成互斥，
+//! 界面状态只有五种，且任意时刻最多一个全屏界面：
+//! `Gameplay` → `Inventory` / `Crafting` / `Cooking` → `Death`。
+//! 死亡优先级最高，进入死亡会强制关闭其他界面；背包、合成与营火烹饪互斥，
 //! 打开其中一个不会自动切换到另一个。鼠标事件按当前状态路由，
 //! 因此一次点击只可能作用在一个界面上。
 
+use glam::IVec3;
+
+use super::cooking::{CookingAction, CookingUi};
 use super::crafting::CraftingUi;
 use super::death::{DeathAction, DeathUi};
 use super::draw::UiVertex;
@@ -14,6 +17,7 @@ use super::inventory::InventoryUi;
 use crate::equipment::Equipment;
 use crate::item::{Inventory, Recipe, RecipeId};
 use crate::player::DamageSource;
+use crate::survival::cooking::CampfireState;
 use crate::texture::{ItemTextureMap, UiTextureMap};
 
 /// 全屏界面状态。
@@ -22,6 +26,7 @@ pub enum UiState {
     Gameplay,
     Inventory,
     Crafting,
+    Cooking,
     Death,
 }
 
@@ -37,6 +42,7 @@ impl UiState {
             Self::Gameplay => "gameplay",
             Self::Inventory => "inventory",
             Self::Crafting => "crafting",
+            Self::Cooking => "cooking",
             Self::Death => "death",
         }
     }
@@ -55,6 +61,8 @@ pub enum UiPointerAction {
     Respawn,
     /// 玩家点击了返回主菜单按钮。
     MainMenu,
+    /// 营火烹饪的输入或输出发生变化，需要同步存档。
+    CookingChanged,
 }
 
 /// 统一 UI 管理器。
@@ -63,6 +71,7 @@ pub struct UiManager {
     state: UiState,
     inventory: InventoryUi,
     crafting: CraftingUi,
+    cooking: CookingUi,
     death: DeathUi,
 }
 
@@ -78,6 +87,7 @@ impl UiManager {
             state: UiState::Gameplay,
             inventory: InventoryUi::new(),
             crafting: CraftingUi::new(),
+            cooking: CookingUi::new(),
             death: DeathUi::new(),
         }
     }
@@ -103,6 +113,7 @@ impl UiManager {
     pub fn set_ui_textures(&mut self, textures: &UiTextureMap) {
         self.inventory.set_ui_textures(textures.clone());
         self.crafting.set_ui_textures(textures.clone());
+        self.cooking.set_ui_textures(textures);
         self.death.set_ui_textures(textures.clone());
     }
 
@@ -148,6 +159,35 @@ impl UiManager {
         true
     }
 
+    /// 从游戏内打开营火烹饪界面。
+    pub fn open_cooking(&mut self, campfire: IVec3) -> bool {
+        if !self.is_gameplay() {
+            return false;
+        }
+        self.cooking.open(campfire);
+        self.state = UiState::Cooking;
+        true
+    }
+
+    /// 关闭烹饪界面；营火烹饪状态不受影响。
+    pub fn close_cooking(&mut self) -> bool {
+        if self.state != UiState::Cooking {
+            return false;
+        }
+        self.cooking.close();
+        self.state = UiState::Gameplay;
+        true
+    }
+
+    /// 当前打开的烹饪界面所对应的营火坐标。
+    pub fn cooking_campfire(&self) -> Option<IVec3> {
+        if self.state == UiState::Cooking {
+            self.cooking.campfire()
+        } else {
+            None
+        }
+    }
+
     /// 进入死亡界面：强制关闭背包与合成，保证死亡界面独占输入。
     pub fn enter_death(&mut self, inventory: &mut Inventory, cause: DamageSource) {
         if self.state == UiState::Death {
@@ -157,6 +197,7 @@ impl UiManager {
             self.inventory.force_close(inventory);
         }
         self.crafting.close();
+        self.cooking.close();
         self.death.open(cause);
         self.state = UiState::Death;
     }
@@ -175,6 +216,7 @@ impl UiManager {
     pub fn force_close(&mut self, inventory: &mut Inventory) {
         self.inventory.force_close(inventory);
         self.crafting.close();
+        self.cooking.close();
         self.death.close();
         self.state = UiState::Gameplay;
     }
@@ -183,6 +225,7 @@ impl UiManager {
     pub fn set_cursor(&mut self, x: f32, y: f32) {
         self.inventory.set_cursor(x, y);
         self.crafting.set_cursor(x, y);
+        self.cooking.set_cursor(x, y);
         self.death.set_cursor((x, y));
     }
 
@@ -218,6 +261,7 @@ impl UiManager {
     }
 
     /// 按当前状态路由一次鼠标点击，并允许操作装备槽。
+    #[allow(dead_code)]
     pub fn click_with_equipment(
         &mut self,
         button: ClickButton,
@@ -226,6 +270,23 @@ impl UiManager {
         equipment: &mut Equipment,
         viewport: (f32, f32),
         recipes: &[Recipe],
+    ) -> UiPointerAction {
+        self.click_with_cooking(
+            button, pressed, inventory, equipment, viewport, recipes, None,
+        )
+    }
+
+    /// 按当前状态路由一次鼠标点击；烹饪界面需要营火状态才能修改输入输出。
+    #[allow(clippy::too_many_arguments)]
+    pub fn click_with_cooking(
+        &mut self,
+        button: ClickButton,
+        pressed: bool,
+        inventory: &mut Inventory,
+        equipment: &mut Equipment,
+        viewport: (f32, f32),
+        recipes: &[Recipe],
+        campfire: Option<&mut CampfireState>,
     ) -> UiPointerAction {
         if !pressed {
             return UiPointerAction::None;
@@ -253,6 +314,15 @@ impl UiManager {
                 {
                     Some(id) => UiPointerAction::Craft(id),
                     None => UiPointerAction::None,
+                }
+            }
+            UiState::Cooking => {
+                if button != ClickButton::Left {
+                    return UiPointerAction::None;
+                }
+                match self.cooking.click_at(campfire, inventory, viewport) {
+                    CookingAction::Changed => UiPointerAction::CookingChanged,
+                    CookingAction::None => UiPointerAction::None,
                 }
             }
             UiState::Inventory => {
@@ -299,6 +369,7 @@ impl UiManager {
     ///
     /// 参数较多是因为渲染需要背包、装备、图标与尺寸等独立数据源。
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub fn build_with_equipment(
         &self,
         out: &mut Vec<UiVertex>,
@@ -308,6 +379,31 @@ impl UiManager {
         icons: &ItemTextureMap,
         viewport: (f32, f32),
         recipes: &[Recipe],
+    ) {
+        self.build_with_cooking(
+            out,
+            inventory,
+            equipment,
+            selected_hotbar,
+            icons,
+            viewport,
+            recipes,
+            None,
+        );
+    }
+
+    /// 生成当前界面的全部 UI 顶点；烹饪界面需要营火状态以展示进度与物品。
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_cooking(
+        &self,
+        out: &mut Vec<UiVertex>,
+        inventory: &Inventory,
+        equipment: &Equipment,
+        selected_hotbar: usize,
+        icons: &ItemTextureMap,
+        viewport: (f32, f32),
+        recipes: &[Recipe],
+        campfire: Option<&CampfireState>,
     ) {
         out.clear();
         match self.state {
@@ -325,6 +421,10 @@ impl UiManager {
             UiState::Crafting => {
                 self.crafting
                     .build(out, recipes, inventory, icons, viewport);
+            }
+            UiState::Cooking => {
+                self.cooking
+                    .build(out, campfire, inventory, icons, viewport);
             }
             UiState::Death => self.death.build(out, viewport),
         }

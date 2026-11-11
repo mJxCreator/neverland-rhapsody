@@ -15,7 +15,7 @@ pub mod survival;
 pub use self::controller::PlayerController;
 pub use self::damage::{Damage, DamageSource};
 pub use self::death::find_respawn_position;
-pub use self::physics::{PhysicsConfig, PhysicsSystem};
+pub use self::physics::{PhysicsConfig, PhysicsSystem, FIXED_TIMESTEP};
 pub use self::physics_world::PhysicsWorld;
 pub use self::player::Player;
 pub use self::survival::{DamageOutcome, SavedSurvival, Survival};

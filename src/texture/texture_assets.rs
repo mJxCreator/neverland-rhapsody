@@ -479,6 +479,8 @@ fn block_from_id(id: u8) -> Option<Block> {
         2 => Some(Block::Dirt),
         3 => Some(Block::Grass),
         4 => Some(Block::Wood),
+        5 => Some(Block::Campfire),
+        6 => Some(Block::Bed),
         _ => None,
     }
 }

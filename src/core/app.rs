@@ -37,10 +37,17 @@ use crate::item::{
 use crate::model::{builtin, ModelDraw, ModelRegistry};
 use crate::player::{
     damage, find_respawn_position, Damage, DamageOutcome, DamageSource, PhysicsConfig,
-    PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival,
+    PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival, FIXED_TIMESTEP,
 };
 use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
+use crate::survival::cooking::CookingRegistry;
+use crate::survival::food::{EatingState, EatingUpdate};
+use crate::survival::hunger::Activity;
+use crate::survival::respawn;
+use crate::survival::rng::GameRng;
+use crate::survival::sleep;
+use crate::survival::{Vitals, WorldTime};
 use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
 use crate::ui::{ClickButton, UiIntent, UiManager, UiPointerAction, UiState};
@@ -82,6 +89,20 @@ pub struct App {
     ui: UiManager,
     /// 生命值、死亡状态与无敌帧。
     survival: Survival,
+    /// 饥饿、体力、自然恢复与床复活点。
+    vitals: Vitals,
+    /// 世界昼夜时间。
+    world_time: WorldTime,
+    /// 全部营火的烹饪状态。
+    cooking: CookingRegistry,
+    /// 当前进食状态机。
+    eating: EatingState,
+    /// 生存系统使用的确定性随机数。
+    game_rng: GameRng,
+    /// 窗口失焦时暂停世界时间与生存消耗。
+    paused: bool,
+    /// 下一次周期性写入生存状态与营火的时刻。
+    next_survival_save: Instant,
     /// 四个护甲槽。
     equipment: Equipment,
     /// 玩家攻击状态机：前摇、判定窗口与冷却。
@@ -198,6 +219,10 @@ impl App {
             .equipment()
             .map(Equipment::from_saved)
             .unwrap_or_default();
+        let vitals = save.vitals().map(Vitals::from_saved).unwrap_or_default();
+        let world_time = WorldTime::from_saved(save.world_time());
+        let mut cooking = CookingRegistry::new();
+        cooking.restore(save.campfires());
         let spawn_seed = world.seed();
         let asset_root =
             std::env::var(ASSET_ROOT_ENV).unwrap_or_else(|_| DEFAULT_ASSET_ROOT.to_string());
@@ -269,6 +294,13 @@ impl App {
             inventory,
             ui,
             survival,
+            vitals,
+            world_time,
+            cooking,
+            eating: EatingState::new(),
+            game_rng: GameRng::new(u64::from(spawn_seed) ^ 0x5EED_2020),
+            paused: false,
+            next_survival_save: Instant::now() + Duration::from_secs(15),
             equipment,
             combat: AttackController::new(CombatConfig::default()),
             spawn_anchor: spawn,
@@ -305,6 +337,19 @@ impl App {
         // 钻石暂无自然来源，先作为装备测试材料发放。
         if let Some(stack) = ItemStack::new(ItemId::DIAMOND, 6) {
             inventory.set_slot(HOTBAR_OFFSET + 1, Some(stack));
+        }
+        // 生存系统测试物资：营火、床与基础食物暂无完整生产链，先直接发放。
+        if let Some(stack) = ItemStack::new(ItemId::CAMPFIRE, 2) {
+            inventory.set_slot(HOTBAR_OFFSET + 2, Some(stack));
+        }
+        if let Some(stack) = ItemStack::new(ItemId::BED, 1) {
+            inventory.set_slot(HOTBAR_OFFSET + 3, Some(stack));
+        }
+        if let Some(stack) = ItemStack::new(ItemId::APPLE, 3) {
+            inventory.set_slot(HOTBAR_OFFSET + 4, Some(stack));
+        }
+        if let Some(stack) = ItemStack::new(ItemId::BREAD, 3) {
+            inventory.set_slot(HOTBAR_OFFSET + 5, Some(stack));
         }
         inventory
     }
@@ -463,6 +508,103 @@ impl App {
         info!("合成界面已关闭");
     }
 
+    /// 打开营火烹饪界面；烹饪过程本身持续运行，不受界面开关影响。
+    fn open_cooking(&mut self, campfire: IVec3) {
+        if self.renderer.is_none() || self.survival.is_dead() {
+            return;
+        }
+        self.eating.cancel();
+        self.release_cursor();
+        if !self.ui.open_cooking(campfire) {
+            return;
+        }
+        self.cooking.ensure(campfire);
+        info!("烹饪界面已打开，按 E 或 Esc 关闭");
+    }
+
+    /// 关闭烹饪界面并把营火状态写入存档。
+    fn close_cooking(&mut self) {
+        if !self.ui.close_cooking() {
+            return;
+        }
+        self.persist_survival();
+        self.grab_cursor();
+        info!("烹饪界面已关闭");
+    }
+
+    /// 右键方块：营火打开烹饪、床尝试睡眠，其余情况按食物或放置方块处理。
+    fn secondary_use(&mut self) {
+        if self.survival.is_dead() || self.ui.blocks_world_input() {
+            return;
+        }
+        if let Some(hit) = self.targeted_block() {
+            match self.world.block_at(hit.block.x, hit.block.y, hit.block.z) {
+                Block::Campfire => {
+                    self.open_cooking(hit.block);
+                    return;
+                }
+                Block::Bed => {
+                    self.interact_bed(hit.block);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let selected = self.hotbar.selected_index();
+        if let Some(stack) = self.inventory.hotbar_stack(selected) {
+            if crate::survival::food_registry::definition(stack.item()).is_some() {
+                if self.vitals.hunger().is_full() {
+                    self.show_message("NOT HUNGRY");
+                    return;
+                }
+                if self.eating.start(stack.item(), HOTBAR_OFFSET + selected) {
+                    return;
+                }
+            }
+        }
+        self.place_block();
+    }
+
+    /// 尝试睡眠；成功时推进到清晨、恢复体力并记录床坐标。
+    fn interact_bed(&mut self, bed: IVec3) {
+        let hostile_nearby = self.hostile_nearby(8.0);
+        match sleep::try_sleep(
+            &mut self.world_time,
+            self.vitals.stamina_mut(),
+            !self.survival.is_dead(),
+            hostile_nearby,
+        ) {
+            Ok(()) => {
+                self.eating.cancel();
+                self.vitals.set_respawn(bed);
+                self.persist_survival();
+                self.show_message("SLEPT UNTIL MORNING");
+                info!(x = bed.x, y = bed.y, z = bed.z, "玩家已入睡并设置床复活点");
+            }
+            Err(error) => {
+                self.show_message(error.message());
+                info!(reason = error.message(), "无法睡眠");
+            }
+        }
+    }
+
+    /// 玩家附近是否仍有存活的敌对生物。
+    fn hostile_nearby(&self, radius: f32) -> bool {
+        let center = self.player.position();
+        self.entities.creatures().iter().any(|creature| {
+            creature.entity.health() > 0
+                && EntityManager::is_hostile(creature.kind())
+                && creature.entity.position().distance(center) <= radius
+        })
+    }
+
+    /// 在 HUD 上显示一条短状态提示。
+    fn show_message(&mut self, text: &'static str) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.hud_mut().show_message(text);
+        }
+    }
+
     /// 执行一次合成；失败原因回显到界面，不修改背包。
     fn craft_recipe(&mut self, recipe_id: RecipeId) {
         match crafting::craft_by_id(recipe_id, &mut self.inventory) {
@@ -485,6 +627,7 @@ impl App {
             UiIntent::CloseInventory => self.close_inventory(),
             UiIntent::OpenCrafting => self.open_crafting(),
             UiIntent::CloseCrafting => self.close_crafting(),
+            UiIntent::CloseCooking => self.close_cooking(),
             UiIntent::ReleaseCursor => self.release_cursor(),
             UiIntent::Quit => {
                 info!("按下 Esc，退出");
@@ -497,6 +640,7 @@ impl App {
     /// 统一伤害结算：刷新 HUD 反馈，并在致死时进入死亡流程。
     fn apply_damage(&mut self, damage: Damage) -> DamageOutcome {
         let source = damage.source();
+        self.eating.cancel();
         let outcome = damage::apply(&mut self.survival, damage);
         match outcome {
             DamageOutcome::Ignored => {}
@@ -527,6 +671,7 @@ impl App {
         if self.survival.is_dead() {
             return;
         }
+        self.eating.cancel();
         let Some(attacker_position) = self
             .entities
             .get(attacker)
@@ -607,11 +752,26 @@ impl App {
         info!(source = source.label(), "死亡界面已打开");
     }
 
-    /// 重生：确保出生区块已加载，在出生点附近寻找安全落点并恢复满血。
+    /// 重生：优先使用仍然有效的床复活点，否则回退到世界出生点并恢复满血。
     fn respawn(&mut self) {
         self.ensure_spawn_chunks();
+        self.eating.cancel();
         let dimensions = self.physics.config().dimensions;
-        let position = find_respawn_position(&self.world, self.spawn_anchor, dimensions);
+        let mut bed_position = None;
+        if let Some(bed) = self.vitals.respawn() {
+            self.ensure_chunks_around(Vec3::new(
+                bed.x as f32 + 0.5,
+                bed.y as f32,
+                bed.z as f32 + 0.5,
+            ));
+            bed_position = respawn::bed_respawn_position(&self.world, bed, dimensions);
+            if bed_position.is_none() {
+                self.vitals.clear_respawn();
+                info!("床复活点已失效，回退到世界出生点");
+            }
+        }
+        let position = bed_position
+            .unwrap_or_else(|| find_respawn_position(&self.world, self.spawn_anchor, dimensions));
         self.player.teleport(position);
         self.physics.reset();
         self.survival.respawn();
@@ -619,12 +779,18 @@ impl App {
         self.ui.leave_death();
         self.controller.reset();
         self.persist_player();
+        self.persist_survival();
         info!(x = position.x, y = position.y, z = position.z, "玩家已重生");
     }
 
     /// 重生前同步加载出生点周围区块，保证安全落点搜索看到真实地形。
     fn ensure_spawn_chunks(&mut self) {
-        let spawn = self.spawn_anchor;
+        self.ensure_chunks_around(self.spawn_anchor);
+    }
+
+    /// 同步加载指定位置周围区块；返回时相关区块已可读取。
+    fn ensure_chunks_around(&mut self, anchor: Vec3) {
+        let spawn = anchor;
         let spawn_chunk = ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
         let desired = ChunkManager::desired_positions(spawn_chunk, 1);
         let mut loaded = Vec::new();
@@ -712,6 +878,7 @@ impl App {
         if self.survival.is_dead() || self.ui.state() != UiState::Gameplay {
             return;
         }
+        self.eating.cancel();
         if self.combat.try_start(self.current_weapon()).is_ok() {
             debug!(
                 state = self.combat.state().label(),
@@ -910,12 +1077,44 @@ impl App {
             z: block.z,
             block: Block::Air,
         });
+        if block_type == Block::Campfire {
+            if let Some(state) = self.cooking.remove(block) {
+                if self.ui.cooking_campfire() == Some(block) {
+                    self.ui.close_cooking();
+                    self.grab_cursor();
+                }
+                self.spawn_campfire_contents(block, state);
+            }
+            self.persist_survival();
+        }
+        if self.vitals.respawn() == Some(block) {
+            self.vitals.clear_respawn();
+            self.persist_survival();
+        }
         self.spawn_block_drops(block, block_type, harvest_tool);
         self.rebuild_chunks(affected);
         self.mining.cancel();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.spawn_block_particles(block_type, block);
             renderer.set_selection(None);
+        }
+    }
+
+    /// 营火被破坏时安全掉落输入与产出，保证烹饪物品不丢失。
+    fn spawn_campfire_contents(
+        &mut self,
+        block: IVec3,
+        state: crate::survival::cooking::CampfireState,
+    ) {
+        let center = Vec3::new(
+            block.x as f32 + 0.5,
+            block.y as f32 + 0.5,
+            block.z as f32 + 0.5,
+        );
+        for stack in [state.input(), state.output()].into_iter().flatten() {
+            let velocity = Vec3::new(0.0, 1.0, 0.0);
+            self.dropped
+                .spawn(stack, center, velocity, &self.drop_config);
         }
     }
 
@@ -963,6 +1162,17 @@ impl App {
                 return;
             }
         };
+        // 营火与床属于功能性方块，必须放在实心地面之上。
+        if matches!(block, Block::Campfire | Block::Bed)
+            && !self
+                .world
+                .block_at(target.x, target.y - 1, target.z)
+                .is_solid()
+        {
+            debug!(block = ?target, "功能性方块缺少地面支撑");
+            self.show_message("NEEDS SOLID GROUND");
+            return;
+        }
 
         let affected = self.world.set_block(target.x, target.y, target.z, block);
         if affected.is_empty() {
@@ -1075,6 +1285,7 @@ impl App {
         // 拖动中的物品先归位，避免关闭界面时丢失。
         self.ui.force_close(&mut self.inventory);
         self.persist_player();
+        self.persist_survival();
 
         for pos in self.world.chunk_positions() {
             let records = self.dropped.snapshot_chunk(pos);
@@ -1095,6 +1306,17 @@ impl App {
                 .set_player_state(saved, self.survival.to_saved(), self.equipment.to_saved())
         {
             warn!(error = %format!("{err:#}"), "玩家状态写入存档失败");
+        }
+    }
+
+    /// 把饥饿、体力、复活点、世界时间与营火状态写入存档。
+    fn persist_survival(&mut self) {
+        if let Err(err) = self.save.set_survival_state(
+            self.vitals.to_saved(),
+            self.world_time.to_saved(),
+            self.cooking.to_saved(),
+        ) {
+            warn!(error = %format!("{err:#}"), "生存状态写入存档失败");
         }
     }
 
@@ -1151,11 +1373,25 @@ impl App {
 
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
         let delta_secs = delta.as_secs_f32();
+        // 周期性保存生存状态，避免异常退出丢失饥饿、体力、时间与烹饪进度。
+        let now = Instant::now();
+        if !self.paused && now >= self.next_survival_save {
+            self.next_survival_save = now + Duration::from_secs(15);
+            self.persist_survival();
+        }
         // 视角旋转与物理位移解耦：鼠标视角立即生效，位移走固定步长物理。
         let look = self.controller.take_look();
         self.player.rotate_look(look.0, look.1);
 
-        let intent = self.controller.intent();
+        let mut intent = self.controller.intent();
+        let moving = intent.forward != 0.0 || intent.right != 0.0;
+        let ui_blocking = self.ui.blocks_world_input();
+        // 冲刺由体力与饥饿共同约束；界面阻塞、暂停或死亡时不允许冲刺。
+        intent.sprint = self.controller.sprint()
+            && self
+                .vitals
+                .can_sprint(!self.survival.is_dead(), ui_blocking || self.paused, moving);
+        let sprint_active = intent.sprint;
         let physics_world = PhysicsWorld::new(&self.world);
         let update = self
             .physics
@@ -1168,6 +1404,55 @@ impl App {
         if let Some(distance) = update.landing_fall {
             if let Some(fall_damage) = damage::fall_damage(distance) {
                 self.apply_damage(fall_damage);
+            }
+        }
+
+        // 生存状态只随固定物理步推进，避免掉帧导致饥饿与体力异常消耗。
+        let game_dt = update.steps as f32 * FIXED_TIMESTEP;
+        if !self.paused && !self.survival.is_dead() && game_dt > 0.0 {
+            let activity = Activity::from_motion(sprint_active, moving);
+            let healed = self.vitals.update(
+                game_dt,
+                activity,
+                sprint_active,
+                moving,
+                ui_blocking,
+                true,
+                self.survival.health() < self.survival.max_health(),
+            );
+            for _ in 0..healed {
+                self.survival.heal(1);
+            }
+            self.world_time.advance(game_dt);
+            let cooked = self.cooking.update(game_dt);
+            if !cooked.is_empty() {
+                self.cooking.take_dirty();
+                self.persist_survival();
+            }
+        }
+
+        // 进食会被移动、跳跃、界面、死亡与暂停打断，且打断不产生恢复。
+        if self.eating.is_eating() {
+            let interrupted = ui_blocking
+                || self.paused
+                || self.survival.is_dead()
+                || moving
+                || sprint_active
+                || intent.jump;
+            if interrupted {
+                self.eating.cancel();
+            } else if self.eating.update(game_dt) == EatingUpdate::Completed
+                && self
+                    .eating
+                    .consume(
+                        &mut self.inventory,
+                        self.vitals.hunger_mut(),
+                        &mut self.game_rng,
+                    )
+                    .is_some()
+            {
+                self.persist_player();
+                self.persist_survival();
             }
         }
 
@@ -1266,7 +1551,6 @@ impl App {
             self.persist_player();
         }
 
-        let ui_blocking = self.ui.blocks_world_input();
         // 推进 UI 短动画与提示计时；界面状态由 UiManager 统一维护。
         self.ui.update(delta_secs);
         if ui_blocking {
@@ -1337,6 +1621,14 @@ impl App {
             renderer
                 .hud_mut()
                 .set_health(self.survival.health(), self.survival.max_health());
+            renderer.hud_mut().set_survival(
+                self.vitals.hunger().value(),
+                self.vitals.stamina().value(),
+                self.world_time.phase().label(),
+            );
+            renderer
+                .hud_mut()
+                .set_eating_progress(self.eating.progress());
             renderer.set_selection(if ui_blocking { None } else { selection });
             renderer
                 .hud_mut()
@@ -1370,7 +1662,11 @@ impl App {
             );
             let viewport = renderer.viewport();
             let mut ui_vertices = Vec::new();
-            self.ui.build_with_equipment(
+            let cooking_state = self
+                .ui
+                .cooking_campfire()
+                .and_then(|pos| self.cooking.state(pos));
+            self.ui.build_with_cooking(
                 &mut ui_vertices,
                 &self.inventory,
                 &self.equipment,
@@ -1378,6 +1674,7 @@ impl App {
                 &self.textures.item_textures,
                 viewport,
                 recipe_registry::all(),
+                cooking_state,
             );
             renderer.set_ui_vertices(ui_vertices);
         }
@@ -1461,6 +1758,7 @@ impl ApplicationHandler for App {
                 }
                 if let Some(slot) = hotbar_slot_for_key(code) {
                     if pressed && self.hotbar.select_slot(slot) {
+                        self.eating.cancel();
                         self.persist_player();
                     }
                     return;
@@ -1484,16 +1782,25 @@ impl ApplicationHandler for App {
                         _ => None,
                     };
                     if let Some(click) = click {
-                        match self.ui.click_with_equipment(
+                        let cooking_state = self
+                            .ui
+                            .cooking_campfire()
+                            .and_then(|pos| self.cooking.state_mut(pos));
+                        match self.ui.click_with_cooking(
                             click,
                             state == ElementState::Pressed,
                             &mut self.inventory,
                             &mut self.equipment,
                             viewport,
                             recipe_registry::all(),
+                            cooking_state,
                         ) {
                             UiPointerAction::None => {}
                             UiPointerAction::InventoryChanged => self.persist_player(),
+                            UiPointerAction::CookingChanged => {
+                                self.persist_player();
+                                self.persist_survival();
+                            }
                             UiPointerAction::Craft(recipe_id) => self.craft_recipe(recipe_id),
                             UiPointerAction::Respawn => self.respawn(),
                             UiPointerAction::MainMenu => {
@@ -1532,17 +1839,17 @@ impl ApplicationHandler for App {
                         self.mining.cancel();
                     }
                     // 右键只在按下瞬间触发一次物品使用，避免长按连续放置。
-                    (MouseButton::Right, ElementState::Pressed) => self.place_block(),
+                    (MouseButton::Right, ElementState::Pressed) => self.secondary_use(),
                     _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // 死亡或合成界面打开时滚轮不切换快捷栏；背包内仍可预览选中格。
                 match self.ui.state() {
-                    UiState::Death | UiState::Crafting => return,
+                    UiState::Death | UiState::Crafting | UiState::Cooking => return,
                     UiState::Gameplay if !self.cursor_grabbed => return,
                     _ => {}
-                }
+                };
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
@@ -1550,16 +1857,22 @@ impl ApplicationHandler for App {
                 let before = self.hotbar.selected_index();
                 self.hotbar.scroll(amount);
                 if before != self.hotbar.selected_index() {
+                    self.eating.cancel();
                     self.persist_player();
                 }
             }
             WindowEvent::Focused(false) => {
+                self.paused = true;
+                self.eating.cancel();
                 if self.cursor_grabbed {
                     warn!("窗口失去焦点，释放鼠标捕获");
                     self.release_cursor();
                 } else {
                     self.controller.reset();
                 }
+            }
+            WindowEvent::Focused(true) => {
+                self.paused = false;
             }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {

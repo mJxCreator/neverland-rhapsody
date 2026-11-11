@@ -1,6 +1,6 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.18：模型资源系统（GLB 导入、网格渲染、骨骼蒙皮与生物动画）。
+//! 当前里程碑 v0.20：生存系统扩展（饥饿、体力、食物、睡眠、复活点与营火烹饪）。
 
 mod combat;
 mod core;
@@ -13,6 +13,7 @@ mod model;
 mod player;
 mod renderer;
 mod save;
+mod survival;
 mod texture;
 mod ui;
 mod world;

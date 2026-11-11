@@ -21,6 +21,7 @@ pub enum UiIntent {
     CloseInventory,
     OpenCrafting,
     CloseCrafting,
+    CloseCooking,
     ReleaseCursor,
     Quit,
 }
@@ -31,6 +32,7 @@ pub enum UiIntent {
 /// - 死亡界面吞掉所有 UI 快捷键，仅允许鼠标操作。
 /// - `E` 只在游戏内打开背包、在背包内关闭；合成中不响应。
 /// - `C` 只在游戏内打开合成、在合成内关闭；背包中不响应。
+/// - 烹饪界面中 `E` 与 `Esc` 都只关闭烹饪界面。
 /// - `Esc` 关闭当前全屏界面；无界面时先释放鼠标，再退出游戏。
 /// - 只在按下事件产生意图，避免按键释放重复触发。
 pub fn route_key(
@@ -47,6 +49,10 @@ pub fn route_key(
         UiState::Crafting => match code {
             KeyCode::Escape => Some(UiIntent::CloseCrafting),
             KeyCode::KeyC => Some(UiIntent::CloseCrafting),
+            _ => None,
+        },
+        UiState::Cooking => match code {
+            KeyCode::Escape | KeyCode::KeyE => Some(UiIntent::CloseCooking),
             _ => None,
         },
         UiState::Inventory => match code {
@@ -109,6 +115,22 @@ mod tests {
         assert_eq!(
             route_key(UiState::Gameplay, KeyCode::KeyC, true, true),
             Some(UiIntent::OpenCrafting)
+        );
+    }
+
+    #[test]
+    fn cooking_closes_with_e_or_escape_only() {
+        assert_eq!(
+            route_key(UiState::Cooking, KeyCode::KeyE, true, false),
+            Some(UiIntent::CloseCooking)
+        );
+        assert_eq!(
+            route_key(UiState::Cooking, KeyCode::Escape, true, false),
+            Some(UiIntent::CloseCooking)
+        );
+        assert_eq!(
+            route_key(UiState::Cooking, KeyCode::KeyC, true, false),
+            None
         );
     }
 

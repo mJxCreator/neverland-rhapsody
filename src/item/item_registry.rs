@@ -373,8 +373,74 @@ const ROTTEN_FLESH: ItemDefinition = ItemDefinition {
     item_type: ItemType::Material,
 };
 
+const COOKED_PORKCHOP: ItemDefinition = ItemDefinition {
+    id: ItemId::COOKED_PORKCHOP,
+    name: "Cooked Porkchop",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.74, 0.44, 0.26),
+    },
+    associated_block: None,
+    item_type: ItemType::Consumable,
+};
+
+const COOKED_BEEF: ItemDefinition = ItemDefinition {
+    id: ItemId::COOKED_BEEF,
+    name: "Steak",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.62, 0.30, 0.20),
+    },
+    associated_block: None,
+    item_type: ItemType::Consumable,
+};
+
+const APPLE: ItemDefinition = ItemDefinition {
+    id: ItemId::APPLE,
+    name: "Apple",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.82, 0.16, 0.18),
+    },
+    associated_block: None,
+    item_type: ItemType::Consumable,
+};
+
+const BREAD: ItemDefinition = ItemDefinition {
+    id: ItemId::BREAD,
+    name: "Bread",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.76, 0.58, 0.28),
+    },
+    associated_block: None,
+    item_type: ItemType::Consumable,
+};
+
+const CAMPFIRE: ItemDefinition = ItemDefinition {
+    id: ItemId::CAMPFIRE,
+    name: "Campfire",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.70, 0.38, 0.16),
+    },
+    associated_block: Some(Block::Campfire),
+    item_type: ItemType::Block,
+};
+
+const BED: ItemDefinition = ItemDefinition {
+    id: ItemId::BED,
+    name: "Bed",
+    max_stack_size: DEFAULT_MAX_STACK_SIZE,
+    icon: ItemIcon {
+        color: Vec3::new(0.72, 0.20, 0.22),
+    },
+    associated_block: Some(Block::Bed),
+    item_type: ItemType::Block,
+};
+
 /// 全部物品定义，下标必须等于物品 ID。
-const DEFINITIONS: [ItemDefinition; 37] = [
+const DEFINITIONS: [ItemDefinition; 43] = [
     INVALID,
     STONE,
     DIRT,
@@ -412,6 +478,12 @@ const DEFINITIONS: [ItemDefinition; 37] = [
     DIAMOND_LEGGINGS,
     DIAMOND_BOOTS,
     ROTTEN_FLESH,
+    COOKED_PORKCHOP,
+    COOKED_BEEF,
+    APPLE,
+    BREAD,
+    CAMPFIRE,
+    BED,
 ];
 
 /// 按物品 ID 查询定义；无效 ID 返回 `None`。

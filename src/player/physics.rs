@@ -18,6 +18,8 @@ pub struct PhysicsConfig {
     pub dimensions: PlayerDimensions,
     /// 地面行走速度（格/秒）。
     pub walk_speed: f32,
+    /// 冲刺时的速度倍率。
+    pub sprint_multiplier: f32,
     /// 重力加速度（格/秒²）。
     pub gravity: f32,
     /// 跳跃初速度（格/秒）。
@@ -41,6 +43,7 @@ impl Default for PhysicsConfig {
                 eye_height: 1.62,
             },
             walk_speed: 4.3,
+            sprint_multiplier: 1.5,
             gravity: 24.0,
             jump_speed: 8.0,
             ground_acceleration: 40.0,
@@ -70,6 +73,7 @@ impl PhysicsConfig {
                 eye_height,
             },
             walk_speed: non_negative_or(self.walk_speed, defaults.walk_speed),
+            sprint_multiplier: positive_or(self.sprint_multiplier, defaults.sprint_multiplier),
             gravity: positive_or(self.gravity, defaults.gravity),
             jump_speed: non_negative_or(self.jump_speed, defaults.jump_speed),
             ground_acceleration: non_negative_or(
@@ -209,7 +213,12 @@ fn step_player(
     let velocity = player.velocity();
     let mut horizontal = Vec3::new(velocity.x, 0.0, velocity.z);
     if has_input {
-        let target = wish * config.walk_speed;
+        let speed = if intent.sprint {
+            config.walk_speed * config.sprint_multiplier
+        } else {
+            config.walk_speed
+        };
+        let target = wish * speed;
         let rate = if was_grounded {
             config.ground_acceleration
         } else {
@@ -335,6 +344,7 @@ mod tests {
             forward,
             right: 0.0,
             jump: false,
+            sprint: false,
         }
     }
 
@@ -398,6 +408,7 @@ mod tests {
             forward: 0.0,
             right: 0.0,
             jump: true,
+            sprint: false,
         };
         let physics_world = PhysicsWorld::new(&world);
         let mut peak = start;
@@ -425,6 +436,7 @@ mod tests {
             forward: 0.0,
             right: 0.0,
             jump: true,
+            sprint: false,
         };
         let physics_world = PhysicsWorld::new(&world);
 
@@ -547,6 +559,7 @@ mod tests {
             forward: 0.0,
             right: 0.0,
             jump: true,
+            sprint: false,
         };
         let physics_world = PhysicsWorld::new(&world);
         let mut peak = player.position().y;

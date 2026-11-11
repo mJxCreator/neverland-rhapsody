@@ -97,6 +97,20 @@ pub fn builtin_manifest() -> BlockManifest {
                 west: Some("wood_side".to_string()),
                 default_texture: Some("wood_side".to_string()),
             },
+            BlockManifestEntry {
+                id: Block::Campfire.id(),
+                name: Some("campfire".to_string()),
+                top: Some("wood_top".to_string()),
+                bottom: Some("wood_side".to_string()),
+                default_texture: Some("wood_side".to_string()),
+                ..BlockManifestEntry::default()
+            },
+            BlockManifestEntry {
+                id: Block::Bed.id(),
+                name: Some("bed".to_string()),
+                default_texture: Some("wood_side".to_string()),
+                ..BlockManifestEntry::default()
+            },
         ],
     }
 }
@@ -131,8 +145,8 @@ impl BlockTextureMap {
     /// 所有面都使用整张纹理的测试/占位映射。
     pub fn placeholder() -> Self {
         Self {
-            ids: vec![[TextureId::INVALID; 6]; 5],
-            faces: vec![[UVRect::FULL; 6]; 5],
+            ids: vec![[TextureId::INVALID; 6]; 7],
+            faces: vec![[UVRect::FULL; 6]; 7],
         }
     }
 
@@ -152,7 +166,9 @@ impl BlockTextureMap {
             .map(|entry| entry.id)
             .max()
             .unwrap_or(0)
-            .max(Block::Wood.id());
+            .max(Block::Wood.id())
+            .max(Block::Campfire.id())
+            .max(Block::Bed.id());
         let mut ids = vec![[fallback; 6]; max_id as usize + 1];
         let mut faces = vec![[UVRect::ZERO; 6]; max_id as usize + 1];
 
@@ -162,7 +178,7 @@ impl BlockTextureMap {
                 return Err(BlockTextureError::DuplicateBlock { id: entry.id });
             }
             seen_ids.push(entry.id);
-            if entry.id == Block::Air.id() || entry.id > Block::Wood.id() {
+            if entry.id == Block::Air.id() || entry.id > Block::Bed.id() {
                 warnings.push(format!(
                     "方块纹理配置 ID {} 不在当前方块注册表中，已忽略",
                     entry.id
@@ -200,7 +216,14 @@ impl BlockTextureMap {
 
         // 未出现在配置中的方块整体回退到占位纹理。
         let fallback_uv = registry.get(fallback).map_or(UVRect::ZERO, |info| info.uv);
-        for block in [Block::Stone, Block::Dirt, Block::Grass, Block::Wood] {
+        for block in [
+            Block::Stone,
+            Block::Dirt,
+            Block::Grass,
+            Block::Wood,
+            Block::Campfire,
+            Block::Bed,
+        ] {
             if !manifest.blocks.iter().any(|entry| entry.id == block.id()) {
                 warnings.push(format!("方块 {} 缺少纹理配置，使用占位纹理", block.id()));
                 ids[block.id() as usize] = [fallback; 6];

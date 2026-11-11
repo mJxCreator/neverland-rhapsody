@@ -4,6 +4,8 @@
 //! v0.15（version 6）新增 `entities`（随区块保存的生物状态）与 `populated_chunks`
 //! （已自然生成过的水平区块列），旧档缺省为空，不会触发重复生成。
 //! v0.19（version 7）新增 `equipment`（四槽护甲），旧档缺省为空装备。
+//! v0.20（version 8）新增 `vitals`（饥饿/体力/床复活点）、`world_time`（昼夜时间）
+//! 与 `campfires`（营火烹饪状态）；旧档缺省为满饥饿、满体力与清晨。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -17,12 +19,14 @@ use crate::entity::EntityRecord;
 use crate::equipment::SavedEquipment;
 use crate::item::{DroppedItemRecord, SavedInventory};
 use crate::player::SavedSurvival;
+use crate::survival::cooking::SavedCampfire;
+use crate::survival::{SavedVitals, SavedWorldTime};
 use crate::world::{Block, ChunkPos, World, CHUNK_SIZE, DEFAULT_SEED, WORLD_HEIGHT};
 
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
-/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备。
-const SAVE_VERSION: u32 = 7;
+/// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备 + 生存。
+const SAVE_VERSION: u32 = 8;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 
@@ -81,6 +85,15 @@ struct SaveFile {
     /// v0.19 起的四个护甲槽；旧档缺省为空装备。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     equipment: Option<SavedEquipment>,
+    /// v0.20 起的饥饿、体力与床复活点；旧档缺省为满值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vitals: Option<SavedVitals>,
+    /// v0.20 起的昼夜时间；旧档缺省为清晨。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    world_time: Option<SavedWorldTime>,
+    /// v0.20 起的营火烹饪状态。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    campfires: Vec<SavedCampfire>,
 }
 
 fn default_seed() -> u32 {
@@ -105,6 +118,12 @@ pub struct WorldSave {
     survival: Option<SavedSurvival>,
     /// 玩家装备；旧档尚未提供时为 `None`。
     equipment: Option<SavedEquipment>,
+    /// 玩家饥饿、体力与复活点；旧档尚未提供时为 `None`。
+    vitals: Option<SavedVitals>,
+    /// 世界昼夜时间；旧档尚未提供时为 `None`。
+    world_time: Option<SavedWorldTime>,
+    /// 营火烹饪状态快照。
+    campfires: Vec<SavedCampfire>,
     /// 早期写盘失败时保留内存数据，下次写入或卸载前重试。
     unsaved: bool,
     /// 主存档读取失败、本次数据来自备份时为 `true`。
@@ -133,6 +152,9 @@ impl WorldSave {
             player: None,
             survival: None,
             equipment: None,
+            vitals: None,
+            world_time: None,
+            campfires: Vec::new(),
             unsaved: false,
             primary_suspect: false,
         };
@@ -262,6 +284,9 @@ impl WorldSave {
         self.player = data.player;
         self.survival = data.survival.map(SavedSurvival::sanitized);
         self.equipment = data.equipment;
+        self.vitals = data.vitals.map(SavedVitals::sanitized);
+        self.world_time = data.world_time;
+        self.campfires = data.campfires;
         Ok(())
     }
 
@@ -418,6 +443,35 @@ impl WorldSave {
         self.equipment.as_ref()
     }
 
+    /// 玩家饥饿、体力与复活点存档；旧档尚未提供时为 `None`。
+    pub fn vitals(&self) -> Option<SavedVitals> {
+        self.vitals
+    }
+
+    /// 世界时间存档；旧档尚未提供时为清晨。
+    pub fn world_time(&self) -> SavedWorldTime {
+        self.world_time.unwrap_or_default()
+    }
+
+    /// 营火烹饪状态存档。
+    pub fn campfires(&self) -> &[SavedCampfire] {
+        &self.campfires
+    }
+
+    /// 同时更新生存数据、世界时间与营火状态并只写盘一次。
+    pub fn set_survival_state(
+        &mut self,
+        vitals: SavedVitals,
+        world_time: SavedWorldTime,
+        campfires: Vec<SavedCampfire>,
+    ) -> Result<()> {
+        self.vitals = Some(vitals.sanitized());
+        self.world_time = Some(world_time);
+        self.campfires = campfires;
+        self.unsaved = true;
+        self.persist()
+    }
+
     /// 同时更新背包、生存状态与装备并只写盘一次。
     pub fn set_player_state(
         &mut self,
@@ -518,6 +572,9 @@ impl WorldSave {
             player: self.player.clone(),
             survival: self.survival,
             equipment: self.equipment.clone(),
+            vitals: self.vitals,
+            world_time: self.world_time,
+            campfires: self.campfires.clone(),
             populated_chunks,
         };
         let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
@@ -575,6 +632,7 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::item::inventory::SavedSlot;
+    use crate::item::ItemId;
 
     /// 为并行测试生成互不冲突的临时文件路径。
     fn temp_path(name: &str) -> PathBuf {
@@ -709,7 +767,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 7"));
+        assert!(text.contains("\"version\": 8"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -1060,7 +1118,7 @@ mod tests {
         .expect("写盘应成功");
         let text = fs::read_to_string(&path).expect("读取新存档失败");
         let data: SaveFile = serde_json::from_str(&text).expect("解析新存档失败");
-        assert_eq!(data.version, 7);
+        assert_eq!(data.version, SAVE_VERSION);
         assert!(data.survival.is_none(), "旧档升级时不应伪造生存数据");
 
         remove_all(&path);
@@ -1171,6 +1229,54 @@ mod tests {
         assert!(save.survival().is_none(), "旧档缺省生存状态");
         assert!(save.equipment().is_none(), "旧档缺省装备");
         assert!(save.player().is_some(), "旧档仍应保留背包");
+        remove_all(&path);
+    }
+
+    #[test]
+    fn v0_20_fields_round_trip_and_are_absent_in_v7_saves() {
+        let path = temp_path("survival-v8");
+        remove_all(&path);
+
+        let legacy = r#"{
+            "version": 7,
+            "seed": 24301,
+            "player": {"slots": [], "selected_hotbar": 0}
+        }"#;
+        fs::write(&path, legacy).expect("写入旧档失败");
+        let save = WorldSave::load(&path, DEFAULT_SEED);
+        assert!(save.vitals().is_none());
+        assert_eq!(save.world_time().time_of_day, 0.0);
+        assert!(save.campfires().is_empty());
+
+        let mut vitals = SavedVitals::default();
+        vitals.hunger.hunger = 12.0;
+        vitals.hunger.saturation = 3.0;
+        vitals.stamina.stamina = 42.0;
+        vitals.respawn = Some([4, 9, -6]);
+        let campfire = SavedCampfire {
+            x: 1,
+            y: 2,
+            z: 3,
+            input: Some(SavedSlot {
+                item: ItemId::RAW_BEEF.raw(),
+                count: 2,
+                durability: None,
+            }),
+            output: None,
+            progress: 2.5,
+        };
+        let mut save = save;
+        save.set_survival_state(vitals, SavedWorldTime { time_of_day: 0.75 }, vec![campfire])
+            .expect("写盘应成功");
+
+        let reloaded = WorldSave::load(&path, DEFAULT_SEED);
+        assert_eq!(reloaded.vitals().unwrap().hunger.hunger, 12.0);
+        assert_eq!(reloaded.vitals().unwrap().stamina.stamina, 42.0);
+        assert_eq!(reloaded.vitals().unwrap().respawn, Some([4, 9, -6]));
+        assert!((reloaded.world_time().time_of_day - 0.75).abs() < 1e-6);
+        assert_eq!(reloaded.campfires().len(), 1);
+        assert_eq!(reloaded.campfires()[0].input.as_ref().unwrap().count, 2);
+
         remove_all(&path);
     }
 

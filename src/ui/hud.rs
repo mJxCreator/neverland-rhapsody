@@ -73,6 +73,30 @@ const HEART_PATTERN: [u8; 7] = [
     0b0110110, 0b1111111, 0b1111111, 0b1110111, 0b0110110, 0b0011100, 0b0001000,
 ];
 
+/// 7×7 像素食物图案，用于饥饿值图标。
+const FOOD_PATTERN: [u8; 7] = [
+    0b0011100, 0b0111110, 0b1111111, 0b1111110, 0b0111100, 0b0011000, 0b0010000,
+];
+
+/// 单颗饥饿图标的像素边长。
+const FOOD_PIXEL: f32 = 2.4;
+/// 饥饿图标之间的水平间距（像素）。
+const FOOD_GAP: f32 = 2.0;
+/// 体力条宽度（像素）。
+const STAMINA_WIDTH: f32 = 240.0;
+/// 体力条高度（像素）。
+const STAMINA_HEIGHT: f32 = 6.0;
+/// 提示消息显示时长（秒）。
+const MESSAGE_DURATION: f32 = 2.5;
+/// 饥饿图标满值颜色。
+const FOOD_FULL: [f32; 4] = [0.80, 0.42, 0.16, 0.95];
+/// 饥饿图标空值颜色。
+const FOOD_EMPTY: [f32; 4] = [0.24, 0.14, 0.10, 0.85];
+/// 体力条填充颜色。
+const STAMINA_FILL: [f32; 4] = [0.38, 0.76, 0.96, 0.95];
+/// 世界时间文本颜色。
+const TIME_TEXT: [f32; 4] = [0.82, 0.86, 0.95, 0.9];
+
 /// 提示类型；决定绘制时的文案与颜色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToastKind {
@@ -110,6 +134,16 @@ pub struct HudModel {
     pub health: u32,
     /// 最大生命值（1 点 = 半颗心）。
     pub max_health: u32,
+    /// 当前饥饿值（0-20）。
+    pub hunger: f32,
+    /// 当前体力值（0-100）。
+    pub stamina: f32,
+    /// 当前昼夜阶段标签。
+    pub time_label: &'static str,
+    /// 进食进度；`None` 表示未进食。
+    pub eating_progress: Option<f32>,
+    /// 简短状态提示（睡眠失败、成功等）。
+    message: Option<(&'static str, f32)>,
     damage_flash_remaining: f32,
     /// 当前显示血量的敌对生物；`None` 时不绘制名牌。
     target: Option<TargetHealth>,
@@ -132,6 +166,11 @@ impl Default for HudModel {
             ui_open: false,
             health: 20,
             max_health: 20,
+            hunger: 20.0,
+            stamina: 100.0,
+            time_label: "DAY",
+            eating_progress: None,
+            message: None,
             damage_flash_remaining: 0.0,
             target: None,
             target_remaining: 0.0,
@@ -168,6 +207,31 @@ impl HudModel {
     pub fn set_health(&mut self, health: u32, max_health: u32) {
         self.max_health = if max_health == 0 { 20 } else { max_health };
         self.health = health.min(self.max_health);
+    }
+
+    /// 写入饥饿、体力与昼夜阶段；数值越界时自动裁剪。
+    pub fn set_survival(&mut self, hunger: f32, stamina: f32, time_label: &'static str) {
+        self.hunger = if hunger.is_finite() {
+            hunger.clamp(0.0, 20.0)
+        } else {
+            20.0
+        };
+        self.stamina = if stamina.is_finite() {
+            stamina.clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        self.time_label = time_label;
+    }
+
+    /// 设置进食进度；`None` 表示未进食。
+    pub fn set_eating_progress(&mut self, progress: Option<f32>) {
+        self.eating_progress = progress.filter(|value| value.is_finite());
+    }
+
+    /// 显示一条短状态提示，覆盖旧提示并重新计时。
+    pub fn show_message(&mut self, text: &'static str) {
+        self.message = Some((text, MESSAGE_DURATION));
     }
 
     /// 受到伤害时触发短暂红色边缘反馈。
@@ -249,6 +313,12 @@ impl HudModel {
                 self.damage_direction = None;
             }
         }
+        if let Some((_, remaining)) = &mut self.message {
+            *remaining -= delta_secs;
+            if *remaining <= 0.0 {
+                self.message = None;
+            }
+        }
         let Some(toast) = &mut self.toast else {
             return;
         };
@@ -267,6 +337,10 @@ impl HudModel {
 
         self.push_target_health(out, width, height);
         self.push_health(out, width, height);
+        self.push_hunger(out, width, height);
+        self.push_stamina(out, width, height);
+        self.push_time_phase(out, width, height);
+        self.push_message(out, width, height);
         self.push_hotbar(out, width, height, icons);
         self.push_selected_name(out, width, height);
         self.push_toast(out, width, height, icons);
@@ -360,6 +434,94 @@ impl HudModel {
                 color,
             );
         }
+    }
+
+    /// 饥饿图标：每颗图标对应 2 点饥饿值，支持半颗显示。
+    fn push_hunger(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+        let viewport = (width, height);
+        let icon = FOOD_PIXEL * FOOD_PATTERN.len() as f32;
+        let hearts = self.max_health.div_ceil(2) as usize;
+        if hearts == 0 {
+            return;
+        }
+        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
+        let health_width =
+            hearts as f32 * heart_size + (hearts.saturating_sub(1)) as f32 * HEART_GAP;
+        let start_x = (width - health_width) * 0.5 + health_width + 18.0;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - icon;
+
+        for index in 0..10 {
+            let x = start_x + index as f32 * (icon + FOOD_GAP);
+            push_food_icon(out, viewport, x, y, self.hunger - index as f32 * 2.0);
+        }
+    }
+
+    /// 体力条：位于生命值标签上方，按 0-100 比例填充。
+    fn push_stamina(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+        let viewport = (width, height);
+        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
+        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size - 26.0;
+        let x = (width - STAMINA_WIDTH) * 0.5;
+        push_quad(
+            out,
+            viewport,
+            UiRect::new(x, y, STAMINA_WIDTH, STAMINA_HEIGHT),
+            [0.08, 0.09, 0.11, 0.85],
+        );
+        let ratio = if self.stamina.is_finite() {
+            (self.stamina / 100.0).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if ratio > 0.0 {
+            push_quad(
+                out,
+                viewport,
+                UiRect::new(x, y, STAMINA_WIDTH * ratio, STAMINA_HEIGHT),
+                STAMINA_FILL,
+            );
+        }
+    }
+
+    /// 右上角显示当前昼夜阶段。
+    fn push_time_phase(&self, out: &mut Vec<UiVertex>, width: f32, _height: f32) {
+        let label = format!("TIME {}", self.time_label);
+        let text_width = font::text_width(&label, 1.8);
+        font::push_text(
+            out,
+            (width, _height),
+            width - text_width - 18.0,
+            14.0,
+            1.8,
+            TIME_TEXT,
+            &label,
+        );
+    }
+
+    /// 屏幕中部的短状态提示。
+    fn push_message(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+        let Some((text, remaining)) = self.message else {
+            return;
+        };
+        if remaining <= 0.0 {
+            return;
+        }
+        let viewport = (width, height);
+        let alpha = (remaining / MESSAGE_DURATION).clamp(0.0, 1.0);
+        let text_width = font::text_width(text, 2.0);
+        let x = (width - text_width) * 0.5;
+        let y = height * 0.62;
+        let mut background = theme::OVERLAY_DARK;
+        background[3] *= alpha;
+        push_quad(
+            out,
+            viewport,
+            UiRect::new(x - 10.0, y - 6.0, text_width + 20.0, 26.0),
+            background,
+        );
+        let mut color = [1.0, 0.86, 0.44, 1.0];
+        color[3] *= alpha;
+        font::push_text(out, viewport, x, y, 2.0, color, text);
     }
 
     /// 心形生命值：满心、半心与空心按 2 点生命值换算，并在上方显示数值。
@@ -597,7 +759,7 @@ impl HudModel {
     }
 
     fn push_progress(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
-        let Some(progress) = self.mining_progress else {
+        let Some(progress) = self.eating_progress.or(self.mining_progress) else {
             return;
         };
         let viewport = (width, height);
@@ -622,6 +784,57 @@ impl HudModel {
             push_ui_view(out, viewport, fill, view, [1.0; 4]);
         } else {
             push_quad(out, viewport, fill, theme::PROGRESS_FILL);
+        }
+    }
+}
+
+/// 绘制一颗食物图标；`points` 为剩余饥饿点数（0-2）。
+fn push_food_icon(out: &mut Vec<UiVertex>, viewport: (f32, f32), x: f32, y: f32, points: f32) {
+    push_food_pattern(out, viewport, x, y, FOOD_EMPTY, FOOD_PATTERN.len());
+    let points = points.clamp(0.0, 2.0);
+    if points >= 2.0 {
+        push_food_pattern(out, viewport, x, y, FOOD_FULL, FOOD_PATTERN.len());
+    } else if points >= 1.0 {
+        // 半颗：只填充左半部分像素列。
+        push_food_pattern(out, viewport, x, y, FOOD_FULL, FOOD_PATTERN.len() / 2 + 1);
+    }
+}
+
+fn push_food_pattern(
+    out: &mut Vec<UiVertex>,
+    viewport: (f32, f32),
+    x: f32,
+    y: f32,
+    color: [f32; 4],
+    max_columns: usize,
+) {
+    let columns = FOOD_PATTERN.len();
+    for (row, bits) in FOOD_PATTERN.iter().enumerate() {
+        let mut column = 0;
+        while column < columns {
+            let filled = bits & (1 << (columns - 1 - column)) != 0;
+            if !filled || column >= max_columns {
+                column += 1;
+                continue;
+            }
+            let start = column;
+            while column < columns
+                && column < max_columns
+                && FOOD_PATTERN[row] & (1 << (columns - 1 - column)) != 0
+            {
+                column += 1;
+            }
+            push_quad(
+                out,
+                viewport,
+                UiRect::new(
+                    x + start as f32 * FOOD_PIXEL,
+                    y + row as f32 * FOOD_PIXEL,
+                    (column - start) as f32 * FOOD_PIXEL,
+                    FOOD_PIXEL,
+                ),
+                color,
+            );
         }
     }
 }

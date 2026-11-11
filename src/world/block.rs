@@ -59,6 +59,8 @@ pub enum Block {
     Dirt,
     Grass,
     Wood,
+    Campfire,
+    Bed,
 }
 
 impl Block {

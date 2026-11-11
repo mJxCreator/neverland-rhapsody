@@ -51,6 +51,12 @@ impl ItemId {
     pub const DIAMOND_LEGGINGS: Self = Self(34);
     pub const DIAMOND_BOOTS: Self = Self(35);
     pub const ROTTEN_FLESH: Self = Self(36);
+    pub const COOKED_PORKCHOP: Self = Self(37);
+    pub const COOKED_BEEF: Self = Self(38);
+    pub const APPLE: Self = Self(39);
+    pub const BREAD: Self = Self(40);
+    pub const CAMPFIRE: Self = Self(41);
+    pub const BED: Self = Self(42);
 
     /// 存档与跨模块传递使用的原始数值。
     pub const fn raw(self) -> u16 {

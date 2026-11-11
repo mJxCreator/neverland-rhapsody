@@ -66,6 +66,15 @@ const DIAMOND_CHESTPLATE: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 8)
 const DIAMOND_LEGGINGS: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 7)];
 const DIAMOND_BOOTS: [Ingredient; 1] = [Ingredient::new(ItemId::DIAMOND, 4)];
 
+const CAMPFIRE: [Ingredient; 2] = [
+    Ingredient::new(ItemId::WOOD, 3),
+    Ingredient::new(ItemId::STICK, 2),
+];
+const BED: [Ingredient; 2] = [
+    Ingredient::new(ItemId::WOOD, 3),
+    Ingredient::new(ItemId::LEATHER, 3),
+];
+
 /// 全部配方；顺序决定合成界面的展示顺序。
 static RECIPES: OnceLock<Vec<Recipe>> = OnceLock::new();
 
@@ -92,6 +101,7 @@ fn build_recipes() -> Vec<Recipe> {
     let materials = RecipeCategory::Materials;
     let weapons = RecipeCategory::Weapons;
     let armor = RecipeCategory::Armor;
+    let utility = RecipeCategory::Utility;
     let recipes = vec![
         hand_recipe(RecipeId::STICK, ItemId::STICK, 2, &WOOD_TWO, materials),
         hand_recipe(
@@ -269,6 +279,8 @@ fn build_recipes() -> Vec<Recipe> {
             &DIAMOND_BOOTS,
             armor,
         ),
+        hand_recipe(RecipeId::CAMPFIRE, ItemId::CAMPFIRE, 1, &CAMPFIRE, utility),
+        hand_recipe(RecipeId::BED, ItemId::BED, 1, &BED, utility),
     ];
 
     // 防御性校验：重复 ID、非法材料或非法产出都不允许进入注册表。
@@ -341,6 +353,14 @@ mod tests {
         assert!(by_id(RecipeId::IRON_PICKAXE).is_some());
         assert!(by_id(RecipeId::WOODEN_AXE).is_some());
         assert!(by_id(RecipeId::STONE_SHOVEL).is_some());
+    }
+
+    #[test]
+    fn registry_defines_survival_utility_recipes() {
+        assert!(by_id(RecipeId::CAMPFIRE).is_some());
+        assert!(by_id(RecipeId::BED).is_some());
+        let utility: Vec<_> = by_category(RecipeCategory::Utility).collect();
+        assert_eq!(utility.len(), 2);
     }
 
     #[test]

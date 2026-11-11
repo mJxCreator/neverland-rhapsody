@@ -16,6 +16,8 @@ pub struct MovementIntent {
     pub right: f32,
     /// 是否请求跳跃。
     pub jump: bool,
+    /// 是否请求冲刺；体力不足时由主循环清除。
+    pub sprint: bool,
 }
 
 /// 保存当前按键与待应用的鼠标位移。
@@ -26,6 +28,7 @@ pub struct PlayerController {
     left: bool,
     right: bool,
     jump: bool,
+    sprint: bool,
     look_delta: (f32, f32),
 }
 
@@ -42,6 +45,7 @@ impl PlayerController {
             KeyCode::KeyA => &mut self.left,
             KeyCode::KeyD => &mut self.right,
             KeyCode::Space => &mut self.jump,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight => &mut self.sprint,
             _ => return,
         };
         *slot = pressed;
@@ -69,12 +73,18 @@ impl PlayerController {
         look
     }
 
+    /// 当前是否按住 Shift 请求冲刺。
+    pub fn sprint(&self) -> bool {
+        self.sprint
+    }
+
     /// 当前按键组合对应的移动意图。
     pub fn intent(&self) -> MovementIntent {
         MovementIntent {
             forward: axis(self.forward, self.backward),
             right: axis(self.right, self.left),
             jump: self.jump,
+            sprint: self.sprint,
         }
     }
 }

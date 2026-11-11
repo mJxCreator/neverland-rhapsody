@@ -38,6 +38,8 @@ impl RecipeId {
     pub const DIAMOND_CHESTPLATE: Self = Self(24);
     pub const DIAMOND_LEGGINGS: Self = Self(25);
     pub const DIAMOND_BOOTS: Self = Self(26);
+    pub const CAMPFIRE: Self = Self(27);
+    pub const BED: Self = Self(28);
 }
 
 /// 配方分类：用于合成界面的分类查询与后续解锁规则。
