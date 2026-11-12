@@ -26,7 +26,7 @@ pub use self::instance::ModelInstance;
 pub use self::material::AlphaMode;
 pub use self::mesh::MeshBounds;
 pub use self::registry::ModelRegistry;
-pub use self::render::{instance_draws, ModelDraw, ModelGeometry, ModelVertex};
+pub use self::render::{instance_draws, static_draws, ModelDraw, ModelGeometry, ModelVertex};
 pub use self::types::{ModelAsset, ModelId};
 
 /// 模型加载失败；面向日志与调用的可读错误，不暴露底层解析细节。

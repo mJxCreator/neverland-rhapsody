@@ -130,6 +130,42 @@ pub fn instance_draws(
     }
 }
 
+/// 把模型的静态图元按给定世界变换展开为绘制批次。
+///
+/// 挂载到骨骼上的装备由骨骼变换直接驱动，不需要蒙皮；带蒙皮的图元会被跳过，
+/// 避免把绑定姿态误当成动画姿态。
+pub fn static_draws(
+    asset: &ModelAsset,
+    model: ModelId,
+    transform: Mat4,
+    flash: f32,
+    out: &mut Vec<ModelDraw>,
+) {
+    for (mesh_index, mesh) in asset.meshes.iter().enumerate() {
+        for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
+            if primitive.is_skinned() {
+                continue;
+            }
+            let material = asset
+                .materials
+                .get(primitive.material)
+                .cloned()
+                .unwrap_or_default();
+            out.push(ModelDraw {
+                model,
+                material: primitive.material,
+                alpha: material.alpha_mode,
+                transform,
+                flash: flash.clamp(0.0, 1.0),
+                geometry: ModelGeometry::Static {
+                    mesh: mesh_index,
+                    primitive: primitive_index,
+                },
+            });
+        }
+    }
+}
+
 /// 统计顶点数，用于按模型规模调整动态缓冲容量。
 pub fn dynamic_vertex_count(draws: &[ModelDraw]) -> usize {
     draws

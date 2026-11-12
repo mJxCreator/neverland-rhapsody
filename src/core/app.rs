@@ -26,6 +26,7 @@ use crate::entity::{
     EntityRenderConfig, SpawnConfig, Spawner,
 };
 use crate::equipment::Equipment;
+use crate::equipment_visual;
 use crate::interaction::{
     drops_for_harvest, placement_cell, primary_use, raycast, secondary_use, HarvestTool, Hotbar,
     ItemUse, MiningOutcome, MiningState, MiningTarget, RayHit,
@@ -38,6 +39,10 @@ use crate::model::{builtin, ModelDraw, ModelRegistry};
 use crate::player::{
     damage, find_respawn_position, Damage, DamageOutcome, DamageSource, PhysicsConfig,
     PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival, FIXED_TIMESTEP,
+};
+use crate::player_visual::third_person::ThirdPersonConfig;
+use crate::player_visual::{
+    player_model, third_person, CameraMode, PlayerVisual, PlayerVisualState,
 };
 use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
@@ -127,6 +132,10 @@ pub struct App {
     models: ModelRegistry,
     /// 生物与模型实例的桥接状态。
     entity_models: EntityModelSet,
+    /// 玩家角色视觉：模型、动画、装备挂载与第一/第三人称表现。
+    player_visual: PlayerVisual,
+    /// 当前相机视角；仅影响相机与绘制，不写入存档。
+    camera_mode: CameraMode,
     /// 上一帧实际执行的物理步数，用于调试日志。
     physics_steps: u32,
     cursor_grabbed: bool,
@@ -260,6 +269,13 @@ impl App {
         models.register_builtin("pig", pig);
         models.register_builtin("cow", cow);
         models.register_builtin("zombie", zombie);
+        // 玩家与装备同样遵循“磁盘同名 GLB 优先”的注册规则。
+        models.register_builtin(player_model::PLAYER_MODEL, player_model::player());
+        models.register_builtin(
+            player_model::FIRST_PERSON_ARMS_MODEL,
+            player_model::first_person_arms(),
+        );
+        equipment_visual::builtin::register(&mut models);
         for error in models.errors() {
             warn!(error = %error, "模型文件加载失败");
         }
@@ -269,6 +285,7 @@ impl App {
             "模型资源已装配"
         );
         let entity_models = EntityModelSet::new(&models, EntityModelConfig::default());
+        let player_visual = PlayerVisual::new(&models);
         let mut ui = UiManager::new();
         ui.set_ui_textures(&textures.ui_textures);
         let mut hotbar = Hotbar::new();
@@ -315,6 +332,8 @@ impl App {
             entity_render_config: EntityRenderConfig::default(),
             models,
             entity_models,
+            player_visual,
+            camera_mode: CameraMode::default(),
             physics_steps: 0,
             cursor_grabbed: false,
             timer: FrameTimer::new(),
@@ -793,6 +812,7 @@ impl App {
         self.physics.reset();
         self.survival.respawn();
         self.combat.reset();
+        self.player_visual.reset();
         self.ui.leave_death();
         self.controller.reset();
         self.persist_player();
@@ -858,10 +878,13 @@ impl App {
     }
 
     /// 当前准星命中的生物；若方块比生物更近则不返回，避免隔墙攻击。
+    ///
+    /// 判定始终从玩家眼睛出发，与相机视角无关：第三人称仅改变观察位置，
+    /// 不会扩大或缩短攻击距离。
     fn targeted_creature(&self) -> Option<EntityId> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera();
-        let origin = camera.position();
+        let origin = self.player.eye_position();
         let direction = camera.forward();
         let hit = entity_collision::raycast_entities(
             self.entities.creatures(),
@@ -911,15 +934,16 @@ impl App {
             return;
         }
         let stats = self.combat.stats();
-        let Some((camera_position, camera_forward)) = self
+        let Some(camera_forward) = self
             .renderer
             .as_ref()
-            .map(|renderer| (renderer.camera().position(), renderer.camera().forward()))
+            .map(|renderer| renderer.camera().forward())
         else {
             return;
         };
+        // 命中锥始终以玩家眼睛为原点，第三人称相机位置不参与攻击判定。
         let query = hit_detection::HitQuery::new(
-            camera_position,
+            self.player.eye_position(),
             camera_forward,
             stats.range,
             stats.angle_deg,
@@ -1046,13 +1070,13 @@ impl App {
         }
     }
 
-    /// 当前准星命中的方块。
+    /// 当前准星命中的方块；与视角模式无关，始终以玩家眼睛为射线起点。
     fn targeted_block(&self) -> Option<RayHit> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera();
         raycast(
             &self.world,
-            camera.position(),
+            self.player.eye_position(),
             camera.forward(),
             SELECTION_REACH,
         )
@@ -1514,8 +1538,19 @@ impl App {
         let eye = self.player.interpolated_eye_position(alpha);
         let yaw = self.player.yaw();
         let pitch = self.player.pitch();
+        // 第三人称只调整观察位置：相机沿视线反向外推，并在遇到方块时收缩。
+        let camera_position = match self.camera_mode {
+            CameraMode::FirstPerson => eye,
+            CameraMode::ThirdPerson => third_person::camera_position(
+                eye,
+                yaw,
+                pitch,
+                ThirdPersonConfig::default(),
+                |x, y, z| self.world.block_at(x, y, z).is_solid(),
+            ),
+        };
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.camera_mut().set_pose(eye, yaw, pitch);
+            renderer.camera_mut().set_pose(camera_position, yaw, pitch);
         }
 
         // 开发期纹理修改后重新装配资源；失败时保留上一份有效纹理。
@@ -1582,6 +1617,29 @@ impl App {
         let outcome =
             self.mining
                 .update(self.mining_held && !ui_blocking, mining_target, delta_secs);
+
+        // 视觉层只消费本帧状态：真实速度、落地事件、战斗/挖掘/进食与装备数据。
+        let feet = eye - Vec3::Y * self.physics.config().dimensions.eye_height;
+        let held_stack = self.inventory.hotbar_stack(self.hotbar.selected_index());
+        let visual_state = PlayerVisualState {
+            feet_position: feet,
+            yaw,
+            velocity: self.player.velocity(),
+            grounded: self.player.is_grounded(),
+            health: self.survival.health(),
+            dead: self.survival.is_dead(),
+            mining: self.mining.is_mining(),
+            eating: self.eating.is_eating(),
+            attacking: !self.combat.state().is_idle(),
+            landed: update.landing_fall.is_some(),
+        };
+        self.player_visual.update(
+            &self.models,
+            &self.equipment,
+            held_stack,
+            &visual_state,
+            delta_secs,
+        );
 
         let mut selection = hit.map(|hit| hit.block);
         if let MiningOutcome::Completed { block } = outcome {
@@ -1664,7 +1722,25 @@ impl App {
                 camera_position,
                 &mut model_draws,
             );
+            // 第一人称隐藏第三人称身体，仅绘制独立手臂与手持物品；
+            // 第三人称绘制完整角色与全部装备挂载。第一人称批次走深度关闭的覆盖层，
+            // 保证贴墙时手臂不会被世界几何裁掉。
+            let mut overlay_model_draws: Vec<ModelDraw> = Vec::new();
+            let target = if self.camera_mode == CameraMode::FirstPerson {
+                &mut overlay_model_draws
+            } else {
+                &mut model_draws
+            };
+            self.player_visual.build_draws(
+                &self.models,
+                self.camera_mode,
+                camera_position,
+                yaw,
+                pitch,
+                target,
+            );
             renderer.set_model_draws(model_draws);
+            renderer.set_overlay_model_draws(overlay_model_draws);
             let modeled = self.entity_models.modeled_types().to_vec();
             let entity_vertices = renderer.entity_vertices_mut();
             entity_vertices.clear();
@@ -1771,6 +1847,12 @@ impl ApplicationHandler for App {
                 }
                 // 未捕获鼠标时键盘不驱动相机，避免释放鼠标后误移动。
                 if !self.cursor_grabbed {
+                    return;
+                }
+                // F5 在第一/第三人称之间切换；仅影响相机与绘制，不写入存档。
+                if pressed && code == KeyCode::F5 {
+                    self.camera_mode = self.camera_mode.toggle();
+                    self.show_message(self.camera_mode.label());
                     return;
                 }
                 if let Some(slot) = hotbar_slot_for_key(code) {

@@ -1,24 +1,35 @@
-# 模型资源规范（v0.18）
+# 模型资源规范（v0.22）
 
-本目录存放生物与静态物体的 `.glb` 模型。游戏启动时扫描 `assets/models/` 并注册到
-`ModelRegistry`；注册失败只记录错误，实体继续使用回退几何，不会中断启动。
+本目录存放生物、玩家角色、装备与静态物体的 `.glb` 模型。游戏启动时递归扫描
+`assets/models/` 并注册到 `ModelRegistry`；注册失败只记录错误，对应对象继续使用
+内置回退几何，不会中断启动。
 
-模型根目录默认是 `assets/models`，随 `NEVERLAND_ASSET_ROOT` 环境变量一起变化。
+模型根目录默认是 `assets/models`，随 `NEVERLAND_ASSET_ROOT` 环境变量一起变化，
+子目录深度上限为 4 层。
 
 ## 目录结构
 
 ```
 assets/
 ├── models/
-│   ├── pig.glb       猪模型（可选，缺失时使用内置程序化模型）
-│   └── cow.glb       牛模型（可选，缺失时使用内置程序化模型）
+│   ├── pig.glb                    猪（可选，缺失时使用内置程序化模型）
+│   ├── cow.glb                    牛（可选）
+│   ├── player/
+│   │   ├── player.glb             玩家角色（可选，需满足下方骨骼契约）
+│   │   └── player_fp_arms.glb     第一人称手臂（可选）
+│   └── equipment/
+│       ├── tools/wooden_pickaxe.glb
+│       ├── weapons/iron_sword.glb
+│       └── armor/iron_helmet.glb
 └── textures/
-    └── entities/     模型外部 PNG 纹理
+    └── entities/                  模型外部 PNG 纹理
 ```
 
-- 同一模型被任意数量的实体共享，不会按实体重复加载。
-- 文件名（不含扩展名）即模型注册名；实体按 `pig` / `cow` 名称查找。
-- 磁盘上的 GLB 优先；同名内置模型只在目录中不存在该文件时注册。
+- 同一模型被任意数量的对象共享，不会按对象重复加载。
+- 文件名（不含扩展名）即模型注册名，与所在子目录无关；实体按 `pig` / `cow`、
+  玩家按 `player`、装备按物品名（如 `iron_sword`）查找。
+- 磁盘上的 GLB 优先；同名内置模型只在注册表中不存在该名称时注册。
+- 装备模型缺失只会跳过该部件并告警一次，玩家本体仍正常显示。
 
 ## 坐标、单位与原点
 
@@ -99,6 +110,55 @@ root
 └── leg_front_left / leg_front_right
     leg_back_left  / leg_back_right
 ```
+
+## 玩家骨骼契约
+
+`player.glb` 必须包含以下 20 根骨骼（名称大小写不敏感）；缺失的骨骼只会导致
+依赖它的装备挂载被跳过，不会让角色消失：
+
+```
+Root
+└── Pelvis
+    ├── Spine → Chest
+    │   ├── Neck → Head
+    │   ├── LeftShoulder → LeftArm → LeftForearm → LeftHand
+    │   └── RightShoulder → RightArm → RightForearm → RightHand
+    ├── LeftLeg → LeftKnee → LeftFoot
+    └── RightLeg → RightKnee → RightFoot
+```
+
+| 挂载点 | 骨骼 | 用途 |
+| --- | --- | --- |
+| RightHand | RightHand | 工具、武器、食物 |
+| LeftHand | LeftHand | 预留左手物品 |
+| Head | Head | 头盔 |
+| Chest | Chest | 胸甲 |
+| Legs | Pelvis | 护腿髋部 |
+| LeftLeg / RightLeg | LeftLeg / RightLeg | 左右护腿 |
+| LeftFoot / RightFoot | LeftFoot / RightFoot | 左右靴子 |
+
+装备模型使用**骨骼局部坐标**：模型原点放在骨骼原点即可，缩放与偏移由视觉注册表
+给出，外部 GLB 不需要为不同身高重新对齐。工具默认握把位于原点、朝向本地 `+Y`。
+装备必须是静态网格（不含 `JOINTS_0`/`WEIGHTS_0`），由骨骼变换整体驱动。
+
+| 类别 | 注册名示例 |
+| --- | --- |
+| 工具 | `wooden_pickaxe`、`stone_axe`、`iron_shovel` |
+| 武器 | `wooden_sword`、`stone_sword`、`iron_sword`、`diamond_sword` |
+| 食物 | `apple`、`bread`、`raw_beef`、`cooked_beef` |
+| 头盔 | `leather_helmet`、`iron_helmet`、`diamond_helmet` |
+| 胸甲 | `leather_chestplate`、`iron_chestplate`、`diamond_chestplate` |
+| 护腿 | `<材质>_leggings_hip`、`<材质>_leggings_left`、`<材质>_leggings_right` |
+| 靴子 | `<材质>_boot_left`、`<材质>_boot_right` |
+
+材质取 `leather` / `iron` / `diamond`。没有对应 GLB 时使用内置程序化外形。
+
+玩家模型片段名与优先级：`death` > `hurt` > `attack` > `land` > `jump`/`fall` >
+`mining` > `eat` > `run` > `walk` > `idle`。缺少片段时先回退 `idle`，再回退第一个
+片段。内置模型已包含全部片段，外部模型建议对齐相同命名。
+
+第一人称使用独立的 `player_fp_arms` 静态模型，本地 `-Z` 为前方；缺失时只隐藏手臂，
+不影响第三人称角色。
 
 ## 动画
 

@@ -466,12 +466,15 @@ pub fn create_model_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupL
     })
 }
 
-/// 模型管线类别：不透明、Alpha Mask、Alpha Blend。
+/// 模型管线类别：不透明、Alpha Mask、Alpha Blend、第一人称覆盖层。
+///
+/// 覆盖层关闭深度测试与深度写入，确保手臂和手持物品不会被世界几何错误遮挡。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelPipelineKind {
     Opaque,
     Mask,
     Blend,
+    Overlay,
 }
 
 /// 创建模型渲染管线；不剔除背面以兼容单面/双面材质。
@@ -491,24 +494,34 @@ pub fn create_model_pipeline(
         bind_group_layouts: &[Some(scene_layout), Some(model_layout)],
         immediate_size: 0,
     });
-    let (label, entry_point, blend, depth_write) = match kind {
+    let (label, entry_point, blend, depth_write, depth_compare) = match kind {
         ModelPipelineKind::Opaque => (
             "opaque model pipeline",
             "fs_main",
             wgpu::BlendState::REPLACE,
             true,
+            wgpu::CompareFunction::Less,
         ),
         ModelPipelineKind::Mask => (
             "alpha mask model pipeline",
             "fs_mask",
             wgpu::BlendState::REPLACE,
             true,
+            wgpu::CompareFunction::Less,
         ),
         ModelPipelineKind::Blend => (
             "alpha blend model pipeline",
             "fs_main",
             wgpu::BlendState::ALPHA_BLENDING,
             false,
+            wgpu::CompareFunction::Less,
+        ),
+        ModelPipelineKind::Overlay => (
+            "first person overlay model pipeline",
+            "fs_main",
+            wgpu::BlendState::REPLACE,
+            false,
+            wgpu::CompareFunction::Always,
         ),
     };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -533,7 +546,7 @@ pub fn create_model_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(depth_write),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            depth_compare: Some(depth_compare),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),

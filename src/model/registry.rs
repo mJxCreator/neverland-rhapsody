@@ -4,7 +4,7 @@
 //! 加载失败只记录在 `errors`，由调用方决定回退策略（内置模型或旧占位几何）。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::loader::load_model;
@@ -24,25 +24,18 @@ impl ModelRegistry {
         Self::default()
     }
 
-    /// 扫描目录下所有 `.glb` 文件（按名称排序，保证稳定加载顺序）。
+    /// 递归扫描目录下所有 `.glb` 文件（按相对路径排序，保证稳定加载顺序）。
+    ///
+    /// 支持 `models/player/player.glb`、`models/equipment/weapons/iron_sword.glb`
+    /// 这类按类别分目录的资源组织；注册名统一取文件名（不含扩展名）。
     pub fn load_from_dir(root: &Path) -> Self {
         let mut registry = Self::new();
         if !root.is_dir() {
             tracing::warn!(path = %root.display(), "模型目录不存在，将使用内置模型");
             return registry;
         }
-        let mut entries: Vec<_> = std::fs::read_dir(root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
-            })
-            .collect();
+        let mut entries = Vec::new();
+        collect_glb_files(root, 0, &mut entries);
         entries.sort();
         for path in entries {
             if let Err(error) = registry.load_file(&path) {
@@ -62,7 +55,9 @@ impl ModelRegistry {
     /// 插入或替换模型；返回稳定 ID。
     pub fn insert(&mut self, asset: ModelAsset) -> ModelId {
         let offset = asset.ground_offset();
-        if offset.length() > 0.05 {
+        // 只有带骨骼的角色模型走实例化贴地补偿；装备挂载模型以骨骼原点为轴，
+        // 包围盒最低点本来就不在 y = 0，不应误报。
+        if offset.length() > 0.05 && asset.skeleton.is_some() {
             tracing::warn!(
                 model = %asset.name,
                 offset = %offset,
@@ -134,6 +129,30 @@ impl ModelRegistry {
                 .map(|asset| asset.animations.len())
                 .sum::<usize>()
         )
+    }
+}
+
+/// 模型目录最大递归深度，避免异常目录结构导致长时间扫描。
+const MAX_SCAN_DEPTH: usize = 4;
+
+fn collect_glb_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_SCAN_DEPTH {
+        tracing::warn!(path = %dir.display(), "模型目录层级过深，已停止扫描");
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_glb_files(&path, depth + 1, out);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
+        {
+            out.push(path);
+        }
     }
 }
 

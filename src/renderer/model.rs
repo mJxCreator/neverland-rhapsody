@@ -42,6 +42,8 @@ struct PreparedDraw {
     alpha: AlphaMode,
     uniform_offset: u32,
     geometry: PreparedGeometry,
+    /// 第一人称覆盖层批次，绘制时关闭深度测试。
+    overlay: bool,
 }
 
 /// 模型渲染资源与批次。
@@ -49,6 +51,7 @@ pub struct ModelRenderer {
     pipeline_opaque: wgpu::RenderPipeline,
     pipeline_mask: wgpu::RenderPipeline,
     pipeline_blend: wgpu::RenderPipeline,
+    pipeline_overlay: wgpu::RenderPipeline,
     model_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     uniform_slots: usize,
@@ -61,6 +64,7 @@ pub struct ModelRenderer {
     dynamic_capacity: usize,
     dynamic_vertices: Vec<ModelVertex>,
     draws: Vec<ModelDraw>,
+    overlay_draws: Vec<ModelDraw>,
     prepared: Vec<PreparedDraw>,
 }
 
@@ -93,6 +97,13 @@ impl ModelRenderer {
             &model_layout,
             ModelPipelineKind::Blend,
         );
+        let pipeline_overlay = create_model_pipeline(
+            device,
+            format,
+            scene_layout,
+            &model_layout,
+            ModelPipelineKind::Overlay,
+        );
         let uniform_buffer = create_uniform_buffer(device, INITIAL_UNIFORM_SLOTS);
         let white_texture = upload_texture_image(
             device,
@@ -107,6 +118,7 @@ impl ModelRenderer {
             pipeline_opaque,
             pipeline_mask,
             pipeline_blend,
+            pipeline_overlay,
             model_layout,
             uniform_buffer,
             uniform_slots: INITIAL_UNIFORM_SLOTS,
@@ -119,6 +131,7 @@ impl ModelRenderer {
             dynamic_capacity: INITIAL_DYNAMIC_VERTICES,
             dynamic_vertices: Vec::new(),
             draws: Vec::new(),
+            overlay_draws: Vec::new(),
             prepared: Vec::new(),
         }
     }
@@ -191,16 +204,28 @@ impl ModelRenderer {
         self.draws = draws;
     }
 
-    /// 写入实例矩阵与动态蒙皮顶点。
+    /// 设置第一人称覆盖层绘制批次；这些批次在最后绘制且不参与深度测试。
+    pub fn set_overlay_draws(&mut self, draws: Vec<ModelDraw>) {
+        self.overlay_draws = draws;
+    }
+
+    /// 写入实例矩阵与动态蒙皮顶点；普通批次与第一人称覆盖层共用同一块动态缓冲。
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.prepared.clear();
         self.dynamic_vertices.clear();
-        if self.draws.is_empty() {
+        let regular_count = self.draws.len();
+        let total_count = regular_count + self.overlay_draws.len();
+        if total_count == 0 {
             return;
         }
-        self.ensure_uniform_capacity(device);
-        let mut uniform_bytes = vec![0u8; self.draws.len() * UNIFORM_SLOT_SIZE];
-        for (slot, draw) in self.draws.iter().enumerate() {
+        self.ensure_uniform_capacity(device, total_count);
+        let mut uniform_bytes = vec![0u8; total_count * UNIFORM_SLOT_SIZE];
+        for (slot, draw) in self
+            .draws
+            .iter()
+            .chain(self.overlay_draws.iter())
+            .enumerate()
+        {
             let base = slot * UNIFORM_SLOT_SIZE;
             let matrix = draw.transform.to_cols_array();
             uniform_bytes[base..base + 64].copy_from_slice(bytemuck::cast_slice(&matrix));
@@ -213,13 +238,19 @@ impl ModelRenderer {
         let total_vertices: usize = self
             .draws
             .iter()
+            .chain(self.overlay_draws.iter())
             .map(|draw| match &draw.geometry {
                 ModelGeometry::Dynamic(vertices) => vertices.len(),
                 ModelGeometry::Static { .. } => 0,
             })
             .sum();
         self.ensure_dynamic_capacity(device, total_vertices);
-        for (slot, draw) in self.draws.iter().enumerate() {
+        for (slot, draw) in self
+            .draws
+            .iter()
+            .chain(self.overlay_draws.iter())
+            .enumerate()
+        {
             let geometry = match &draw.geometry {
                 ModelGeometry::Static { mesh, primitive } => PreparedGeometry::Static {
                     mesh: *mesh,
@@ -240,6 +271,7 @@ impl ModelRenderer {
                 alpha: draw.alpha,
                 uniform_offset: (slot * UNIFORM_SLOT_SIZE) as u32,
                 geometry,
+                overlay: slot >= regular_count,
             });
         }
         if !self.dynamic_vertices.is_empty() {
@@ -251,14 +283,14 @@ impl ModelRenderer {
         }
     }
 
-    /// 在已有渲染通道中绘制全部模型批次。
+    /// 在已有渲染通道中绘制普通模型批次（参与深度测试）。
     pub fn draw<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         scene_bind_group: &'pass wgpu::BindGroup,
     ) {
         let mut current_pipeline: Option<ModelPipelineKind> = None;
-        for draw in &self.prepared {
+        for draw in self.prepared.iter().filter(|draw| !draw.overlay) {
             let kind = if draw.alpha.is_blend() {
                 ModelPipelineKind::Blend
             } else if draw.alpha.is_mask() {
@@ -271,48 +303,72 @@ impl ModelRenderer {
                     ModelPipelineKind::Opaque => &self.pipeline_opaque,
                     ModelPipelineKind::Mask => &self.pipeline_mask,
                     ModelPipelineKind::Blend => &self.pipeline_blend,
+                    ModelPipelineKind::Overlay => &self.pipeline_overlay,
                 };
                 render_pass.set_pipeline(pipeline);
                 current_pipeline = Some(kind);
             }
-            render_pass.set_bind_group(0, scene_bind_group, &[]);
-            let texture_bind_group = self
-                .bind_groups
-                .get(&(draw.model, draw.material))
-                .unwrap_or(&self.white_bind_group);
-            render_pass.set_bind_group(1, texture_bind_group, &[draw.uniform_offset]);
-            match draw.geometry {
-                PreparedGeometry::Static { mesh, primitive } => {
-                    if let Some(static_mesh) =
-                        self.static_meshes.get(&(draw.model, mesh, primitive))
-                    {
-                        render_pass.set_vertex_buffer(0, static_mesh.vertex_buffer.slice(..));
-                        render_pass.set_index_buffer(
-                            static_mesh.index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        render_pass.draw_indexed(0..static_mesh.index_count, 0, 0..1);
-                    }
+            self.draw_prepared(render_pass, scene_bind_group, draw);
+        }
+    }
+
+    /// 绘制第一人称覆盖层：关闭深度测试与深度写入，避免被世界几何遮挡。
+    pub fn draw_overlay<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        scene_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        let mut pipeline_set = false;
+        for draw in self.prepared.iter().filter(|draw| draw.overlay) {
+            if !pipeline_set {
+                render_pass.set_pipeline(&self.pipeline_overlay);
+                pipeline_set = true;
+            }
+            self.draw_prepared(render_pass, scene_bind_group, draw);
+        }
+    }
+
+    fn draw_prepared<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        scene_bind_group: &'pass wgpu::BindGroup,
+        draw: &PreparedDraw,
+    ) {
+        render_pass.set_bind_group(0, scene_bind_group, &[]);
+        let texture_bind_group = self
+            .bind_groups
+            .get(&(draw.model, draw.material))
+            .unwrap_or(&self.white_bind_group);
+        render_pass.set_bind_group(1, texture_bind_group, &[draw.uniform_offset]);
+        match draw.geometry {
+            PreparedGeometry::Static { mesh, primitive } => {
+                if let Some(static_mesh) = self.static_meshes.get(&(draw.model, mesh, primitive)) {
+                    render_pass.set_vertex_buffer(0, static_mesh.vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(
+                        static_mesh.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    render_pass.draw_indexed(0..static_mesh.index_count, 0, 0..1);
                 }
-                PreparedGeometry::Dynamic {
-                    first_vertex,
-                    vertex_count,
-                } => {
-                    if vertex_count == 0 {
-                        continue;
-                    }
-                    let stride = std::mem::size_of::<ModelVertex>() as u64;
-                    let start = u64::from(first_vertex) * stride;
-                    let end = start + u64::from(vertex_count) * stride;
-                    render_pass.set_vertex_buffer(0, self.dynamic_buffer.slice(start..end));
-                    render_pass.draw(0..vertex_count, 0..1);
+            }
+            PreparedGeometry::Dynamic {
+                first_vertex,
+                vertex_count,
+            } => {
+                if vertex_count == 0 {
+                    return;
                 }
+                let stride = std::mem::size_of::<ModelVertex>() as u64;
+                let start = u64::from(first_vertex) * stride;
+                let end = start + u64::from(vertex_count) * stride;
+                render_pass.set_vertex_buffer(0, self.dynamic_buffer.slice(start..end));
+                render_pass.draw(0..vertex_count, 0..1);
             }
         }
     }
 
-    fn ensure_uniform_capacity(&mut self, device: &wgpu::Device) {
-        let required = self.draws.len().max(1);
+    fn ensure_uniform_capacity(&mut self, device: &wgpu::Device, required: usize) {
+        let required = required.max(1);
         if required <= self.uniform_slots {
             return;
         }

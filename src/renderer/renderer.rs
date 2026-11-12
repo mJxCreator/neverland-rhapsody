@@ -387,6 +387,11 @@ impl Renderer {
         self.model.set_draws(draws);
     }
 
+    /// 提交第一人称覆盖层批次；在 3D 场景之后、HUD 之前绘制且不参与深度测试。
+    pub fn set_overlay_model_draws(&mut self, draws: Vec<ModelDraw>) {
+        self.model.set_overlay_draws(draws);
+    }
+
     /// 当前视口尺寸（像素）。
     pub fn viewport(&self) -> (f32, f32) {
         (self.config.width as f32, self.config.height as f32)
@@ -680,6 +685,9 @@ impl Renderer {
                 render_pass.set_vertex_buffer(0, self.selection_buffer.slice(..));
                 render_pass.draw(0..SELECTION_VERTEX_COUNT, 0..1);
             }
+
+            // 第一人称手臂与手持物品在最后绘制，关闭深度测试以避免被墙体裁掉。
+            self.model.draw_overlay(&mut render_pass, &self.bind_group);
 
             if hud_count > 0 {
                 render_pass.set_pipeline(&self.hud_pipeline);
