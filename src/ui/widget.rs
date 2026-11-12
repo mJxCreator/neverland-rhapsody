@@ -11,6 +11,7 @@ use crate::texture::ItemTextureMap;
 use super::draw::{push_border, push_item_icon, push_quad, push_ui_view, UiVertex};
 use super::font;
 use super::layout::{clamp_to_viewport, UiRect};
+use super::modules::hotbar_geometry;
 use super::theme;
 use crate::texture::UiTextureMap;
 
@@ -75,7 +76,7 @@ pub fn push_slot(
     }
     let textured = ui
         .get(slot_texture(skin, state))
-        .map(|view| push_ui_view(out, viewport, rect, view, [1.0; 4]))
+        .map(|view| push_ui_view(out, viewport, skin_rect(rect, skin, state), view, [1.0; 4]))
         .is_some();
     if !textured {
         push_quad(out, viewport, rect, state.border_color());
@@ -137,6 +138,16 @@ fn slot_texture(skin: SlotSkin, state: SlotState) -> &'static str {
         (SlotSkin::Inventory, SlotState::Hover) => "inventory_slot_hover",
         (SlotSkin::Inventory, SlotState::Selected) => "inventory_slot_selected",
         (SlotSkin::Inventory, SlotState::Normal | SlotState::Disabled) => "inventory_slot",
+    }
+}
+
+/// 槽位贴图的绘制矩形：快捷栏选中态按 18:16 放大并与槽位同心，其余状态与槽位一致。
+fn skin_rect(rect: UiRect, skin: SlotSkin, state: SlotState) -> UiRect {
+    match (skin, state) {
+        (SlotSkin::Hotbar, SlotState::Selected) => {
+            hotbar_geometry::HotbarGeometry::from_slot_size(rect.width).selected_rect(rect)
+        }
+        _ => rect,
     }
 }
 
@@ -533,6 +544,19 @@ mod tests {
             theme::HOTBAR_BACKGROUND,
         );
         assert_eq!(disabled.len(), normal.len() + 6);
+    }
+
+    #[test]
+    fn selected_hotbar_skin_is_centered_and_larger() {
+        let slot = UiRect::new(10.0, 20.0, 48.0, 48.0);
+        let selected = skin_rect(slot, SlotSkin::Hotbar, SlotState::Selected);
+        assert_eq!(selected, UiRect::new(7.0, 17.0, 54.0, 54.0));
+        assert_eq!(skin_rect(slot, SlotSkin::Hotbar, SlotState::Normal), slot);
+        assert_eq!(
+            skin_rect(slot, SlotSkin::Inventory, SlotState::Selected),
+            slot,
+            "背包选中槽位不放大"
+        );
     }
 
     #[test]

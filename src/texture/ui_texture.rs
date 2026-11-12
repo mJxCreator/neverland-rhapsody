@@ -8,6 +8,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ui::texture_ratio;
+
 use super::texture_registry::TextureRegistry;
 use super::types::{TextureId, TextureType, Transparency, UVRect};
 
@@ -131,6 +133,8 @@ pub struct UiTextureView {
     pub draw: UiDrawMode,
     pub slice: [u32; 4],
     pub transparency: Transparency,
+    /// 整图拉伸时锁定的目标长宽比 `[宽, 高]`；`None` 表示随目标矩形铺满。
+    pub aspect: Option<[u32; 2]>,
     /// 是否使用了占位纹理；占位控件不参与绘制，由代码回退纯色。
     pub placeholder: bool,
 }
@@ -203,6 +207,28 @@ impl UiTextureMap {
                 }
             };
 
+            // 登记了比例的控件按代码规定的比例绘制；比例随内容/窗口变化的控件不锁定。
+            let aspect = if info.placeholder {
+                None
+            } else {
+                texture_ratio::expected_ratio(&entry.name)
+            };
+            if let Some((ratio_width, ratio_height)) = aspect {
+                if ratio_mismatch(info.width, info.height, [ratio_width, ratio_height]) {
+                    warnings.push(format!(
+                        "UI 控件 {} 的贴图 {}×{} 与规定比例 {}:{} 不一致，绘制时按 {}:{} 缩放，请按规范导出或修改 src/ui/texture_ratio.rs",
+                        entry.name,
+                        info.width,
+                        info.height,
+                        ratio_width,
+                        ratio_height,
+                        ratio_width,
+                        ratio_height
+                    ));
+                }
+            }
+            let aspect = aspect.map(|(width, height)| [width, height]);
+
             entries.insert(
                 entry.name.clone(),
                 UiTextureView {
@@ -212,6 +238,7 @@ impl UiTextureMap {
                     draw,
                     slice,
                     transparency: info.transparency,
+                    aspect,
                     placeholder: info.placeholder,
                 },
             );
@@ -245,6 +272,7 @@ fn fallback_view(registry: &TextureRegistry, fallback: TextureId) -> Option<UiTe
         draw: UiDrawMode::Stretch,
         slice: [0; 4],
         transparency: info.transparency,
+        aspect: None,
         placeholder: true,
     })
 }
@@ -255,6 +283,18 @@ fn valid_slice(slice: [u32; 4], width: u32, height: u32) -> bool {
         return false;
     }
     left.saturating_add(right) < width && top.saturating_add(bottom) < height
+}
+
+/// 图片宽高比与规定比例是否明显不符（偏差超过 1%）。
+fn ratio_mismatch(width: u32, height: u32, aspect: [u32; 2]) -> bool {
+    let (ratio_width, ratio_height) = (aspect[0] as u64, aspect[1] as u64);
+    if width == 0 || height == 0 || ratio_width == 0 || ratio_height == 0 {
+        return false;
+    }
+    let expected = width as u64 * ratio_height;
+    let actual = height as u64 * ratio_width;
+    let larger = expected.max(actual);
+    larger > 0 && expected.abs_diff(actual) * 100 > larger
 }
 
 #[cfg(test)]
@@ -325,7 +365,41 @@ mod tests {
         let view = map.get("inventory_panel").expect("控件已登记");
         assert_eq!(view.source_size, [256, 64]);
         assert_eq!(view.draw, UiDrawMode::NineSlice);
+        assert_eq!(view.aspect, None, "九宫格控件不锁定长宽比");
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn stretch_controls_carry_the_declared_ratio_and_warn_on_mismatch() {
+        let registry = registry_with(&[("crosshair", 32, 32, false), ("heart_full", 32, 16, false)]);
+        let manifest = UiManifest {
+            ui: vec![
+                UiManifestEntry {
+                    name: "crosshair".to_string(),
+                    ..UiManifestEntry::default()
+                },
+                UiManifestEntry {
+                    name: "heart_full".to_string(),
+                    ..UiManifestEntry::default()
+                },
+            ],
+        };
+        let mut warnings = Vec::new();
+        let map = UiTextureMap::from_manifest(
+            &manifest,
+            &registry,
+            TextureId::INVALID,
+            &mut warnings,
+        )
+        .expect("拉伸控件应可解析");
+
+        assert_eq!(map.get("crosshair").expect("准星已登记").aspect, Some([1, 1]));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("heart_full") && warning.contains("1:1")),
+            "比例不符时必须给出明确警告"
+        );
     }
 
     #[test]

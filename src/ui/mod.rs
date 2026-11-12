@@ -4,6 +4,8 @@
 //! - `manager`：界面状态机与输入优先级
 //! - `input`：键盘/鼠标事件到界面意图的纯函数路由
 //! - `theme` / `layout` / `draw` / `widget` / `font` / `animation`：共享视觉与绘制基础
+//! - `texture_ratio`：UI 贴图长宽比契约，约束整图拉伸控件的绘制比例
+//! - `modules`：封装好的 UI 模块（如快捷栏几何），各自持有比例与位置关系
 //! - `hud` / `inventory` / `crafting` / `cooking` / `death`：各界面内容
 //!
 //! 该模块只生成 CPU 侧顶点数据，不创建任何 GPU 资源；渲染器把顶点写入共享缓冲后一次提交。
@@ -19,6 +21,8 @@ pub mod input;
 pub mod inventory;
 pub mod layout;
 pub mod manager;
+pub mod modules;
+pub mod texture_ratio;
 pub mod theme;
 pub mod widget;
 

@@ -12,6 +12,7 @@ use crate::texture::ui_texture::{UiDrawMode, UiTextureView};
 use crate::texture::ItemTextureMap;
 
 use super::layout::{valid_viewport, UiRect};
+use super::texture_ratio;
 
 /// UV 哨兵：负值表示不采样纹理，只使用颜色。
 pub const SOLID_UV: [f32; 2] = [-1.0, -1.0];
@@ -62,6 +63,10 @@ pub fn push_textured_quad(
 }
 
 /// 绘制 UI 图集控件：整图拉伸或按九宫格切分。
+///
+/// 只要控件登记了长宽比，就先把它收敛到该比例（等比 contain、居中）再绘制：
+/// 整图拉伸与九宫格都适用，避免任何单方向拉伸；九宫格按目标像素尺寸出图时还能做到
+/// 1:1 像素映射。未登记比例的控件（提示框、进度填充、全屏遮罩等）随矩形铺满。
 pub fn push_ui_view(
     out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
@@ -72,6 +77,10 @@ pub fn push_ui_view(
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return;
     }
+    let rect = match view.aspect {
+        Some([width, height]) => texture_ratio::fit_rect(rect, (width, height)),
+        None => rect,
+    };
     match view.draw {
         UiDrawMode::Stretch => push_atlas_quad(out, viewport, rect, view.uv, color, ATLAS_UI),
         UiDrawMode::NineSlice => push_nine_slice(out, viewport, rect, view, color),
@@ -307,6 +316,7 @@ mod tests {
             draw: UiDrawMode::NineSlice,
             slice: [8, 8, 8, 8],
             transparency: crate::texture::types::Transparency::Alpha,
+            aspect: None,
             placeholder: false,
         };
 
@@ -337,6 +347,71 @@ mod tests {
         );
         assert_eq!(stretched_vertices.len(), 6);
         assert_eq!(stretched_vertices[0].uv, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn stretch_controls_fit_their_declared_aspect_ratio() {
+        let view = UiTextureView {
+            texture: crate::texture::types::TextureId::new(0),
+            uv: UVRect {
+                min: [0.0, 0.0],
+                max: [1.0, 1.0],
+            },
+            source_size: [32, 32],
+            draw: UiDrawMode::Stretch,
+            slice: [0; 4],
+            transparency: crate::texture::types::Transparency::Alpha,
+            aspect: Some([1, 1]),
+            placeholder: false,
+        };
+
+        let mut vertices = Vec::new();
+        push_ui_view(
+            &mut vertices,
+            (100.0, 100.0),
+            UiRect::new(0.0, 0.0, 100.0, 50.0),
+            view,
+            [1.0; 4],
+        );
+        assert_eq!(vertices.len(), 6);
+        // 100×50 的目标矩形收敛为居中的 50×50，左右各留白 25 像素。
+        let left = vertices[0].position[0];
+        let right = vertices[2].position[0];
+        let top = vertices[0].position[1];
+        let bottom = vertices[2].position[1];
+        assert!((left - (-0.5)).abs() < 1e-5);
+        assert!((right - 0.5).abs() < 1e-5);
+        assert!((top - 1.0).abs() < 1e-5);
+        assert!((bottom - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nine_slice_controls_also_fit_their_declared_aspect_ratio() {
+        let view = UiTextureView {
+            texture: crate::texture::types::TextureId::new(0),
+            uv: UVRect {
+                min: [0.0, 0.0],
+                max: [1.0, 1.0],
+            },
+            source_size: [64, 64],
+            draw: UiDrawMode::NineSlice,
+            slice: [8, 8, 8, 8],
+            transparency: crate::texture::types::Transparency::Alpha,
+            aspect: Some([1, 1]),
+            placeholder: false,
+        };
+
+        let mut vertices = Vec::new();
+        push_ui_view(
+            &mut vertices,
+            (100.0, 100.0),
+            UiRect::new(0.0, 0.0, 100.0, 50.0),
+            view,
+            [1.0; 4],
+        );
+        assert_eq!(vertices.len(), 9 * 6, "九宫格仍应产生九个四边形");
+        // 100×50 收敛为居中的 50×50，左上角从 x=25 像素开始。
+        assert!((vertices[0].position[0] + 0.5).abs() < 1e-5);
     }
 
     #[test]

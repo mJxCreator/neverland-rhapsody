@@ -8,6 +8,7 @@ use super::animation::UiClock;
 use super::draw::{push_item_icon, push_quad, push_ui_view, UiVertex};
 use super::font;
 use super::layout::{valid_viewport, UiRect};
+use super::modules::hotbar_geometry;
 use super::theme;
 use super::widget::{self, SlotSkin, SlotState};
 use crate::item::{item_name, ItemId, ItemStack, HOTBAR_SLOTS};
@@ -23,14 +24,10 @@ const PROGRESS_WIDTH: f32 = 240.0;
 const PROGRESS_HEIGHT: f32 = 12.0;
 /// 进度条与屏幕中心的垂直距离（像素）。
 const PROGRESS_OFFSET: f32 = 34.0;
-/// 快捷栏槽位边长（像素）。
+/// 快捷栏槽位边长（像素）；贴图按 16n 设计，此处 n = 3。
 const SLOT_SIZE: f32 = 48.0;
-/// 槽位间距（像素）。
-const SLOT_GAP: f32 = 8.0;
 /// 快捷栏距屏幕底部的距离（像素）。
 const BOTTOM_MARGIN: f32 = 18.0;
-/// 快捷栏底板相对槽位的外扩留白（像素）。
-const HOTBAR_PADDING: f32 = 6.0;
 /// 拾取提示字号（像素格）。
 const TOAST_PIXEL: f32 = 2.0;
 /// 提示显示时长（秒）。
@@ -622,30 +619,22 @@ impl HudModel {
         icons: &ItemTextureMap,
     ) {
         let viewport = (width, height);
-        let total = HOTBAR_SLOTS as f32 * SLOT_SIZE + (HOTBAR_SLOTS - 1) as f32 * SLOT_GAP;
+        let geometry = hotbar_geometry::HotbarGeometry::from_slot_size(SLOT_SIZE);
+        let total = geometry.slots_width(HOTBAR_SLOTS);
         let start_x = (width - total) * 0.5;
-        let y = height - BOTTOM_MARGIN - SLOT_SIZE;
+        let y = height - BOTTOM_MARGIN - geometry.slot;
         let pulse = self.clock.pulse(SELECTED_PULSE_SPEED);
 
         if let Some(view) = self.ui_textures.get("hotbar_bg") {
-            push_ui_view(
-                out,
-                viewport,
-                UiRect::new(
-                    start_x - HOTBAR_PADDING,
-                    y - HOTBAR_PADDING,
-                    total + HOTBAR_PADDING * 2.0,
-                    SLOT_SIZE + HOTBAR_PADDING * 2.0,
-                ),
-                view,
-                [1.0; 4],
-            );
+            let first_slot = UiRect::new(start_x, y, geometry.slot, geometry.slot);
+            let rect = geometry.background_rect(first_slot, HOTBAR_SLOTS);
+            push_ui_view(out, viewport, rect, view, [1.0; 4]);
         }
 
         for index in 0..HOTBAR_SLOTS {
-            let x = start_x + index as f32 * (SLOT_SIZE + SLOT_GAP);
+            let x = start_x + index as f32 * (geometry.slot + geometry.gap);
             let selected = index == self.selected_slot;
-            let rect = UiRect::new(x, y, SLOT_SIZE, SLOT_SIZE);
+            let rect = UiRect::new(x, y, geometry.slot, geometry.slot);
 
             if selected {
                 let expand = 1.0 + pulse * 2.0;
