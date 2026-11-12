@@ -45,11 +45,7 @@ pub fn expected_ratio(name: &str) -> Option<(u32, u32)> {
 /// 比例无效或矩形非法时原样返回；比例已一致时返回原矩形，避免浮点误差引入抖动。
 pub fn fit_rect(rect: UiRect, ratio: (u32, u32)) -> UiRect {
     let (ratio_width, ratio_height) = (ratio.0 as f32, ratio.1 as f32);
-    if ratio_width <= 0.0
-        || ratio_height <= 0.0
-        || rect.width <= 0.0
-        || rect.height <= 0.0
-    {
+    if ratio_width <= 0.0 || ratio_height <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
         return rect;
     }
 

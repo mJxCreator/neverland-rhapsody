@@ -120,10 +120,7 @@ mod tests {
         let slot = UiRect::new(100.0, 200.0, geometry.slot, geometry.slot);
         let selected = geometry.selected_rect(slot);
         assert_eq!(selected, UiRect::new(97.0, 197.0, 54.0, 54.0));
-        assert_eq!(
-            selected.x + selected.width * 0.5,
-            slot.x + slot.width * 0.5
-        );
+        assert_eq!(selected.x + selected.width * 0.5, slot.x + slot.width * 0.5);
         assert_eq!(
             selected.y + selected.height * 0.5,
             slot.y + slot.height * 0.5

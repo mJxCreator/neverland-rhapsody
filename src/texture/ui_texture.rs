@@ -371,7 +371,8 @@ mod tests {
 
     #[test]
     fn stretch_controls_carry_the_declared_ratio_and_warn_on_mismatch() {
-        let registry = registry_with(&[("crosshair", 32, 32, false), ("heart_full", 32, 16, false)]);
+        let registry =
+            registry_with(&[("crosshair", 32, 32, false), ("heart_full", 32, 16, false)]);
         let manifest = UiManifest {
             ui: vec![
                 UiManifestEntry {
@@ -385,15 +386,14 @@ mod tests {
             ],
         };
         let mut warnings = Vec::new();
-        let map = UiTextureMap::from_manifest(
-            &manifest,
-            &registry,
-            TextureId::INVALID,
-            &mut warnings,
-        )
-        .expect("拉伸控件应可解析");
+        let map =
+            UiTextureMap::from_manifest(&manifest, &registry, TextureId::INVALID, &mut warnings)
+                .expect("拉伸控件应可解析");
 
-        assert_eq!(map.get("crosshair").expect("准星已登记").aspect, Some([1, 1]));
+        assert_eq!(
+            map.get("crosshair").expect("准星已登记").aspect,
+            Some([1, 1])
+        );
         assert!(
             warnings
                 .iter()
