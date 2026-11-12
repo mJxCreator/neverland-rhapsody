@@ -159,6 +159,10 @@ impl Spawner {
         if !self.has_clear_space(world, feet, definition) {
             return None;
         }
+        // 悬崖边或孤立窄峰上生成后生物会立刻滑落，落点四邻必须都有相近的支撑面。
+        if !self.has_flat_footing(world, x, z, surface_y) {
+            return None;
+        }
         let yaw = self.random_unit() * std::f32::consts::TAU;
         manager.spawn(definition.kind, feet, yaw)
     }
@@ -173,6 +177,12 @@ impl Spawner {
             let block = world.block_at(x, y, z);
             if block.is_solid() {
                 if block != Block::Grass {
+                    return None;
+                }
+                // 地表方块正下方必须有已加载的实心方块支撑，避免在悬空草方块上生成。
+                if !world.contains_chunk(ChunkPos::from_world(x, y - 1, z))
+                    || !world.block_at(x, y - 1, z).is_solid()
+                {
                     return None;
                 }
                 return Some(y);
@@ -195,6 +205,31 @@ impl Spawner {
             }
         }
         true
+    }
+
+    /// 四个水平相邻列是否都有与本列高差不超过 1 格的地面。
+    ///
+    /// 该检查只决定“能否在此列生成”，不改变落点高度：脚底始终取本列真实地表。
+    /// 相邻列未加载时按不可判定处理，直接放弃该列。
+    fn has_flat_footing(&self, world: &World, x: i32, z: i32, surface_y: i32) -> bool {
+        const NEIGHBORS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        NEIGHBORS.iter().all(|(dx, dz)| {
+            self.find_top_solid(world, x + dx, z + dz)
+                .is_some_and(|top| top >= surface_y - 1)
+        })
+    }
+
+    /// 该列最高的实心方块 y；未加载的垂直层级跳过，整列没有实心方块时返回 `None`。
+    fn find_top_solid(&self, world: &World, x: i32, z: i32) -> Option<i32> {
+        for y in (1..WORLD_HEIGHT).rev() {
+            if !world.contains_chunk(ChunkPos::from_world(x, y, z)) {
+                continue;
+            }
+            if world.block_at(x, y, z).is_solid() {
+                return Some(y);
+            }
+        }
+        None
     }
 
     fn pick_definition(&mut self) -> Option<&'static EntityDefinition> {
@@ -242,11 +277,21 @@ mod tests {
     use crate::entity::entity_manager::EntityManager;
     use crate::world::{Chunk, DEFAULT_SEED};
 
+    /// 测试地面：3×3 区块内 y=0..8 为实体地层、y=9 为草地顶面。
+    ///
+    /// 铺满 3×3 是为了让任意落点的四个相邻列都已加载，避免边界列被平坦度检查拒绝。
     fn grass_world() -> World {
         let mut world = World::new(DEFAULT_SEED);
-        assert!(world.insert_chunk(Chunk::new(ChunkPos::new(0, 0, 0))));
-        for x in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                assert!(world.insert_chunk(Chunk::new(ChunkPos::new(cx, 0, cz))));
+            }
+        }
+        for x in -CHUNK_SIZE..(CHUNK_SIZE * 2) {
+            for z in -CHUNK_SIZE..(CHUNK_SIZE * 2) {
+                for y in 0..9 {
+                    world.set_block(x, y, z, Block::Dirt);
+                }
                 world.set_block(x, 9, z, Block::Grass);
             }
         }
@@ -269,6 +314,60 @@ mod tests {
     fn near_player() -> (Vec3, Aabb) {
         let position = Vec3::new(8.0, 10.0, 8.0);
         (position, Aabb::from_feet(position, 0.6, 1.8))
+    }
+
+    #[test]
+    fn rejects_surface_without_ground_support() {
+        // 整块悬空草地（下方全为空气）不是“地面”，不应在其上生成生物。
+        let mut world = World::new(DEFAULT_SEED);
+        assert!(world.insert_chunk(Chunk::new(ChunkPos::new(0, 0, 0))));
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                world.set_block(x, 9, z, Block::Grass);
+            }
+        }
+        let mut manager = EntityManager::new();
+        let (player_pos, player_box) = near_player();
+        let mut spawner = Spawner::new(test_config(), 7);
+        spawner.update(
+            &mut manager,
+            &world,
+            player_pos,
+            player_box,
+            &|_| false,
+            1.0,
+        );
+        assert!(manager.is_empty(), "悬空草方块上不应生成生物");
+    }
+
+    #[test]
+    fn rejects_spawn_on_cliff_edge() {
+        // 棋盘状孤立草柱：四邻列都是空列，生成后会立刻掉落，应全部拒绝。
+        let mut world = World::new(DEFAULT_SEED);
+        assert!(world.insert_chunk(Chunk::new(ChunkPos::new(0, 0, 0))));
+        for x in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                if (x + z) % 2 != 0 {
+                    continue;
+                }
+                for y in 0..9 {
+                    world.set_block(x, y, z, Block::Dirt);
+                }
+                world.set_block(x, 9, z, Block::Grass);
+            }
+        }
+        let mut manager = EntityManager::new();
+        let (player_pos, player_box) = near_player();
+        let mut spawner = Spawner::new(test_config(), 7);
+        spawner.update(
+            &mut manager,
+            &world,
+            player_pos,
+            player_box,
+            &|_| false,
+            1.0,
+        );
+        assert!(manager.is_empty(), "悬崖边/孤立草柱上不应生成生物");
     }
 
     #[test]
@@ -452,6 +551,14 @@ mod tests {
                 assert!(world.insert_chunk(Chunk::new(ChunkPos::new(cx, 0, cz))));
                 for x in 0..CHUNK_SIZE {
                     for z in 0..CHUNK_SIZE {
+                        for y in 0..9 {
+                            world.set_block(
+                                cx * CHUNK_SIZE + x,
+                                y,
+                                cz * CHUNK_SIZE + z,
+                                Block::Dirt,
+                            );
+                        }
                         world.set_block(cx * CHUNK_SIZE + x, 9, cz * CHUNK_SIZE + z, Block::Grass);
                     }
                 }
