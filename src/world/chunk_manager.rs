@@ -1,10 +1,21 @@
 //! 区块生命周期管理：按玩家位置排队加载附近区块、卸载远离玩家的区块，
 //! 并用每帧预算与去重集合避免重复生成、重复上传和过期任务。
+//!
+//! 生成入口唯一：所有需要程序化地形的系统都经本模块排队，游戏逻辑不直接调用
+//! `World::generate_chunk`。生成本身是 `(种子, 版本, 坐标)` 的纯函数，守住这一点
+//! 才能在需要时把生成整体搬到工作线程而不改动调用方。
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use super::chunk::ChunkPos;
 use super::world::{World, WORLD_CHUNKS_Y};
+
+/// 单帧区块生成的时间预算：超出后余下任务留到下一帧，避免跨越区块边界时集中生成造成卡顿。
+const GENERATION_BUDGET: Duration = Duration::from_millis(2);
+/// 单帧最多卸载的区块数：卸载按帧摊开，避免一次删除整列区块并连锁重建大量邻居网格。
+const MAX_UNLOADS_PER_FRAME: usize = 8;
 
 /// 区块加载与卸载参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +28,8 @@ pub struct ChunkConfig {
     pub max_loads_per_frame: usize,
     /// 单帧最多重建网格的区块数。
     pub max_meshes_per_frame: usize,
+    /// 单帧生成区块的时间预算；连同数量上限一起限制单帧阻塞时长。
+    pub load_time_budget: Duration,
 }
 
 impl Default for ChunkConfig {
@@ -26,6 +39,7 @@ impl Default for ChunkConfig {
             unload_radius: 4,
             max_loads_per_frame: 4,
             max_meshes_per_frame: 6,
+            load_time_budget: GENERATION_BUDGET,
         }
     }
 }
@@ -63,6 +77,8 @@ impl ChunkManager {
                 unload_radius: config.unload_radius.max(load_radius + 1),
                 max_loads_per_frame: config.max_loads_per_frame.max(1),
                 max_meshes_per_frame: config.max_meshes_per_frame.max(1),
+                // 时间预算为零会让任何一帧都放弃生成，归一化为至少 1ms。
+                load_time_budget: config.load_time_budget.max(Duration::from_millis(1)),
             },
             pending: HashSet::new(),
             dirty_meshes: HashSet::new(),
@@ -115,6 +131,35 @@ impl ChunkManager {
         loaded
     }
 
+    /// 同步补齐指定半径内的缺失区块，返回本次加载的坐标。
+    ///
+    /// 仅供重生等必须立刻读取地形的场景使用：这里不套用每帧预算，生成入口仍集中在本模块，
+    /// 生成的网格会进入脏集合，随后由常规流式加载按预算补建。
+    pub fn load_now(
+        &mut self,
+        center: ChunkPos,
+        radius: i32,
+        world: &mut World,
+        apply_edits: &mut dyn FnMut(ChunkPos, &mut World) -> Vec<ChunkPos>,
+    ) -> Vec<ChunkPos> {
+        let mut loaded = Vec::new();
+        for pos in Self::desired_positions(center, radius) {
+            if world.contains_chunk(pos) || !world.insert_chunk(world.generate_chunk(pos)) {
+                continue;
+            }
+            self.pending.remove(&pos);
+            loaded.push(pos);
+            self.dirty_meshes.insert(pos);
+            for affected in apply_edits(pos, world) {
+                if world.contains_chunk(affected) {
+                    self.dirty_meshes.insert(affected);
+                }
+            }
+            self.mark_loaded_neighbors_dirty(pos, world);
+        }
+        loaded
+    }
+
     /// 推进一帧的区块生命周期，返回本帧完成的加载与卸载。
     ///
     /// `apply_edits` 在区块插入后立刻套用存档改动，保证先有数据和修改、再生成网格。
@@ -144,7 +189,12 @@ impl ChunkManager {
         queue.sort_by_key(|pos| (Self::distance_sq(*pos, player), pos.y, pos.x, pos.z));
 
         let mut update = ChunkUpdate::default();
+        let started = Instant::now();
         for pos in queue.into_iter().take(self.config.max_loads_per_frame) {
+            // 数量上限之外再加时间上限：低预算帧只生成一个区块，避免长帧尖峰。
+            if started.elapsed() >= self.config.load_time_budget {
+                break;
+            }
             self.pending.remove(&pos);
             if !world.insert_chunk(world.generate_chunk(pos)) {
                 continue;
@@ -185,6 +235,13 @@ impl ChunkManager {
         }
     }
 
+    /// 本帧来不及重建的区块放回脏集合，下一帧继续按距离优先处理。
+    pub fn requeue_meshes(&mut self, positions: &[ChunkPos]) {
+        for pos in positions {
+            self.dirty_meshes.insert(*pos);
+        }
+    }
+
     fn unload_far_chunks(
         &mut self,
         player: ChunkPos,
@@ -196,9 +253,18 @@ impl ChunkManager {
             .chunk_positions()
             .filter(|pos| Self::chunk_distance(*pos, player) > self.config.unload_radius)
             .collect();
-        victims.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+        // 最远的先卸载：被预算挤到下一帧的都是最不可能出现在视野里的区块。
+        victims.sort_by_key(|pos| {
+            (
+                Reverse(Self::chunk_distance(*pos, player)),
+                pos.x,
+                pos.y,
+                pos.z,
+            )
+        });
 
-        for pos in victims {
+        let mut removed = Vec::new();
+        for pos in victims.into_iter().take(MAX_UNLOADS_PER_FRAME) {
             if !can_unload(pos) {
                 continue;
             }
@@ -206,9 +272,13 @@ impl ChunkManager {
                 continue;
             }
             update.unloaded.push(pos);
+            removed.push(pos);
             self.pending.remove(&pos);
             self.dirty_meshes.remove(&pos);
-            // 邻居失去相邻区块后需要恢复边界面。
+        }
+        // 等本帧该卸载的全部移除后再标记邻居：一并卸载的邻居已不在世界中，
+        // 会被 `contains_chunk` 自动跳过，不再产生无意义的脏网格。
+        for pos in removed {
             self.mark_loaded_neighbors_dirty(pos, world);
         }
     }
@@ -264,6 +334,8 @@ mod tests {
             unload_radius,
             max_loads_per_frame: budget,
             max_meshes_per_frame: 6,
+            // 测试关注数量上限，时间预算放大到不会干扰断言。
+            load_time_budget: Duration::from_secs(1),
         }
     }
 
@@ -307,11 +379,13 @@ mod tests {
             unload_radius: -3,
             max_loads_per_frame: 0,
             max_meshes_per_frame: 0,
+            load_time_budget: Duration::ZERO,
         });
         assert_eq!(manager.config.load_radius, 0);
         assert_eq!(manager.config.unload_radius, 1);
         assert_eq!(manager.config.max_loads_per_frame, 1);
         assert_eq!(manager.config.max_meshes_per_frame, 1);
+        assert_eq!(manager.config.load_time_budget, Duration::from_millis(1));
 
         let mut world = World::default();
         let loaded = manager.preload(ChunkPos::new(0, 0, 0), &mut world, &mut no_edits);
@@ -410,17 +484,38 @@ mod tests {
         let origin = ChunkPos::new(0, 0, 0);
         manager.preload(origin, &mut world, &mut no_edits);
 
-        let update = manager.update(
-            ChunkPos::new(10, 0, 10),
-            &mut world,
-            &mut no_edits,
-            &mut always_unload,
-        );
+        let target = ChunkPos::new(10, 0, 10);
+        let mut saw_unload = false;
+        // 卸载按帧摊开，反复推进直到不再有区块超出卸载半径。
+        for _ in 0..64 {
+            let update = manager.update(target, &mut world, &mut no_edits, &mut always_unload);
+            saw_unload |= !update.unloaded.is_empty();
+            if update.unloaded.is_empty() {
+                break;
+            }
+        }
 
-        assert!(!update.unloaded.is_empty());
+        assert!(saw_unload);
         assert!(world
             .chunk_positions()
-            .all(|pos| ChunkManager::chunk_distance(pos, ChunkPos::new(10, 0, 10)) <= 2));
+            .all(|pos| ChunkManager::chunk_distance(pos, target) <= 2));
+    }
+
+    #[test]
+    fn unloads_are_spread_across_frames() {
+        let mut world = World::default();
+        let mut manager = ChunkManager::new(config(1, 2, 9));
+        manager.preload(ChunkPos::new(0, 0, 0), &mut world, &mut no_edits);
+
+        // 瞬移到远处：一帧最多卸载 MAX_UNLOADS_PER_FRAME 个区块，其余留到后续帧。
+        let target = ChunkPos::new(10, 0, 10);
+        let update = manager.update(target, &mut world, &mut no_edits, &mut always_unload);
+        assert!(!update.unloaded.is_empty());
+        assert!(update.unloaded.len() <= MAX_UNLOADS_PER_FRAME);
+        assert!(
+            world.chunk_count() > 9 * WORLD_CHUNKS_Y as usize,
+            "旧区域不应在一帧内被全部删除"
+        );
     }
 
     #[test]
@@ -486,16 +581,44 @@ mod tests {
 
         // 玩家移动到 (3, 0, 0)：x = 0 的区块超出卸载半径被移除，
         // 相邻的 x = 1 区块仍在加载范围内，需要恢复其边界面。
-        let update = manager.update(
-            ChunkPos::new(3, 0, 0),
-            &mut world,
-            &mut no_edits,
-            &mut always_unload,
-        );
+        // 卸载按帧摊开，反复推进直到目标区块被移除。
+        let mut unloaded = Vec::new();
+        for _ in 0..64 {
+            let update = manager.update(
+                ChunkPos::new(3, 0, 0),
+                &mut world,
+                &mut no_edits,
+                &mut always_unload,
+            );
+            unloaded.extend(update.unloaded.iter().copied());
+            if unloaded.contains(&ChunkPos::new(0, 0, 0)) {
+                break;
+            }
+        }
 
-        assert!(update.unloaded.contains(&ChunkPos::new(0, 0, 0)));
+        assert!(unloaded.contains(&ChunkPos::new(0, 0, 0)));
         assert!(world.contains_chunk(ChunkPos::new(1, 0, 0)));
         assert!(manager.dirty_meshes.contains(&ChunkPos::new(1, 0, 0)));
+    }
+
+    #[test]
+    fn load_now_fills_the_area_immediately_and_marks_edits_dirty() {
+        let mut world = World::default();
+        // 单帧预算只有 1，load_now 仍应一次补齐整个半径，供重生立即读取地形。
+        let mut manager = ChunkManager::new(config(1, 2, 1));
+        let center = ChunkPos::new(0, 0, 0);
+
+        let loaded = manager.load_now(center, 1, &mut world, &mut |pos, _world| {
+            if pos == center {
+                vec![center]
+            } else {
+                Vec::new()
+            }
+        });
+
+        assert_eq!(loaded.len(), 3 * 3 * WORLD_CHUNKS_Y as usize);
+        assert_eq!(world.chunk_count(), loaded.len());
+        assert!(manager.dirty_meshes.contains(&center));
     }
 
     #[test]

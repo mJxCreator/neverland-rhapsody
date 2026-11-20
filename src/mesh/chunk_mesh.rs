@@ -1,10 +1,13 @@
 //! 网格层：从区块方块数据提取可见表面。
+//!
+//! 建网格的输入只有“区块自身 + 1 格邻居快照 + 只读纹理映射”，不访问 `World` 本身；
+//! 这是为了在需要时把建网格整体移到工作线程，调用方不要绕过 `ChunkSnapshot` 直接查世界。
 
 use glam::Vec3;
 
 use crate::texture::BlockTextureMap;
 use crate::world::block_registry::RenderType;
-use crate::world::{Block, Chunk, Face, CHUNK_SIZE};
+use crate::world::{Block, Chunk, Face, World, CHUNK_SIZE};
 
 /// 带面色的顶点：位置与颜色，供粒子/掉落物等纯色几何使用。
 #[repr(C)]
@@ -41,6 +44,75 @@ impl ChunkMesh {
     /// 是否包含需要透明管线绘制的水面。
     pub fn has_water(&self) -> bool {
         !self.water_indices.is_empty()
+    }
+}
+
+/// 区块自身加周围 1 格边界的方块快照。
+///
+/// 建网格时每个可见面都要查询邻居方块；直接调用 `World::block_at` 会让每次查询都做一次
+/// HashMap 查找。这里先把 18×18×18 的区域复制到连续数组，之后全部改为下标访问。
+pub struct ChunkSnapshot {
+    base: [i32; 3],
+    blocks: Vec<Block>,
+}
+
+/// 快照边长：区块 16 格 + 两侧各 1 格边界。
+const SNAPSHOT_SIDE: usize = (CHUNK_SIZE + 2) as usize;
+
+impl ChunkSnapshot {
+    /// 复制区块及其边界；未加载的邻居按世界规则视为空气、垂直越界按世界规则处理。
+    pub fn capture(world: &World, chunk: &Chunk) -> Self {
+        let pos = chunk.pos();
+        let base = [pos.x * CHUNK_SIZE, pos.y * CHUNK_SIZE, pos.z * CHUNK_SIZE];
+        let side = SNAPSHOT_SIDE;
+        let mut blocks = vec![Block::Air; side * side * side];
+
+        // 内部 16³ 直接从区块数据拷贝，避免逐格查世界。
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    blocks[Self::index((x + 1) as usize, (y + 1) as usize, (z + 1) as usize)] =
+                        chunk.block_at(x, y, z);
+                }
+            }
+        }
+        // 只有 1 格边界需要走世界查询，保持“未加载为空气、越界为石头/空气”的既有语义。
+        for y in 0..side {
+            for z in 0..side {
+                for x in 0..side {
+                    let on_border = x == 0
+                        || y == 0
+                        || z == 0
+                        || x == side - 1
+                        || y == side - 1
+                        || z == side - 1;
+                    if on_border {
+                        blocks[Self::index(x, y, z)] = world.block_at(
+                            base[0] + x as i32 - 1,
+                            base[1] + y as i32 - 1,
+                            base[2] + z as i32 - 1,
+                        );
+                    }
+                }
+            }
+        }
+        Self { base, blocks }
+    }
+
+    /// 世界坐标下的方块；超出快照范围按空气处理（建网格不会查询到该范围）。
+    pub fn block_at(&self, x: i32, y: i32, z: i32) -> Block {
+        let lx = x - self.base[0] + 1;
+        let ly = y - self.base[1] + 1;
+        let lz = z - self.base[2] + 1;
+        let side = SNAPSHOT_SIDE as i32;
+        if !(0..side).contains(&lx) || !(0..side).contains(&ly) || !(0..side).contains(&lz) {
+            return Block::Air;
+        }
+        self.blocks[Self::index(lx as usize, ly as usize, lz as usize)]
+    }
+
+    fn index(x: usize, y: usize, z: usize) -> usize {
+        (y * SNAPSHOT_SIDE + z) * SNAPSHOT_SIDE + x
     }
 }
 

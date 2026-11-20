@@ -12,6 +12,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -34,6 +39,8 @@ pub const SAVE_PATH: &str = "saves/world.json";
 const SAVE_VERSION: u32 = 9;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
+/// 后台写盘的最小间隔：把连续发生的存档变更合并成一次写入，减少序列化与磁盘 IO 次数。
+const SAVE_WRITE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// 一次方块改动：世界坐标与改动后的方块。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +119,100 @@ fn default_worldgen_version() -> u32 {
     LEGACY_WORLD_GEN_VERSION
 }
 
+/// 一次后台写盘任务：快照已由主线程构建，序列化与文件写入在工作线程完成。
+struct SaveJob {
+    data: SaveFile,
+    path: PathBuf,
+    roll_backup: bool,
+}
+
+/// 后台写盘线程；同一时刻只有一个任务在写，天然避免临时文件互相覆盖。
+struct SaveWriter {
+    tx: Option<mpsc::Sender<SaveJob>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl SaveWriter {
+    fn spawn(failed: Arc<AtomicBool>) -> Self {
+        let (tx, rx) = mpsc::channel::<SaveJob>();
+        let handle = thread::spawn(move || {
+            while let Ok(job) = rx.recv() {
+                if let Err(err) = write_save_file(&job.path, job.roll_backup, &job.data) {
+                    failed.store(true, Ordering::Relaxed);
+                    warn!(error = %format!("{err:#}"), "后台写盘失败");
+                }
+            }
+        });
+        Self {
+            tx: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    fn is_alive(&self) -> bool {
+        self.tx.is_some()
+    }
+
+    fn send(&self, job: SaveJob) -> Result<()> {
+        let tx = self.tx.as_ref().context("后台写盘线程已停止")?;
+        tx.send(job)
+            .map_err(|_| anyhow::anyhow!("后台写盘线程已退出"))
+    }
+
+    /// 丢弃发送端并等待已排队的写入完成。
+    ///
+    /// 同步写盘前必须先调用：否则后台线程可能用较旧的数据覆盖主线程刚写入的新档。
+    fn stop(&mut self) {
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for SaveWriter {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// 序列化快照并原子写入存档文件；可在工作线程调用。
+fn write_save_file(path: &Path, roll_backup: bool, data: &SaveFile) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("创建存档目录失败: {}", parent.display()))?;
+        }
+    }
+
+    let json = serde_json::to_string(data).context("序列化存档失败")?;
+    let temp = suffixed(path, ".tmp");
+    fs::write(&temp, &json).with_context(|| format!("写入临时存档失败: {}", temp.display()))?;
+
+    // 主存档损坏、当前数据来自备份时跳过滚动，保留唯一可用的备份。
+    if roll_backup {
+        let backup = suffixed(path, ".bak");
+        if let Err(err) = fs::rename(path, &backup) {
+            warn!(
+                error = %err,
+                path = %backup.display(),
+                "备份旧存档失败，继续写入主存档"
+            );
+        }
+    }
+
+    if let Err(err) = fs::rename(&temp, path) {
+        warn!(
+            error = %err,
+            path = %path.display(),
+            "临时存档改名失败，改为直接写入"
+        );
+        let _ = fs::remove_file(&temp);
+        fs::write(path, &json).with_context(|| format!("写入存档失败: {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// 玩家改动的内存记录，与磁盘上的存档文件保持同步。
 pub struct WorldSave {
     path: PathBuf,
@@ -143,6 +244,12 @@ pub struct WorldSave {
     /// 主存档读取失败、本次数据来自备份时为 `true`。
     /// 此时首次写盘不能把损坏的主存档滚动成 `.bak`，否则会覆盖唯一可用的备份。
     primary_suspect: bool,
+    /// 后台写盘线程；按需创建，停止后可在下次请求时重建。
+    writer: Option<SaveWriter>,
+    /// 后台写盘失败标记：下次请求写盘时据此重新标记未落盘。
+    write_failed: Arc<AtomicBool>,
+    /// 下一次允许后台写盘的时刻，用于合并连续的存档变更。
+    next_write: Instant,
 }
 
 impl WorldSave {
@@ -172,9 +279,12 @@ impl WorldSave {
             worldgen_version: CURRENT_WORLD_GEN_VERSION,
             unsaved: false,
             primary_suspect: false,
+            writer: None,
+            write_failed: Arc::new(AtomicBool::new(false)),
+            next_write: Instant::now(),
         };
 
-        for (index, candidate) in [save.path.clone(), save.backup_path()]
+        for (index, candidate) in [save.path.clone(), suffixed(&save.path, ".bak")]
             .into_iter()
             .enumerate()
         {
@@ -383,12 +493,57 @@ impl WorldSave {
         self.persist()
     }
 
-    /// 若存在尚未落盘的改动则重试写入；区块卸载与会话结束前调用。
+    /// 若存在尚未落盘的改动则同步写入；退出前调用，保证最后一次变更一定落盘。
     pub fn ensure_persisted(&mut self) -> Result<()> {
+        self.recover_failed_write();
         if self.unsaved {
             self.persist()?;
         }
         Ok(())
+    }
+
+    /// 请求后台写入：主线程只构建快照，JSON 序列化与磁盘 IO 交给写盘线程。
+    ///
+    /// 按固定间隔合并连续变更；即使本次因间隔不足未写入，内存数据仍标记为未落盘，
+    /// 会在下一次周期保存或退出时写入，不会丢失。
+    pub fn queue_persist(&mut self) -> Result<()> {
+        self.recover_failed_write();
+        if !self.unsaved {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now < self.next_write {
+            return Ok(());
+        }
+        self.next_write = now + SAVE_WRITE_INTERVAL;
+
+        let (data, roll_backup) = self.snapshot();
+        if self.writer.as_ref().is_none_or(|writer| !writer.is_alive()) {
+            self.writer = Some(SaveWriter::spawn(self.write_failed.clone()));
+        }
+        if let Some(writer) = self.writer.as_ref() {
+            writer.send(SaveJob {
+                data,
+                path: self.path.clone(),
+                roll_backup,
+            })?;
+        }
+        self.unsaved = false;
+        Ok(())
+    }
+
+    /// 后台写盘失败后重新标记为未落盘，交给下次周期保存或退出流程重试。
+    fn recover_failed_write(&mut self) {
+        if self.write_failed.swap(false, Ordering::Relaxed) {
+            self.unsaved = true;
+        }
+    }
+
+    /// 停止后台线程并等待队列中的写入完成。
+    fn stop_writer(&mut self) {
+        if let Some(writer) = self.writer.as_mut() {
+            writer.stop();
+        }
     }
 
     /// 读取指定区块尚未恢复的掉落物记录。
@@ -527,15 +682,18 @@ impl WorldSave {
         self.edits.values().map(HashMap::len).sum()
     }
 
-    /// 把当前改动写入存档文件。
+    /// 把当前改动同步写入存档文件；调用前会先停止后台线程，保证写入顺序。
     fn persist(&mut self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("创建存档目录失败: {}", parent.display()))?;
-            }
-        }
+        self.stop_writer();
+        let (data, roll_backup) = self.snapshot();
+        write_save_file(&self.path, roll_backup, &data)?;
+        self.unsaved = false;
+        self.primary_suspect = false;
+        Ok(())
+    }
 
+    /// 构建可交给写盘线程的完整快照，返回快照与“是否需要滚动备份”。
+    fn snapshot(&self) -> (SaveFile, bool) {
         // 固定输出顺序，便于人工查看与版本比对。
         let mut chunk_positions: Vec<ChunkPos> = self
             .edits
@@ -608,47 +766,8 @@ impl WorldSave {
             worldgen_version: self.worldgen_version,
             populated_chunks,
         };
-        let json = serde_json::to_string_pretty(&data).context("序列化存档失败")?;
-
-        // 先写临时文件再改名，避免写到一半退出留下残缺 JSON；旧文件滚动为备份。
-        let temp = self.temp_path();
-        fs::write(&temp, &json).with_context(|| format!("写入临时存档失败: {}", temp.display()))?;
-
-        // 主存档损坏、当前数据来自备份时，跳过滚动，保留唯一可用的备份。
-        if self.path.exists() && !self.primary_suspect {
-            let backup = self.backup_path();
-            if let Err(err) = fs::rename(&self.path, &backup) {
-                warn!(
-                    error = %err,
-                    path = %backup.display(),
-                    "备份旧存档失败，继续写入主存档"
-                );
-            }
-        }
-
-        if let Err(err) = fs::rename(&temp, &self.path) {
-            warn!(
-                error = %err,
-                path = %self.path.display(),
-                "临时存档改名失败，改为直接写入"
-            );
-            let _ = fs::remove_file(&temp);
-            fs::write(&self.path, &json)
-                .with_context(|| format!("写入存档失败: {}", self.path.display()))?;
-        }
-        self.unsaved = false;
-        self.primary_suspect = false;
-        Ok(())
-    }
-
-    /// 主存档文件。
-    fn backup_path(&self) -> PathBuf {
-        suffixed(&self.path, ".bak")
-    }
-
-    /// 写入中的临时文件。
-    fn temp_path(&self) -> PathBuf {
-        suffixed(&self.path, ".tmp")
+        let roll_backup = self.path.exists() && !self.primary_suspect;
+        (data, roll_backup)
     }
 }
 
@@ -657,6 +776,17 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     let mut raw = path.as_os_str().to_os_string();
     raw.push(suffix);
     PathBuf::from(raw)
+}
+
+impl Drop for WorldSave {
+    /// 退出前确保后台线程已排队的写入完成，再兜底写一次未落盘的数据。
+    fn drop(&mut self) {
+        self.stop_writer();
+        self.recover_failed_write();
+        if self.unsaved {
+            let _ = self.persist();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -804,7 +934,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\": 9"));
+        assert!(text.contains("\"version\":9"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),

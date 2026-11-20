@@ -14,7 +14,7 @@ use super::camera::Camera;
 use super::model::ModelRenderer;
 use super::particles::ParticleSystem;
 use super::pipeline::{self, DEPTH_FORMAT};
-use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, Vertex};
+use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, ChunkSnapshot, Vertex};
 use crate::model::{ModelDraw, ModelRegistry};
 use crate::texture::{
     create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
@@ -413,14 +413,21 @@ impl Renderer {
     }
 
     /// 方块被修改后，重建受影响区块的网格并替换对应的 GPU 缓冲。
+    ///
+    /// 只按坐标重建，不负责生成：区块必须已在世界里；每块资源按 `ChunkPos` 成套组织，
+    /// 便于后续把网格构建移到工作线程后只搬运成品缓冲。
     pub fn update_chunks(&mut self, world: &World, positions: &[ChunkPos]) {
         for &pos in positions {
             let mesh = match world.chunk_at(pos) {
-                Some(chunk) => build_chunk_mesh(
-                    chunk,
-                    |x, y, z| world.block_at(x, y, z),
-                    &self.textures.block_textures,
-                ),
+                Some(chunk) => {
+                    // 邻居方块先压成连续快照，建网格时不再逐面查世界。
+                    let snapshot = ChunkSnapshot::capture(world, chunk);
+                    build_chunk_mesh(
+                        chunk,
+                        |x, y, z| snapshot.block_at(x, y, z),
+                        &self.textures.block_textures,
+                    )
+                }
                 None => {
                     // 区块已卸载，释放对应 GPU 资源。
                     self.chunks.remove(&pos);
@@ -720,7 +727,8 @@ fn upload_chunk_meshes(
     let mut opaque = HashMap::new();
     let mut water = HashMap::new();
     for chunk in world.chunks() {
-        let mesh = build_chunk_mesh(chunk, |x, y, z| world.block_at(x, y, z), textures);
+        let snapshot = ChunkSnapshot::capture(world, chunk);
+        let mesh = build_chunk_mesh(chunk, |x, y, z| snapshot.block_at(x, y, z), textures);
         if let Some(buffers) = chunk_buffers(device, &mesh) {
             debug!(
                 chunk = ?chunk.pos(),

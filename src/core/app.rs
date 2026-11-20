@@ -66,6 +66,8 @@ const SELECTION_REACH: f32 = 8.0;
 const ENTITY_REACH: f32 = 4.0;
 /// 存档写入失败后的重试间隔，避免每帧都重复写盘。
 const SAVE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+/// 单帧区块网格构建的时间预算，避免跨区块边界时一帧内集中重建多个网格。
+const CHUNK_MESH_BUDGET: Duration = Duration::from_millis(2);
 /// 纹理热重载轮询间隔；开发期修改 PNG 后约 1 秒内生效。
 const TEXTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 纹理资源根目录环境变量；未设置时使用 `assets`。
@@ -826,55 +828,24 @@ impl App {
     }
 
     /// 同步加载指定位置周围区块；返回时相关区块已可读取。
+    ///
+    /// 地形生成统一经 `ChunkManager`，网格进入脏集合后由常规流式预算在后续帧补建，
+    /// 重生时不再一次性同步重建几十个区块网格。
     fn ensure_chunks_around(&mut self, anchor: Vec3) {
-        let spawn = anchor;
-        let spawn_chunk = ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
-        let desired = ChunkManager::desired_positions(spawn_chunk, 1);
-        let mut loaded = Vec::new();
-        let mut edited = Vec::new();
-        for pos in desired {
-            if self.world.contains_chunk(pos) {
-                continue;
-            }
-            let chunk = self.world.generate_chunk(pos);
-            if !self.world.insert_chunk(chunk) {
-                continue;
-            }
-            edited.extend(self.save.apply_chunk(pos, &mut self.world));
-            let records = self.save.chunk_drops(pos).to_vec();
-            self.dropped.restore_chunk(pos, &records);
-            let entities = self.save.chunk_entities(pos).to_vec();
-            self.entities.restore_chunk(pos, &entities);
-            loaded.push(pos);
-        }
-        if loaded.is_empty() {
-            return;
-        }
+        let center = ChunkPos::from_world(anchor.x.floor() as i32, 0, anchor.z.floor() as i32);
+        let loaded = self
+            .chunk_manager
+            .load_now(center, 1, &mut self.world, &mut |pos, world| {
+                self.save.apply_chunk(pos, world)
+            });
 
-        // 新加载区块、其水平邻居以及存档改动的相邻区块都要重建，避免边界残面。
-        let mut affected = loaded.clone();
+        // 新加载区块的掉落物与生物从存档恢复，与流式加载路径保持一致。
         for pos in &loaded {
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    let neighbor = ChunkPos::new(pos.x + dx, pos.y, pos.z + dz);
-                    if neighbor != *pos
-                        && self.world.contains_chunk(neighbor)
-                        && !affected.contains(&neighbor)
-                    {
-                        affected.push(neighbor);
-                    }
-                }
-            }
+            let records = self.save.chunk_drops(*pos).to_vec();
+            self.dropped.restore_chunk(*pos, &records);
+            let entities = self.save.chunk_entities(*pos).to_vec();
+            self.entities.restore_chunk(*pos, &entities);
         }
-        for pos in edited {
-            if self.world.contains_chunk(pos) && !affected.contains(&pos) {
-                affected.push(pos);
-            }
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.update_chunks(&self.world, &affected);
-        }
-        self.chunk_manager.skip_dirty(&affected);
     }
 
     /// 当前准星命中的生物；若方块比生物更近则不返回，避免隔墙攻击。
@@ -1261,7 +1232,7 @@ impl App {
         let now = Instant::now();
         if now >= self.next_save_retry {
             self.next_save_retry = now + SAVE_RETRY_INTERVAL;
-            if let Err(err) = self.save.ensure_persisted() {
+            if let Err(err) = self.save.queue_persist() {
                 warn!(error = %format!("{err:#}"), "世界存档重试写入失败");
             }
         }
@@ -1304,7 +1275,8 @@ impl App {
                 let entities = self.entities.take_chunk_entities(*pos);
                 self.save.record_chunk_entities(*pos, entities);
             }
-            if let Err(err) = self.save.ensure_persisted() {
+            // 后台线程合并写盘，主线程不等待 JSON 序列化与磁盘 IO。
+            if let Err(err) = self.save.queue_persist() {
                 warn!(error = %format!("{err:#}"), "卸载区块时写入存档失败");
             }
         }
@@ -1316,8 +1288,18 @@ impl App {
         renderer.remove_chunks(&update.unloaded);
 
         let start = Instant::now();
-        let meshes = self.chunk_manager.take_meshes(player_chunk, &self.world);
-        renderer.update_chunks(&self.world, &meshes);
+        // 建网格同样按时间预算推进：一帧只花约 2ms，剩余区块放回队列下一帧继续。
+        let deadline = start + CHUNK_MESH_BUDGET;
+        let queue = self.chunk_manager.take_meshes(player_chunk, &self.world);
+        let mut deferred = Vec::new();
+        for (index, pos) in queue.iter().enumerate() {
+            if Instant::now() >= deadline {
+                deferred.extend_from_slice(&queue[index..]);
+                break;
+            }
+            renderer.update_chunks(&self.world, &[*pos]);
+        }
+        self.chunk_manager.requeue_meshes(&deferred);
         self.mesh_ms = start.elapsed().as_secs_f64() * 1000.0;
     }
 
@@ -1371,7 +1353,7 @@ impl App {
             let records = self.dropped.snapshot_chunk(pos);
             self.save.record_chunk_drops(pos, records);
         }
-        if let Err(err) = self.save.ensure_persisted() {
+        if let Err(err) = self.save.queue_persist() {
             warn!(error = %format!("{err:#}"), "掉落物变化写入存档失败");
         }
     }
@@ -1573,7 +1555,7 @@ impl App {
             for column in populated {
                 self.save.record_populated_chunk(column);
             }
-            if let Err(err) = self.save.ensure_persisted() {
+            if let Err(err) = self.save.queue_persist() {
                 warn!(error = %format!("{err:#}"), "自然生成记录写入存档失败");
             }
         }
