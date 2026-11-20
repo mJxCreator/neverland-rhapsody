@@ -13,7 +13,7 @@ use super::types::TextureImage;
 pub const BASE_TEXTURE_SIZE: u32 = 16;
 
 /// 允许导入的纹理边长；宽高各自须属于该列表，因此允许非正方形 UI 面板。
-pub const ALLOWED_TEXTURE_SIZES: [u32; 7] = [BASE_TEXTURE_SIZE, 32, 64, 128, 256, 512, 1024];
+pub const ALLOWED_TEXTURE_SIZES: [u32; 8] = [BASE_TEXTURE_SIZE, 32, 48, 64, 128, 256, 512, 1024];
 
 /// 判断宽高是否为支持的纹理尺寸：宽与高各自属于允许列表，不要求相等。
 pub const fn is_supported_texture_size(width: u32, height: u32) -> bool {
@@ -32,7 +32,7 @@ const fn is_allowed_side(side: u32) -> bool {
 }
 
 /// 支持的尺寸列表文本，用于错误提示。
-pub const SUPPORTED_SIZES_TEXT: &str = "16/32/64/128/256/512/1024 像素（宽高可不同）";
+pub const SUPPORTED_SIZES_TEXT: &str = "16/32/48/64/128/256/512/1024 像素（宽高可不同）";
 
 /// UI 控件允许的最大单边边长；UI 图不做 2 的幂限制，任意尺寸都可直接导入。
 pub const MAX_UI_TEXTURE_SIZE: u32 = 2048;
@@ -111,7 +111,7 @@ impl fmt::Display for TextureLoadError {
 
 impl std::error::Error for TextureLoadError {}
 
-/// 加载并校验一张方块/物品纹理 PNG：宽高各自支持 16/32/64/128/256/512/1024。
+/// 加载并校验一张方块/物品纹理 PNG：宽高各自支持 16/32/48/64/128/256/512/1024。
 pub fn load_texture_png(path: &Path) -> Result<TextureImage, TextureLoadError> {
     load_texture_png_with(path, is_supported_texture_size, SUPPORTED_SIZES_TEXT)
 }
@@ -293,6 +293,18 @@ mod tests {
 
         let image = load_texture_png(&path).expect("64×64 应被接受");
         assert_eq!((image.width, image.height), (64, 64));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detail_textures_at_48_are_accepted() {
+        let dir = unique_dir("detail-48");
+        let path = dir.join("detail.png");
+        write_png(&path, 48, 48, &[180; 48 * 48 * 4]);
+
+        let image = load_texture_png(&path).expect("48×48 应被接受");
+        assert_eq!((image.width, image.height), (48, 48));
 
         fs::remove_dir_all(&dir).ok();
     }
