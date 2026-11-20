@@ -11,7 +11,7 @@ use crate::world::terrain::WORLD_HEIGHT;
 
 use super::biome::{BiomeId, ColumnSurface};
 use super::cave::CaveGenerator;
-use super::config::WorldGenConfig;
+use super::config::{WorldGenConfig, BEDROCK_Y};
 use super::noise::{smoothstep, NoiseField};
 use super::ore::OreGenerator;
 use super::stats::{WorldGenStats, WorldGenStatsSnapshot};
@@ -179,7 +179,9 @@ impl OverworldGenerator {
             if !(0..CHUNK_SIZE).contains(&ly) {
                 continue;
             }
-            let block = if wy == surface.height - 1 {
+            let block = if wy == BEDROCK_Y {
+                Block::Bedrock
+            } else if wy == surface.height - 1 {
                 surface_block
             } else if wy >= surface.height - 4 {
                 subsurface_block
@@ -233,6 +235,7 @@ fn dominant_biome(weights: &[f64; 4]) -> BiomeId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::world::WORLD_CHUNKS_Y;
     use crate::world::worldgen::config::WorldGenConfig;
 
     fn generator(seed: u32) -> OverworldGenerator {
@@ -251,6 +254,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bottom_layer_is_flat_bedrock() {
+        let generator = generator(7);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                let chunk = generator.generate_chunk(ChunkPos::new(cx, 0, cz));
+                for z in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        assert_eq!(
+                            chunk.block_at(x, 0, z),
+                            Block::Bedrock,
+                            "世界最底层必须整层为基岩"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn surface_is_about_32_layers_thick() {
+        let generator = generator(7);
+        let mut sum = 0;
+        let mut count = 0;
+        for z in (-128..=128).step_by(16) {
+            for x in (-128..=128).step_by(16) {
+                sum += generator.height_at(x, z);
+                count += 1;
+            }
+        }
+        let average = sum as f64 / count as f64;
+        assert!(
+            (30.0..=37.0).contains(&average),
+            "平均地表高度应约为 32 层，实际 {average}"
+        );
     }
 
     #[test]
@@ -290,15 +330,17 @@ mod tests {
         let mut water_seen = false;
         for cx in -4..=4 {
             for cz in -4..=4 {
-                let pos = ChunkPos::new(cx, 0, cz);
-                let first = generator.generate_chunk(pos);
-                let second = generator.generate_chunk(pos);
-                for y in 0..CHUNK_SIZE {
-                    for z in 0..CHUNK_SIZE {
-                        for x in 0..CHUNK_SIZE {
-                            let block = first.block_at(x, y, z);
-                            assert_eq!(block, second.block_at(x, y, z));
-                            water_seen |= block == Block::Water;
+                for cy in 0..WORLD_CHUNKS_Y {
+                    let pos = ChunkPos::new(cx, cy, cz);
+                    let first = generator.generate_chunk(pos);
+                    let second = generator.generate_chunk(pos);
+                    for y in 0..CHUNK_SIZE {
+                        for z in 0..CHUNK_SIZE {
+                            for x in 0..CHUNK_SIZE {
+                                let block = first.block_at(x, y, z);
+                                assert_eq!(block, second.block_at(x, y, z));
+                                water_seen |= block == Block::Water;
+                            }
                         }
                     }
                 }
@@ -315,23 +357,32 @@ mod tests {
         let mut cave_blocks = 0;
         for cx in -2..=2 {
             for cz in -2..=2 {
-                let pos = ChunkPos::new(cx, 0, cz);
-                let chunk = generator.generate_chunk(pos);
-                for lz in 0..CHUNK_SIZE {
-                    for lx in 0..CHUNK_SIZE {
-                        let wx = pos.x * CHUNK_SIZE + lx;
-                        let wz = pos.z * CHUNK_SIZE + lz;
-                        let height = generator.height_at(wx, wz);
-                        if height <= CHUNK_SIZE {
-                            assert_ne!(
-                                chunk.block_at(lx, height - 1, lz),
-                                Block::Air,
-                                "地表方块不能被洞穴破坏"
-                            );
-                        }
-                        for wy in 2..(height - 4).min(CHUNK_SIZE) {
-                            if chunk.block_at(lx, wy, lz) == Block::Air {
-                                cave_blocks += 1;
+                for cy in 0..WORLD_CHUNKS_Y {
+                    let pos = ChunkPos::new(cx, cy, cz);
+                    let chunk = generator.generate_chunk(pos);
+                    let local_origin_y = cy * CHUNK_SIZE;
+                    for lz in 0..CHUNK_SIZE {
+                        for lx in 0..CHUNK_SIZE {
+                            let wx = pos.x * CHUNK_SIZE + lx;
+                            let wz = pos.z * CHUNK_SIZE + lz;
+                            let height = generator.height_at(wx, wz);
+                            let surface_y = height - 1;
+                            if (local_origin_y..local_origin_y + CHUNK_SIZE).contains(&surface_y)
+                            {
+                                assert_ne!(
+                                    chunk.block_at(lx, surface_y - local_origin_y, lz),
+                                    Block::Air,
+                                    "地表方块不能被洞穴破坏"
+                                );
+                            }
+                            for wy in 2..height - 4 {
+                                let ly = wy - local_origin_y;
+                                if !(0..CHUNK_SIZE).contains(&ly) {
+                                    continue;
+                                }
+                                if chunk.block_at(lx, ly, lz) == Block::Air {
+                                    cave_blocks += 1;
+                                }
                             }
                         }
                     }
@@ -347,23 +398,30 @@ mod tests {
         let mut trees = 0;
         for cx in -3..=3 {
             for cz in -3..=3 {
-                let pos = ChunkPos::new(cx, 0, cz);
-                let chunk = generator.generate_chunk(pos);
-                for lz in 0..CHUNK_SIZE {
-                    for lx in 0..CHUNK_SIZE {
-                        for y in 1..CHUNK_SIZE {
-                            if chunk.block_at(lx, y, lz) == Block::Wood
-                                && chunk.block_at(lx, y - 1, lz) != Block::Wood
-                            {
-                                trees += 1;
-                                assert!(
-                                    matches!(
-                                        chunk.block_at(lx, y - 1, lz),
-                                        Block::Grass | Block::Dirt | Block::Stone
-                                    ),
-                                    "树干应直接立在地表方块上"
-                                );
+                for cy in 0..WORLD_CHUNKS_Y {
+                    let pos = ChunkPos::new(cx, cy, cz);
+                    let chunk = generator.generate_chunk(pos);
+                    let local_origin_y = cy * CHUNK_SIZE;
+                    for lz in 0..CHUNK_SIZE {
+                        for lx in 0..CHUNK_SIZE {
+                            let wx = pos.x * CHUNK_SIZE + lx;
+                            let wz = pos.z * CHUNK_SIZE + lz;
+                            let height = generator.height_at(wx, wz);
+                            let root = height - local_origin_y;
+                            if !(1..CHUNK_SIZE).contains(&root) {
+                                continue;
                             }
+                            if chunk.block_at(lx, root, lz) != Block::Wood {
+                                continue;
+                            }
+                            trees += 1;
+                            assert!(
+                                matches!(
+                                    chunk.block_at(lx, root - 1, lz),
+                                    Block::Grass | Block::Dirt | Block::Stone
+                                ),
+                                "树干应直接立在地表方块上"
+                            );
                         }
                     }
                 }
@@ -375,31 +433,38 @@ mod tests {
     #[test]
     fn spawn_area_has_no_trees() {
         let generator = generator(5);
-        let pos = ChunkPos::from_world(
+        let column = ChunkPos::from_world(
             super::super::config::SPAWN_COLUMN.0,
             0,
             super::super::config::SPAWN_COLUMN.1,
         );
-        let chunk = generator.generate_chunk(pos);
-        let (sx, _, sz) = pos.local_of(
+        let (sx, _, sz) = column.local_of(
             super::super::config::SPAWN_COLUMN.0,
             0,
             super::super::config::SPAWN_COLUMN.1,
         );
-        for dz in -6..=6 {
-            for dx in -6..=6 {
-                let x = sx + dx;
-                let z = sz + dz;
-                if !(0..CHUNK_SIZE).contains(&x) || !(0..CHUNK_SIZE).contains(&z) {
-                    continue;
-                }
-                for y in 0..CHUNK_SIZE {
-                    assert_ne!(chunk.block_at(x, y, z), Block::Wood, "出生点附近不应有树干");
-                    assert_ne!(
-                        chunk.block_at(x, y, z),
-                        Block::Leaves,
-                        "出生点附近不应有树叶"
-                    );
+        for cy in 0..WORLD_CHUNKS_Y {
+            let pos = ChunkPos::new(column.x, cy, column.z);
+            let chunk = generator.generate_chunk(pos);
+            for dz in -6..=6 {
+                for dx in -6..=6 {
+                    let x = sx + dx;
+                    let z = sz + dz;
+                    if !(0..CHUNK_SIZE).contains(&x) || !(0..CHUNK_SIZE).contains(&z) {
+                        continue;
+                    }
+                    for y in 0..CHUNK_SIZE {
+                        assert_ne!(
+                            chunk.block_at(x, y, z),
+                            Block::Wood,
+                            "出生点附近不应有树干"
+                        );
+                        assert_ne!(
+                            chunk.block_at(x, y, z),
+                            Block::Leaves,
+                            "出生点附近不应有树叶"
+                        );
+                    }
                 }
             }
         }

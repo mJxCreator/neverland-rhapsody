@@ -76,6 +76,7 @@ fn vein_seed(seed: u32, chunk: ChunkPos, index: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::world::WORLD_CHUNKS_Y;
     use crate::world::worldgen::config::DEFAULT_ORES;
 
     fn count_ores(chunk: &Chunk) -> usize {
@@ -98,21 +99,26 @@ mod tests {
     #[test]
     fn ore_generation_is_deterministic() {
         let generator = OreGenerator::new(99, DEFAULT_ORES);
-        let pos = ChunkPos::new(3, 0, -2);
-        let mut first = Chunk::new(pos);
-        let mut second = Chunk::new(pos);
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                for x in 0..CHUNK_SIZE {
-                    first.set_block(x, y, z, Block::Stone);
-                    second.set_block(x, y, z, Block::Stone);
+        let mut total = 0;
+        for chunk_y in 0..WORLD_CHUNKS_Y {
+            let pos = ChunkPos::new(3, chunk_y, -2);
+            let mut first = Chunk::new(pos);
+            let mut second = Chunk::new(pos);
+            for y in 0..CHUNK_SIZE {
+                for z in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        first.set_block(x, y, z, Block::Stone);
+                        second.set_block(x, y, z, Block::Stone);
+                    }
                 }
             }
+            generator.generate(pos, &mut first);
+            generator.generate(pos, &mut second);
+            let count = count_ores(&first);
+            assert_eq!(count, count_ores(&second));
+            total += count;
         }
-        generator.generate(pos, &mut first);
-        generator.generate(pos, &mut second);
-        assert_eq!(count_ores(&first), count_ores(&second));
-        assert!(count_ores(&first) > 0, "石头区块应生成矿脉");
+        assert!(total > 0, "石头区块应生成矿脉");
     }
 
     #[test]

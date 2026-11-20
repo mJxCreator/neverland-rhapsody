@@ -5,8 +5,8 @@ use noise::{Fbm, MultiFractal, NoiseFn, OpenSimplex};
 use super::block::Block;
 use super::chunk::{Chunk, ChunkPos, CHUNK_SIZE};
 
-/// 世界竖直方向覆盖的高度，对应两个 16 高区块层。
-pub const WORLD_HEIGHT: i32 = 32;
+/// 世界竖直方向覆盖的高度，对应四个 16 高区块层。
+pub const WORLD_HEIGHT: i32 = 64;
 /// 地表基准高度，噪声在此基础上上下起伏。
 const BASE_HEIGHT: f64 = 5.0;
 /// 顶层露出石头的高度阈值，让高山呈现岩石山顶。
@@ -76,7 +76,12 @@ impl TerrainGenerator {
                     let local_top = (height - origin_y).min(CHUNK_SIZE);
                     for y in 0..local_top {
                         let world_y = origin_y + y;
-                        chunk.set_block(x, y, z, self.block_at_height(world_y, height));
+                        let block = if world_y == 0 {
+                            Block::Bedrock
+                        } else {
+                            self.block_at_height(world_y, height)
+                        };
+                        chunk.set_block(x, y, z, block);
                     }
                 }
 
@@ -181,6 +186,6 @@ mod tests {
             "地表上方只能是空气或树干"
         );
         assert!(chunk.block_at(5, height - 1, 3).is_solid());
-        assert_eq!(chunk.block_at(5, 0, 3), Block::Stone);
+        assert_eq!(chunk.block_at(5, 0, 3), Block::Bedrock);
     }
 }

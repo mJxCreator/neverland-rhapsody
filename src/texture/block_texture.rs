@@ -123,6 +123,7 @@ pub fn builtin_manifest() -> BlockManifest {
             simple_entry(Block::FlowerRed, "flower_red"),
             simple_entry(Block::FlowerYellow, "flower_yellow"),
             simple_entry(Block::Cactus, "cactus"),
+            simple_entry(Block::Bedrock, "bedrock"),
         ],
     }
 }
@@ -365,6 +366,7 @@ mod tests {
             "flower_red",
             "flower_yellow",
             "cactus",
+            "bedrock",
         ]);
         let mut warnings = Vec::new();
         let map = BlockTextureMap::from_manifest(

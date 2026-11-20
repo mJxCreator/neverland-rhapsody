@@ -10,7 +10,9 @@ pub const LEGACY_WORLD_GEN_VERSION: u32 = 1;
 pub const CURRENT_WORLD_GEN_VERSION: u32 = 2;
 
 /// 静态水面基准高度。
-pub const SEA_LEVEL: i32 = 7;
+pub const SEA_LEVEL: i32 = 32;
+/// 世界最底层高度；所有列固定为基岩，形成平坦且不可破坏的底面。
+pub const BEDROCK_Y: i32 = 0;
 /// 出生点所在列；与渲染层的出生位置保持一致。
 pub const SPAWN_COLUMN: (i32, i32) = (48, 84);
 /// 出生点周围不生成树木的半径（切比雪夫距离）。
@@ -69,32 +71,32 @@ pub const DEFAULT_ORES: [OreVeinConfig; 4] = [
     OreVeinConfig {
         block: Block::CoalOre,
         attempts: 14,
-        min_y: 4,
-        max_y: 24,
+        min_y: 8,
+        max_y: 48,
         min_size: 5,
         max_size: 9,
     },
     OreVeinConfig {
         block: Block::IronOre,
         attempts: 8,
-        min_y: 3,
-        max_y: 20,
+        min_y: 6,
+        max_y: 40,
         min_size: 4,
         max_size: 7,
     },
     OreVeinConfig {
         block: Block::GoldOre,
         attempts: 4,
-        min_y: 2,
-        max_y: 14,
+        min_y: 4,
+        max_y: 28,
         min_size: 3,
         max_size: 5,
     },
     OreVeinConfig {
         block: Block::DiamondOre,
         attempts: 2,
-        min_y: 1,
-        max_y: 8,
+        min_y: 2,
+        max_y: 16,
         min_size: 2,
         max_size: 4,
     },

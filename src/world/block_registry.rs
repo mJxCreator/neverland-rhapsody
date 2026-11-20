@@ -170,6 +170,12 @@ impl BlockColors {
         side: Vec3::new(0.26, 0.49, 0.24),
     };
 
+    const BEDROCK: Self = Self {
+        top: Vec3::new(0.16, 0.16, 0.18),
+        bottom: Vec3::new(0.11, 0.11, 0.13),
+        side: Vec3::new(0.14, 0.14, 0.16),
+    };
+
     /// 某个朝向面的基础颜色。
     pub fn face_color(self, face: Face) -> Vec3 {
         match face {
@@ -526,8 +532,24 @@ pub const CACTUS: BlockProperties = BlockProperties {
     colors: BlockColors::CACTUS,
 };
 
+pub const BEDROCK: BlockProperties = BlockProperties {
+    id: 19,
+    name: "Bedrock",
+    hardness: 0.0,
+    mining_category: MiningCategory::None,
+    required_tool: None,
+    harvest_level: 0,
+    drop_rule: DropRule::Never,
+    solid: true,
+    breakable: false,
+    placeable: false,
+    selectable: false,
+    render_type: RenderType::Opaque,
+    colors: BlockColors::BEDROCK,
+};
+
 /// 全部方块属性，下标必须等于方块 ID。
-const DEFINITIONS: [BlockProperties; 19] = [
+const DEFINITIONS: [BlockProperties; 20] = [
     AIR,
     STONE,
     DIRT,
@@ -547,6 +569,7 @@ const DEFINITIONS: [BlockProperties; 19] = [
     FLOWER_RED,
     FLOWER_YELLOW,
     CACTUS,
+    BEDROCK,
 ];
 
 /// 按方块类型查询统一属性。
@@ -584,6 +607,7 @@ mod tests {
         assert_eq!(Block::FlowerRed.id(), 16);
         assert_eq!(Block::FlowerYellow.id(), 17);
         assert_eq!(Block::Cactus.id(), 18);
+        assert_eq!(Block::Bedrock.id(), 19);
     }
 
     #[test]

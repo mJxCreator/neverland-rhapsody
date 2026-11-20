@@ -59,7 +59,7 @@ pub fn placement_cell(
 mod tests {
     use super::*;
     use crate::player::PhysicsConfig;
-    use crate::world::{Chunk, Face, DEFAULT_SEED};
+    use crate::world::{Chunk, Face, DEFAULT_SEED, WORLD_HEIGHT};
     use glam::Vec3;
 
     fn empty_world(positions: &[ChunkPos]) -> World {
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(
             placement_cell(
                 &world,
-                &hit(IVec3::new(4, 31, 4), Face::PosY),
+                &hit(IVec3::new(4, WORLD_HEIGHT - 1, 4), Face::PosY),
                 &player,
                 Block::Stone
             ),

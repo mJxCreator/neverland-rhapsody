@@ -276,9 +276,9 @@ mod tests {
     }
 
     #[test]
-    fn desired_area_has_two_vertical_layers() {
+    fn desired_area_covers_every_vertical_layer() {
         let positions = ChunkManager::desired_positions(ChunkPos::new(0, 0, 0), 3);
-        assert_eq!(positions.len(), 7 * 7 * 2);
+        assert_eq!(positions.len(), 7 * 7 * WORLD_CHUNKS_Y as usize);
         assert!(positions
             .iter()
             .all(|pos| (0..WORLD_CHUNKS_Y).contains(&pos.y)));
@@ -292,7 +292,7 @@ mod tests {
 
         let loaded = manager.preload(player, &mut world, &mut no_edits);
 
-        assert_eq!(loaded, 3 * 3 * 2);
+        assert_eq!(loaded, 3 * 3 * WORLD_CHUNKS_Y as usize);
         assert_eq!(world.chunk_count(), loaded);
         assert_eq!(manager.pending_generation(), 0);
 
@@ -330,7 +330,7 @@ mod tests {
         let player = ChunkPos::new(0, 0, 0);
 
         let loaded = manager.preload(player, &mut world, &mut no_edits);
-        assert_eq!(loaded, 7 * 7 * 2);
+        assert_eq!(loaded, 7 * 7 * WORLD_CHUNKS_Y as usize);
 
         // 加载区域四角到玩家的切比雪夫距离等于加载半径，必须落在卸载半径内，
         // 否则同一区块会被反复加载与卸载，预加载也将无法结束。
@@ -349,7 +349,7 @@ mod tests {
 
         let first = manager.update(player, &mut world, &mut no_edits, &mut always_unload);
         assert_eq!(first.loaded.len(), 2);
-        assert_eq!(manager.pending_generation(), 16);
+        assert_eq!(manager.pending_generation(), 9 * WORLD_CHUNKS_Y as usize - 2);
 
         let second = manager.update(player, &mut world, &mut no_edits, &mut always_unload);
         assert_eq!(second.loaded.len(), 2);

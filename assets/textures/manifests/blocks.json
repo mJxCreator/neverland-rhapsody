@@ -49,6 +49,7 @@
     { "id": 15, "name": "tall_grass", "default": "tall_grass" },
     { "id": 16, "name": "flower_red", "default": "flower_red" },
     { "id": 17, "name": "flower_yellow", "default": "flower_yellow" },
-    { "id": 18, "name": "cactus", "default": "cactus" }
+    { "id": 18, "name": "cactus", "default": "cactus" },
+    { "id": 19, "name": "bedrock", "default": "bedrock" }
   ]
 }

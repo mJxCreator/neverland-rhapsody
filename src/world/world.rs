@@ -241,8 +241,12 @@ mod tests {
         let world = loaded_world(&[
             ChunkPos::new(0, 0, 0),
             ChunkPos::new(0, 1, 0),
+            ChunkPos::new(0, 2, 0),
+            ChunkPos::new(0, 3, 0),
             ChunkPos::new(1, 0, 0),
             ChunkPos::new(1, 1, 0),
+            ChunkPos::new(1, 2, 0),
+            ChunkPos::new(1, 3, 0),
         ]);
         let height = world.height_at(20, 10);
         assert!(world.block_at(20, height - 1, 10).is_solid());
@@ -280,11 +284,11 @@ mod tests {
         // (-1, 0, -17) 属于未加载的区块 (-1, 0, -2)，按空气处理。
         assert_eq!(world.block_at(-1, 0, -17), Block::Air);
         assert!(world.contains(-1, 0, -17));
-        assert!(world.block_at(-17, 5, -17).is_solid());
+        assert!(world.block_at(-17, 1, -17).is_solid());
 
-        let affected = world.set_block(-17, 5, -17, Block::Stone);
+        let affected = world.set_block(-17, 1, -17, Block::Dirt);
         assert_eq!(affected, vec![pos]);
-        assert_eq!(world.block_at(-17, 5, -17), Block::Stone);
+        assert_eq!(world.block_at(-17, 1, -17), Block::Dirt);
     }
 
     #[test]
@@ -320,7 +324,7 @@ mod tests {
     #[test]
     fn duplicate_vertical_layers_are_rejected() {
         let mut world = World::new(DEFAULT_SEED);
-        let mut chunk = Chunk::new(ChunkPos::new(0, 2, 0));
+        let mut chunk = Chunk::new(ChunkPos::new(0, WORLD_CHUNKS_Y, 0));
         chunk.set_block(0, 0, 0, Block::Stone);
         assert!(!world.insert_chunk(chunk));
         assert_eq!(world.chunk_count(), 0);
@@ -328,14 +332,20 @@ mod tests {
 
     #[test]
     fn set_block_writes_and_reports_the_chunk() {
-        let mut world = loaded_world(&[ChunkPos::new(0, 0, 0), ChunkPos::new(0, 1, 0)]);
-        let height = world.height_at(10, 10);
-        assert_eq!(world.block_at(10, height, 10), Block::Air);
+        let mut world = loaded_world(&[
+            ChunkPos::new(0, 0, 0),
+            ChunkPos::new(0, 1, 0),
+            ChunkPos::new(0, 2, 0),
+            ChunkPos::new(0, 3, 0),
+        ]);
+        // 世界顶部附近始终是空气，且不落在垂直区块边界上。
+        let y = WORLD_HEIGHT - 2;
+        assert_eq!(world.block_at(10, y, 10), Block::Air);
 
-        let affected = world.set_block(10, height, 10, Block::Stone);
+        let affected = world.set_block(10, y, 10, Block::Stone);
 
-        assert_eq!(world.block_at(10, height, 10), Block::Stone);
-        assert_eq!(affected, vec![ChunkPos::new(0, 0, 0)]);
+        assert_eq!(world.block_at(10, y, 10), Block::Stone);
+        assert_eq!(affected, vec![ChunkPos::from_world(10, y, 10)]);
     }
 
     #[test]
@@ -364,7 +374,7 @@ mod tests {
     #[test]
     fn unchanged_edits_report_nothing() {
         let mut world = loaded_world(&[ChunkPos::new(0, 0, 0)]);
-        assert!(world.set_block(10, 0, 10, Block::Stone).is_empty());
+        assert!(world.set_block(10, 0, 10, Block::Bedrock).is_empty());
     }
 
     #[test]

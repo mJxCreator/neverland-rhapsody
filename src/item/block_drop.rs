@@ -116,7 +116,8 @@ pub fn drops_for_block(block: Block) -> &'static [BlockDrop] {
         | Block::Leaves
         | Block::TallGrass
         | Block::FlowerRed
-        | Block::FlowerYellow => &[],
+        | Block::FlowerYellow
+        | Block::Bedrock => &[],
     }
 }
 

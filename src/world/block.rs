@@ -80,11 +80,12 @@ pub enum Block {
     #[serde(rename = "flower_yellow")]
     FlowerYellow,
     Cactus,
+    Bedrock,
 }
 
 impl Block {
     /// 全部方块，顺序与稳定 ID 一致；遍历与注册表校验共用。
-    pub const ALL: [Block; 19] = [
+    pub const ALL: [Block; 20] = [
         Block::Air,
         Block::Stone,
         Block::Dirt,
@@ -104,6 +105,7 @@ impl Block {
         Block::FlowerRed,
         Block::FlowerYellow,
         Block::Cactus,
+        Block::Bedrock,
     ];
 
     /// 稳定的方块 ID，与存档数据和属性注册表共用。

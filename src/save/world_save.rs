@@ -685,12 +685,18 @@ mod tests {
         data.chunk_edits.iter().map(|chunk| chunk.edits.len()).sum()
     }
 
-    /// 创建只包含指定区块的世界。
-    fn world_with(positions: &[ChunkPos]) -> World {
+    /// 为指定水平区块列创建世界，并补齐全部垂直层。
+    fn world_with(columns: &[ChunkPos]) -> World {
         let mut world = World::new(DEFAULT_SEED);
-        for &pos in positions {
-            let chunk = world.generate_chunk(pos);
-            assert!(world.insert_chunk(chunk));
+        let mut horizontal: Vec<(i32, i32)> = columns.iter().map(|pos| (pos.x, pos.z)).collect();
+        horizontal.sort_unstable();
+        horizontal.dedup();
+        for (x, z) in horizontal {
+            for chunk_y in 0..crate::world::world::WORLD_CHUNKS_Y {
+                let pos = ChunkPos::new(x, chunk_y, z);
+                let chunk = world.generate_chunk(pos);
+                assert!(world.insert_chunk(chunk));
+            }
         }
         world
     }
@@ -715,7 +721,7 @@ mod tests {
 
         let mut restored = world_with(&[ChunkPos::new(0, 0, 0), ChunkPos::new(0, 1, 0)]);
         let loaded = WorldSave::load(&path, DEFAULT_SEED);
-        loaded.apply_chunk(ChunkPos::new(0, 0, 0), &mut restored);
+        loaded.apply_chunk(ChunkPos::from_world(10, height, 10), &mut restored);
         assert_eq!(restored.block_at(10, height, 10), Block::Stone);
         assert_eq!(loaded.total_edits(), 1);
 
