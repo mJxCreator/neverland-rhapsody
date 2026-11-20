@@ -32,12 +32,10 @@
 | `inventory_slot_hover` | 1 : 1 | 同上 | 同上 |
 | `inventory_slot_selected` | 1 : 1 | 同上 | 同上 |
 | `crosshair` | 1 : 1 | 16×16 / 32×32 / 64×64 | `hud.rs` `push_crosshair`（边长 `(CROSSHAIR_ARM + 4) × 2`） |
-| `heart_full` | 1 : 1 | 16×16 / 32×32 / 64×64 | `hud.rs` `push_heart`（`HEART_PATTERN.len() × HEART_PIXEL`） |
-| `heart_half` | 1 : 1 | 同上 | 同上 |
-| `heart_empty` | 1 : 1 | 同上 | 同上 |
+| `state_bg` | 106 : 19 | **106×19** | `hud.rs` `push_state`（三行状态条底板，游戏内 3 倍缩放） |
 
 修改比例：编辑 `texture_ratio.rs` 中的 `HOTBAR_BG_RATIO` / `PROGRESS_BG_RATIO` / `SLOT_RATIO` /
-`CROSSHAIR_RATIO` / `HEART_RATIO`，或在 `expected_ratio` 的 `match` 中增删控件键。
+`CROSSHAIR_RATIO` / `STATE_BG_RATIO`，或在 `expected_ratio` 的 `match` 中增删控件键。
 返回 `None` 表示随目标矩形自由铺满。
 
 > 例：`hotbar_bg` 当前按 23:3（184×24）绘制，底板矩形由快捷栏几何直接生成，与 9 格槽位区严丝合缝；
@@ -60,6 +58,7 @@
 | `crafting_row_hover` | 同上 | 6 | 同上 |
 | `crafting_row_selected` | 同上 | 6 | 同上 |
 | `progress_fill` | 236×8（满进度） | 4 | 填充宽度随挖掘/进食进度变化 |
+| `state_heart_fill` / `state_stamina_fill` / `state_hunger_fill` | 102×5（满值） | 无 | 按百分比从右侧裁剪列宽：首尾 1% 各占 2 列，其余每 1% 占 1 列 |
 | `damage_vignette` | 512×512 / 1024×1024 | 16 | 全屏叠加，比例随窗口 |
 | `death_overlay` | 任意，建议方形纯色/渐变 | 无 | 全屏遮罩，比例随窗口 |
 | `death_panel` | 720×446（1280×720 下） | 8 | 宽随视口、高为视口 62% |
@@ -78,7 +77,7 @@
 | 九宫格切边与绘制方式 | `src/texture/ui_texture.rs` | `builtin_manifest`；运行时以 `assets/textures/manifests/ui.json` 为准 |
 | 比例不符告警 | `src/texture/ui_texture.rs` | `UiTextureMap::from_manifest`、`ratio_mismatch` |
 | 快捷栏三图的固定比例与位置关系 | `src/ui/modules/hotbar_geometry.rs` | `SLOT_UNITS`、`SELECTED_UNITS`、`GAP_UNITS`、`MARGIN_UNITS`、`BACKGROUND_RATIO`、`HotbarGeometry` |
-| HUD 尺寸 | `src/ui/hud.rs` | `SLOT_SIZE`（决定 n）、`BOTTOM_MARGIN`、`PROGRESS_WIDTH/HEIGHT`、`HEART_PIXEL`、`CROSSHAIR_ARM` |
+| HUD 尺寸 | `src/ui/hud.rs` | `SLOT_SIZE`（决定 n）、`BOTTOM_MARGIN`、`PROGRESS_WIDTH/HEIGHT`、`STATE_SCALE`、`STATE_*`、`CROSSHAIR_ARM` |
 | 背包面板尺寸 | `src/ui/inventory.rs` | `BASE_SLOT`、`BASE_GAP`、`BASE_PADDING`、`BASE_TITLE` 等 `Layout::compute` |
 | 合成面板尺寸 | `src/ui/crafting.rs` | `BASE_PANEL_WIDTH/HEIGHT`、`ROW_HEIGHT`、`CRAFT_WIDTH/HEIGHT` |
 | 烹饪面板尺寸 | `src/ui/cooking.rs` | `layout`（面板 560×320、槽位 56、进度条高 16） |
@@ -92,4 +91,4 @@
 - 受约束控件严格按表内比例导出；想完全 1:1 就按“推荐出图尺寸”导出。
 - 九宫格控件若放大出图，`slice` 要同比放大，否则四角与中心的像素映射会不一致。
 - 透明背景保留；文字与动态数字不要烘焙进图片；像素风用整数倍放大并保持最近邻采样。
-- 改动比例或切边后运行 `cargo test` 与 `cargo clippy --all-targets`，并实机确认快捷栏底板、进度条、槽位、心形、准星与各面板无变形、无接缝。
+- 改动比例或切边后运行 `cargo test` 与 `cargo clippy --all-targets`，并实机确认快捷栏底板、进度条、槽位、状态条、准星与各面板无变形、无接缝。

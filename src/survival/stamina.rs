@@ -1,36 +1,21 @@
-//! 体力：冲刺消耗、停止冲刺后的延迟恢复与低饥饿恢复减半。
+//! 体力：上限随当前饥饿值变化，行走/奔跑/静止持续消耗，耗尽后由饥饿补充。
 //!
-//! 体力上限固定为 100。冲刺期间持续消耗；停止冲刺后经过配置的延迟才开始
-//! 恢复，静止恢复快于行走。体力耗尽时不允许继续冲刺。
+//! 体力不再自动恢复：行走每秒 1 点、奔跑每秒 2 点、静止每 2 分钟 1 点、
+//! 每次跳跃 1 点。体力归零时由 [`super::survival::Vitals`] 扣除 1 点饥饿并
+//! 以新的上限补满。
 
 use serde::{Deserialize, Serialize};
 
-/// 体力上限。
+/// 体力绝对上限（饥饿满值时）。
 pub const MAX_STAMINA: f32 = 100.0;
-
-/// 体力数值配置。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StaminaConfig {
-    pub max: f32,
-    pub sprint_drain_per_second: f32,
-    pub idle_regen_per_second: f32,
-    pub walk_regen_per_second: f32,
-    pub regen_delay: f32,
-    pub sprint_speed_multiplier: f32,
-}
-
-impl Default for StaminaConfig {
-    fn default() -> Self {
-        Self {
-            max: MAX_STAMINA,
-            sprint_drain_per_second: 15.0,
-            idle_regen_per_second: 20.0,
-            walk_regen_per_second: 10.0,
-            regen_delay: 0.8,
-            sprint_speed_multiplier: 1.5,
-        }
-    }
-}
+/// 行走每秒消耗。
+pub const WALK_DRAIN_PER_SECOND: f32 = 1.0;
+/// 奔跑每秒消耗。
+pub const SPRINT_DRAIN_PER_SECOND: f32 = 2.0;
+/// 静止每秒消耗：每 2 分钟 1 点。
+pub const IDLE_DRAIN_PER_SECOND: f32 = 1.0 / 120.0;
+/// 每次跳跃消耗。
+pub const JUMP_COST: f32 = 1.0;
 
 /// 存档中的体力数据。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,20 +36,31 @@ impl Default for SavedStamina {
     }
 }
 
+impl SavedStamina {
+    /// 清洗为 0–上限内的有限值；上界同时受调用方传入的当前上限约束。
+    pub fn sanitized(self, max: f32) -> Self {
+        let max = finite_max(max);
+        let stamina = if self.stamina.is_finite() {
+            self.stamina.clamp(0.0, max)
+        } else {
+            max
+        };
+        Self { stamina }
+    }
+}
+
 /// 体力运行时状态。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stamina {
     value: f32,
-    regen_delay_remaining: f32,
-    config: StaminaConfig,
+    max: f32,
 }
 
 impl Default for Stamina {
     fn default() -> Self {
         Self {
             value: MAX_STAMINA,
-            regen_delay_remaining: 0.0,
-            config: StaminaConfig::default(),
+            max: MAX_STAMINA,
         }
     }
 }
@@ -75,13 +71,11 @@ impl Stamina {
     }
 
     pub fn from_saved(saved: SavedStamina) -> Self {
-        let mut stamina = Self::default();
-        stamina.value = if saved.stamina.is_finite() {
-            saved.stamina.clamp(0.0, MAX_STAMINA)
-        } else {
-            MAX_STAMINA
-        };
-        stamina
+        let saved = saved.sanitized(MAX_STAMINA);
+        Self {
+            value: saved.stamina,
+            max: MAX_STAMINA,
+        }
     }
 
     pub fn to_saved(self) -> SavedStamina {
@@ -94,14 +88,8 @@ impl Stamina {
         self.value
     }
 
-    #[allow(dead_code)]
     pub fn max(self) -> f32 {
-        self.config.max
-    }
-
-    #[allow(dead_code)]
-    pub fn ratio(self) -> f32 {
-        (self.value / self.config.max).clamp(0.0, 1.0)
+        self.max
     }
 
     /// 体力是否足以开始或维持冲刺。
@@ -109,62 +97,66 @@ impl Stamina {
         self.value > 0.0
     }
 
-    /// 冲刺速度倍率。
-    #[allow(dead_code)]
-    pub fn sprint_multiplier(self) -> f32 {
-        self.config.sprint_speed_multiplier
+    /// 同步体力上限；当前值会被裁剪到新上限内。
+    pub fn set_max(&mut self, max: f32) {
+        self.max = finite_max(max);
+        self.value = self.value.clamp(0.0, self.max);
     }
 
-    /// 恢复到满体力（睡眠使用）。
+    /// 恢复到当前上限（睡眠使用）。
     pub fn refill(&mut self) {
-        self.value = self.config.max;
-        self.regen_delay_remaining = 0.0;
+        self.value = self.max;
     }
 
-    /// 扣减一次冲刺消耗；体力归零后由调用方停止冲刺。
-    pub fn drain_sprint(&mut self, delta_seconds: f32) {
+    /// 按本帧状态消耗体力；返回本帧是否刚好耗尽。
+    ///
+    /// - `walking`：非奔跑的移动状态。
+    /// - `sprinting`：奔跑状态，优先于行走。
+    /// - `multiplier`：饥饿状态的消耗倍率（通常为 1 或 2）。
+    pub fn update(
+        &mut self,
+        delta_seconds: f32,
+        walking: bool,
+        sprinting: bool,
+        multiplier: f32,
+    ) -> bool {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
-            return;
+            return false;
         }
-        self.value = (self.value - self.config.sprint_drain_per_second * delta_seconds).max(0.0);
-        self.regen_delay_remaining = self.config.regen_delay;
+        let rate = if sprinting {
+            SPRINT_DRAIN_PER_SECOND
+        } else if walking {
+            WALK_DRAIN_PER_SECOND
+        } else {
+            IDLE_DRAIN_PER_SECOND
+        };
+        self.drain(rate * delta_seconds * finite_multiplier(multiplier))
     }
 
-    /// 按本帧状态更新体力。
-    ///
-    /// - `sprinting`：本帧是否实际冲刺（消耗体力并重置恢复延迟）。
-    /// - `moving`：是否在移动（决定行走或静止恢复速率）。
-    /// - `regen_scale`：饥饿带来的恢复倍率。
-    ///
-    /// 界面阻塞、暂停与死亡期间调用方不应调用本方法，从而保持体力不变。
-    pub fn update(&mut self, delta_seconds: f32, sprinting: bool, moving: bool, regen_scale: f32) {
-        let mut delta_seconds = delta_seconds;
-        if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
-            return;
+    /// 直接扣除体力；返回是否从有到无。
+    pub fn drain(&mut self, amount: f32) -> bool {
+        if !amount.is_finite() || amount <= 0.0 || self.value <= 0.0 {
+            return false;
         }
-        if sprinting {
-            self.drain_sprint(delta_seconds);
-            return;
-        }
-        if self.regen_delay_remaining > 0.0 {
-            let consumed = delta_seconds.min(self.regen_delay_remaining);
-            self.regen_delay_remaining -= consumed;
-            delta_seconds -= consumed;
-            if delta_seconds <= 0.0 {
-                return;
-            }
-        }
-        let rate = if moving {
-            self.config.walk_regen_per_second
-        } else {
-            self.config.idle_regen_per_second
-        };
-        let scale = if regen_scale.is_finite() {
-            regen_scale.clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        self.value = (self.value + rate * scale * delta_seconds).min(self.config.max);
+        let before = self.value;
+        self.value = (self.value - amount).max(0.0);
+        before > 0.0 && self.value <= 0.0
+    }
+}
+
+fn finite_max(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, MAX_STAMINA)
+    } else {
+        MAX_STAMINA
+    }
+}
+
+fn finite_multiplier(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        1.0
     }
 }
 
@@ -173,52 +165,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sprint_drains_and_resets_delay() {
+    fn walking_drains_one_per_second() {
+        let mut stamina = Stamina::new();
+        assert!(!stamina.update(1.0, true, false, 1.0));
+        assert!((stamina.value() - 99.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sprinting_drains_two_per_second() {
         let mut stamina = Stamina::new();
         stamina.update(1.0, true, true, 1.0);
-        assert_eq!(stamina.value(), MAX_STAMINA - 15.0);
-        assert!(stamina.regen_delay_remaining > 0.0);
+        assert!((stamina.value() - 98.0).abs() < 1e-6);
     }
 
     #[test]
-    fn regen_waits_for_delay() {
+    fn idle_drains_one_per_two_minutes() {
         let mut stamina = Stamina::new();
-        stamina.value = 50.0;
-        stamina.drain_sprint(1.0);
-        let after_drain = stamina.value();
-        stamina.update(0.5, false, false, 1.0);
-        assert_eq!(stamina.value(), after_drain);
-        stamina.update(0.4, false, false, 1.0);
-        assert!(stamina.value() > after_drain);
+        stamina.update(120.0, false, false, 1.0);
+        assert!(stamina.value() < MAX_STAMINA);
+        assert!((stamina.value() - 99.0).abs() < 1e-4);
     }
 
     #[test]
-    fn idle_regens_faster_than_walking() {
-        let mut idle = Stamina::new();
-        idle.value = 10.0;
-        let mut walking = idle;
-        idle.update(1.0, false, false, 1.0);
-        walking.update(1.0, false, true, 1.0);
-        assert!(idle.value() > walking.value());
+    fn hunger_effect_doubles_drain() {
+        let mut normal = Stamina::new();
+        let mut hungry = Stamina::new();
+        normal.update(1.0, true, false, 1.0);
+        hungry.update(1.0, true, false, 2.0);
+        assert!((normal.value() - hungry.value() - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn low_hunger_scales_regen() {
+    fn depletion_is_reported_only_on_crossing() {
         let mut stamina = Stamina::new();
-        stamina.value = 10.0;
-        let mut scaled = stamina;
-        stamina.update(1.0, false, false, 1.0);
-        scaled.update(1.0, false, false, 0.5);
-        assert!((stamina.value() - scaled.value() - 10.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn sprint_stops_at_zero() {
-        let mut stamina = Stamina::new();
+        stamina.set_max(1.0);
         stamina.value = 1.0;
-        stamina.drain_sprint(1.0);
+        assert!(stamina.drain(1.0));
+        assert!(!stamina.drain(1.0), "已经在零时不应重复报告耗尽");
         assert_eq!(stamina.value(), 0.0);
         assert!(!stamina.can_sprint());
+    }
+
+    #[test]
+    fn max_tracks_hunger_and_clamps_value() {
+        let mut stamina = Stamina::new();
+        stamina.set_max(40.0);
+        assert_eq!(stamina.max(), 40.0);
+        assert_eq!(stamina.value(), 40.0);
+        stamina.value = 10.0;
+        stamina.set_max(0.0);
+        assert_eq!(stamina.value(), 0.0);
+    }
+
+    #[test]
+    fn jump_cost_can_deplete() {
+        let mut stamina = Stamina::new();
+        stamina.set_max(1.0);
+        stamina.value = 1.0;
+        assert!(stamina.drain(JUMP_COST));
     }
 
     #[test]

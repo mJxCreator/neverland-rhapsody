@@ -72,10 +72,6 @@ pub const DURABILITY_MID: [f32; 4] = [0.95, 0.80, 0.28, 0.95];
 /// 耐久低。
 pub const DURABILITY_LOW: [f32; 4] = [0.95, 0.32, 0.26, 0.95];
 
-/// 满心。
-pub const HEART_FULL: [f32; 4] = [0.86, 0.16, 0.16, 0.95];
-/// 空心。
-pub const HEART_EMPTY: [f32; 4] = [0.28, 0.09, 0.09, 0.85];
 /// 受伤边缘反馈。
 pub const DAMAGE_FLASH: [f32; 4] = [0.72, 0.03, 0.03, 0.46];
 /// 受击方向指示。

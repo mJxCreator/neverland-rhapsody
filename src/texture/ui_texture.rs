@@ -48,7 +48,7 @@ pub struct UiManifestEntry {
 
 /// 内置 UI 控件清单；即使 `ui.json` 缺失，放入同名 PNG 也会自动生效。
 pub fn builtin_manifest() -> UiManifest {
-    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 19] = [
+    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 23] = [
         ("hotbar_bg", UiDrawMode::NineSlice, [8, 8, 8, 8]),
         ("hotbar_slot", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("hotbar_slot_selected", UiDrawMode::Stretch, [0, 0, 0, 0]),
@@ -66,6 +66,10 @@ pub fn builtin_manifest() -> UiManifest {
         ("heart_empty", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("progress_bg", UiDrawMode::NineSlice, [4, 4, 4, 4]),
         ("progress_fill", UiDrawMode::NineSlice, [4, 4, 4, 4]),
+        ("state_bg", UiDrawMode::Stretch, [0, 0, 0, 0]),
+        ("state_heart_fill", UiDrawMode::Stretch, [0, 0, 0, 0]),
+        ("state_stamina_fill", UiDrawMode::Stretch, [0, 0, 0, 0]),
+        ("state_hunger_fill", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("damage_vignette", UiDrawMode::NineSlice, [16, 16, 16, 16]),
         ("death_overlay", UiDrawMode::Stretch, [0, 0, 0, 0]),
     ];

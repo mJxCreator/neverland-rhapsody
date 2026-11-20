@@ -18,8 +18,8 @@ pub struct PhysicsConfig {
     pub dimensions: PlayerDimensions,
     /// 地面行走速度（格/秒）。
     pub walk_speed: f32,
-    /// 冲刺时的速度倍率。
-    pub sprint_multiplier: f32,
+    /// 地面奔跑速度（格/秒）；由饥饿比例派生。
+    pub run_speed: f32,
     /// 重力加速度（格/秒²）。
     pub gravity: f32,
     /// 跳跃初速度（格/秒）。
@@ -42,8 +42,8 @@ impl Default for PhysicsConfig {
                 height: 1.8,
                 eye_height: 1.62,
             },
-            walk_speed: 4.3,
-            sprint_multiplier: 1.5,
+            walk_speed: 4.0,
+            run_speed: 6.0,
             gravity: 24.0,
             jump_speed: 8.0,
             ground_acceleration: 40.0,
@@ -73,7 +73,7 @@ impl PhysicsConfig {
                 eye_height,
             },
             walk_speed: non_negative_or(self.walk_speed, defaults.walk_speed),
-            sprint_multiplier: positive_or(self.sprint_multiplier, defaults.sprint_multiplier),
+            run_speed: non_negative_or(self.run_speed, defaults.run_speed),
             gravity: positive_or(self.gravity, defaults.gravity),
             jump_speed: non_negative_or(self.jump_speed, defaults.jump_speed),
             ground_acceleration: non_negative_or(
@@ -112,6 +112,17 @@ pub struct PhysicsUpdate {
     pub alpha: f32,
     /// 本帧发生落地时的实际下落距离（格）；未落地为 `None`。
     pub landing_fall: Option<f32>,
+    /// 本帧真实起跳的次数；用于扣除跳跃体力。
+    pub jumps: u32,
+}
+
+/// 由目标跳跃高度换算起跳初速度；参数非法时返回 0。
+pub fn jump_speed_for_height(height: f32, gravity: f32) -> f32 {
+    if height.is_finite() && height > 0.0 && gravity.is_finite() && gravity > 0.0 {
+        (2.0 * gravity * height).sqrt()
+    } else {
+        0.0
+    }
 }
 
 /// 固定时间步长物理系统。
@@ -132,6 +143,14 @@ impl PhysicsSystem {
     /// 集中管理后的物理参数。
     pub fn config(&self) -> &PhysicsConfig {
         &self.config
+    }
+
+    /// 按当前饥饿派生的行走/奔跑速度与跳跃初速度更新物理参数。
+    pub fn set_movement_speeds(&mut self, walk_speed: f32, run_speed: f32, jump_speed: f32) {
+        let defaults = PhysicsConfig::default();
+        self.config.walk_speed = non_negative_or(walk_speed, defaults.walk_speed);
+        self.config.run_speed = non_negative_or(run_speed, defaults.run_speed);
+        self.config.jump_speed = non_negative_or(jump_speed, defaults.jump_speed);
     }
 
     /// 当前摄像机插值系数。
@@ -158,14 +177,18 @@ impl PhysicsSystem {
         self.accumulator += delta;
 
         let mut steps = 0;
+        let mut jumps = 0;
         let mut landing_fall: Option<f32> = None;
         while self.accumulator >= FIXED_TIMESTEP && steps < MAX_STEPS_PER_FRAME {
             if steps == 0 {
                 player.snapshot_previous_position();
             }
-            if let Some(distance) = step_player(player, intent, &self.config, world, FIXED_TIMESTEP)
-            {
+            let outcome = step_player(player, intent, &self.config, world, FIXED_TIMESTEP);
+            if let Some(distance) = outcome.landing_fall {
                 landing_fall = Some(landing_fall.map_or(distance, |current| current.max(distance)));
+            }
+            if outcome.jumped {
+                jumps += 1;
             }
             self.accumulator -= FIXED_TIMESTEP;
             steps += 1;
@@ -175,6 +198,7 @@ impl PhysicsSystem {
             steps,
             alpha: self.interpolation_alpha(),
             landing_fall,
+            jumps,
         }
     }
 
@@ -184,6 +208,12 @@ impl PhysicsSystem {
     }
 }
 
+/// 单个固定物理步的结果。
+struct StepOutcome {
+    landing_fall: Option<f32>,
+    jumped: bool,
+}
+
 /// 单个固定物理步：水平加速/摩擦、跳跃、重力与碰撞。
 fn step_player(
     player: &mut Player,
@@ -191,7 +221,7 @@ fn step_player(
     config: &PhysicsConfig,
     world: &PhysicsWorld,
     delta_secs: f32,
-) -> Option<f32> {
+) -> StepOutcome {
     let was_grounded = player.is_grounded();
     let previous_position = player.position();
     let previous_velocity = player.velocity();
@@ -214,7 +244,7 @@ fn step_player(
     let mut horizontal = Vec3::new(velocity.x, 0.0, velocity.z);
     if has_input {
         let speed = if intent.sprint {
-            config.walk_speed * config.sprint_multiplier
+            config.run_speed
         } else {
             config.walk_speed
         };
@@ -271,7 +301,10 @@ fn step_player(
     // 兜底：任何非有限值都回到本步开始前的位置，避免 NaN 扩散。
     if !player.is_finite() {
         player.reset_motion(previous_position);
-        return None;
+        return StepOutcome {
+            landing_fall: None,
+            jumped: false,
+        };
     }
 
     // 只在“真正从空中落到地面”的这一步记录下落距离；跳跃与超短腾空由伤害
@@ -286,7 +319,10 @@ fn step_player(
     } else {
         player.observe_air_position(position.y);
     }
-    landing_fall
+    StepOutcome {
+        landing_fall,
+        jumped,
+    }
 }
 
 fn finite_axis(value: f32) -> f32 {

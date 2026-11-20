@@ -97,7 +97,8 @@ UI 纹理走独立图集，物品图标图集不受影响；宽高各自允许 1
 | `crafting_row_hover.png` | 合成行悬停 | 64×64 或 1024×128 | 九宫格，slice 6 |
 | `crafting_row_selected.png` | 合成行选中 | 64×64 或 1024×128 | 九宫格，slice 6 |
 | `crosshair.png` | 准星 | 16×16 或 32×32 | 整图拉伸 |
-| `heart_full.png` / `heart_half.png` / `heart_empty.png` | 生命值心形三态 | 16×16 或 64×64 | 整图拉伸 |
+| `state_bg.png` | 生命/体力/饥饿三行状态条底板 | **106×19** | 整图拉伸 |
+| `state_heart_fill.png` / `state_stamina_fill.png` / `state_hunger_fill.png` | 状态条填充（满值 102×5） | **102×5** | 按百分比裁剪右侧列宽 |
 | `progress_bg.png` / `progress_fill.png` | 挖掘进度条底/填充 | 32×32 或 256×16 | 九宫格，slice 4 |
 | `damage_vignette.png` | 受伤红边叠加层 | 64×64 或 1024×1024 | 九宫格，slice 16 |
 | `death_overlay.png` | 死亡全屏遮罩 | 16×16 或 1024×1024 | 整图拉伸（纯半透明） |

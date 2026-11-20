@@ -37,8 +37,8 @@ use crate::item::{
 };
 use crate::model::{builtin, ModelDraw, ModelRegistry};
 use crate::player::{
-    damage, find_respawn_position, Damage, DamageOutcome, DamageSource, PhysicsConfig,
-    PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival, FIXED_TIMESTEP,
+    damage, find_respawn_position, jump_speed_for_height, Damage, DamageOutcome, DamageSource,
+    PhysicsConfig, PhysicsSystem, PhysicsWorld, Player, PlayerController, Survival, FIXED_TIMESTEP,
 };
 use crate::player_visual::third_person::ThirdPersonConfig;
 use crate::player_visual::{
@@ -48,11 +48,10 @@ use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
 use crate::save::{BlockEdit, WorldSave};
 use crate::survival::cooking::CookingRegistry;
 use crate::survival::food::{EatingState, EatingUpdate};
-use crate::survival::hunger::Activity;
 use crate::survival::respawn;
 use crate::survival::rng::GameRng;
 use crate::survival::sleep;
-use crate::survival::{Vitals, WorldTime};
+use crate::survival::{Vitals, VitalsInput, WorldTime};
 use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
 use crate::ui::{ClickButton, UiIntent, UiManager, UiPointerAction, UiState};
@@ -1405,6 +1404,7 @@ impl App {
         // 视角旋转与物理位移解耦：鼠标视角立即生效，位移走固定步长物理。
         let look = self.controller.take_look();
         self.player.rotate_look(look.0, look.1);
+        self.controller.tick(delta_secs);
 
         let mut intent = self.controller.intent();
         let moving = intent.forward != 0.0 || intent.right != 0.0;
@@ -1415,6 +1415,14 @@ impl App {
                 .vitals
                 .can_sprint(!self.survival.is_dead(), ui_blocking || self.paused, moving);
         let sprint_active = intent.sprint;
+        // 行走/奔跑速度与跳跃高度由当前饥饿比例派生。
+        let hunger = *self.vitals.hunger();
+        let gravity = self.physics.config().gravity;
+        self.physics.set_movement_speeds(
+            hunger.walk_speed(),
+            hunger.run_speed(),
+            jump_speed_for_height(hunger.jump_height(), gravity),
+        );
         let physics_world = PhysicsWorld::new(&self.world);
         let update = self
             .physics
@@ -1433,13 +1441,14 @@ impl App {
         // 生存状态只随固定物理步推进，避免掉帧导致饥饿与体力异常消耗。
         let game_dt = update.steps as f32 * FIXED_TIMESTEP;
         if !self.paused && !self.survival.is_dead() && game_dt > 0.0 {
-            let activity = Activity::from_motion(sprint_active, moving);
             let healed = self.vitals.update(
                 game_dt,
-                activity,
-                sprint_active,
-                moving,
-                ui_blocking,
+                VitalsInput {
+                    moving,
+                    sprinting: sprint_active,
+                    jumps: update.jumps,
+                    blocked: ui_blocking,
+                },
                 true,
                 self.survival.health() < self.survival.max_health(),
             );
@@ -1613,6 +1622,7 @@ impl App {
             mining: self.mining.is_mining(),
             eating: self.eating.is_eating(),
             attacking: !self.combat.state().is_idle(),
+            sprinting: sprint_active,
             landed: update.landing_fall.is_some(),
         };
         self.player_visual.update(

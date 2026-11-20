@@ -1,4 +1,4 @@
-//! 食物注册表：可食用物品的饥饿恢复、饱食度恢复、进食时长与特殊效果。
+//! 食物注册表：可食用物品的饥饿恢复、进食时长与特殊效果。
 
 use crate::item::ItemId;
 
@@ -17,8 +17,8 @@ pub enum FoodEffect {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FoodDefinition {
     pub item: ItemId,
+    /// 恢复的饥饿值（0–100 量程）。
     pub hunger: f32,
-    pub saturation: f32,
     /// 完成进食所需的秒数。
     pub eat_seconds: f32,
     pub effect: FoodEffect,
@@ -26,56 +26,49 @@ pub struct FoodDefinition {
 
 const RAW_PORKCHOP: FoodDefinition = FoodDefinition {
     item: ItemId::RAW_PORKCHOP,
-    hunger: 3.0,
-    saturation: 1.8,
+    hunger: 15.0,
     eat_seconds: 1.6,
     effect: FoodEffect::None,
 };
 
 const RAW_BEEF: FoodDefinition = FoodDefinition {
     item: ItemId::RAW_BEEF,
-    hunger: 3.0,
-    saturation: 1.8,
+    hunger: 15.0,
     eat_seconds: 1.6,
     effect: FoodEffect::None,
 };
 
 const COOKED_PORKCHOP: FoodDefinition = FoodDefinition {
     item: ItemId::COOKED_PORKCHOP,
-    hunger: 8.0,
-    saturation: 8.0,
+    hunger: 40.0,
     eat_seconds: 1.6,
     effect: FoodEffect::None,
 };
 
 const COOKED_BEEF: FoodDefinition = FoodDefinition {
     item: ItemId::COOKED_BEEF,
-    hunger: 8.0,
-    saturation: 8.0,
+    hunger: 40.0,
     eat_seconds: 1.6,
     effect: FoodEffect::None,
 };
 
 const APPLE: FoodDefinition = FoodDefinition {
     item: ItemId::APPLE,
-    hunger: 4.0,
-    saturation: 2.4,
+    hunger: 20.0,
     eat_seconds: 1.2,
     effect: FoodEffect::None,
 };
 
 const BREAD: FoodDefinition = FoodDefinition {
     item: ItemId::BREAD,
-    hunger: 5.0,
-    saturation: 4.0,
+    hunger: 25.0,
     eat_seconds: 1.4,
     effect: FoodEffect::None,
 };
 
 const ROTTEN_FLESH: FoodDefinition = FoodDefinition {
     item: ItemId::ROTTEN_FLESH,
-    hunger: 2.0,
-    saturation: 0.5,
+    hunger: 10.0,
     eat_seconds: 1.2,
     effect: FoodEffect::Hunger {
         chance: 0.2,
@@ -120,7 +113,6 @@ mod tests {
         for food in all() {
             assert!(food.item.is_valid(), "食物 ID 无效: {:?}", food.item);
             assert!(food.hunger > 0.0);
-            assert!(food.saturation >= 0.0);
             assert!(food.eat_seconds > 0.0);
         }
     }

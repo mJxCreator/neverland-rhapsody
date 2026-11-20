@@ -36,16 +36,27 @@ const TOAST_DURATION: f32 = 1.2;
 const TOAST_FADE: f32 = 0.3;
 /// 提示图标边长（像素）。
 const TOAST_ICON_SIZE: f32 = 22.0;
-/// 选中物品名称与快捷栏的距离（像素）。
-const TOOL_LABEL_OFFSET: f32 = 50.0;
-/// 提示文字与快捷栏的距离（像素）。
-const TOAST_OFFSET: f32 = 70.0;
-/// 生命值心形图标与快捷栏的距离（像素）。
+/// 选中物品名称与快捷栏的距离（像素）；位于状态条上方。
+const TOOL_LABEL_OFFSET: f32 = 108.0;
+/// 提示文字与快捷栏的距离（像素）；位于物品名称上方。
+const TOAST_OFFSET: f32 = 132.0;
+/// 状态条与快捷栏的距离（像素）。
 const HEALTH_OFFSET: f32 = 28.0;
-/// 单颗心形的像素边长。
-const HEART_PIXEL: f32 = 3.0;
-/// 心形之间的水平间距（像素）。
-const HEART_GAP: f32 = 2.0;
+/// 状态条原图像素到屏幕像素的缩放倍率。
+const STATE_SCALE: f32 = 3.0;
+/// 状态条背景原图尺寸（106×19）。
+const STATE_BG_WIDTH: f32 = 106.0;
+const STATE_BG_HEIGHT: f32 = 19.0;
+/// 单条填充原图尺寸（102×5）。
+const STATE_FILL_WIDTH: f32 = 102.0;
+const STATE_FILL_HEIGHT: f32 = 5.0;
+/// 背景与填充之间的内边距（原图像素）。
+const STATE_PADDING: f32 = 2.0;
+/// 状态条缺失贴图时的回退颜色。
+const STATE_BG_COLOR: [f32; 4] = [0.08, 0.09, 0.11, 0.85];
+const STATE_HEART_COLOR: [f32; 4] = [0.86, 0.20, 0.24, 0.95];
+const STATE_STAMINA_COLOR: [f32; 4] = [0.38, 0.76, 0.96, 0.95];
+const STATE_HUNGER_COLOR: [f32; 4] = [0.80, 0.42, 0.16, 0.95];
 /// 伤害闪屏持续时间（秒）。
 const DAMAGE_FLASH_DURATION: f32 = 0.35;
 /// 伤害闪屏边缘厚度（像素）。
@@ -65,32 +76,8 @@ const DAMAGE_DIRECTION_SIZE: f32 = 18.0;
 /// 选中格光晕的呼吸速度。
 const SELECTED_PULSE_SPEED: f32 = 4.0;
 
-/// 7×7 像素心形图案，1 表示实心格。
-const HEART_PATTERN: [u8; 7] = [
-    0b0110110, 0b1111111, 0b1111111, 0b1110111, 0b0110110, 0b0011100, 0b0001000,
-];
-
-/// 7×7 像素食物图案，用于饥饿值图标。
-const FOOD_PATTERN: [u8; 7] = [
-    0b0011100, 0b0111110, 0b1111111, 0b1111110, 0b0111100, 0b0011000, 0b0010000,
-];
-
-/// 单颗饥饿图标的像素边长。
-const FOOD_PIXEL: f32 = 2.4;
-/// 饥饿图标之间的水平间距（像素）。
-const FOOD_GAP: f32 = 2.0;
-/// 体力条宽度（像素）。
-const STAMINA_WIDTH: f32 = 240.0;
-/// 体力条高度（像素）。
-const STAMINA_HEIGHT: f32 = 6.0;
 /// 提示消息显示时长（秒）。
 const MESSAGE_DURATION: f32 = 2.5;
-/// 饥饿图标满值颜色。
-const FOOD_FULL: [f32; 4] = [0.80, 0.42, 0.16, 0.95];
-/// 饥饿图标空值颜色。
-const FOOD_EMPTY: [f32; 4] = [0.24, 0.14, 0.10, 0.85];
-/// 体力条填充颜色。
-const STAMINA_FILL: [f32; 4] = [0.38, 0.76, 0.96, 0.95];
 /// 世界时间文本颜色。
 const TIME_TEXT: [f32; 4] = [0.82, 0.86, 0.95, 0.9];
 
@@ -127,13 +114,13 @@ pub struct HudModel {
     pub mining_progress: Option<f32>,
     /// 任意全屏界面是否打开；打开时不绘制战斗与快捷栏 HUD。
     pub ui_open: bool,
-    /// 当前生命值（1 点 = 半颗心）。
+    /// 当前生命值（0–100）。
     pub health: u32,
-    /// 最大生命值（1 点 = 半颗心）。
+    /// 最大生命值（默认 100）。
     pub max_health: u32,
-    /// 当前饥饿值（0-20）。
+    /// 当前饥饿值（0–100）。
     pub hunger: f32,
-    /// 当前体力值（0-100）。
+    /// 当前体力值（0–100）。
     pub stamina: f32,
     /// 当前昼夜阶段标签。
     pub time_label: &'static str,
@@ -161,9 +148,9 @@ impl Default for HudModel {
             slots: [None; HOTBAR_SLOTS],
             mining_progress: None,
             ui_open: false,
-            health: 20,
-            max_health: 20,
-            hunger: 20.0,
+            health: 100,
+            max_health: 100,
+            hunger: 100.0,
             stamina: 100.0,
             time_label: "DAY",
             eating_progress: None,
@@ -200,18 +187,18 @@ impl HudModel {
         self.ui_open = ui_open;
     }
 
-    /// 写入生命值；最大值为 0 时回落到默认 20 点。
+    /// 写入生命值；最大值为 0 时回落到默认 100 点。
     pub fn set_health(&mut self, health: u32, max_health: u32) {
-        self.max_health = if max_health == 0 { 20 } else { max_health };
+        self.max_health = if max_health == 0 { 100 } else { max_health };
         self.health = health.min(self.max_health);
     }
 
-    /// 写入饥饿、体力与昼夜阶段；数值越界时自动裁剪。
+    /// 写入饥饿、体力与昼夜阶段；数值越界时自动裁剪到 0–100。
     pub fn set_survival(&mut self, hunger: f32, stamina: f32, time_label: &'static str) {
         self.hunger = if hunger.is_finite() {
-            hunger.clamp(0.0, 20.0)
+            hunger.clamp(0.0, 100.0)
         } else {
-            20.0
+            100.0
         };
         self.stamina = if stamina.is_finite() {
             stamina.clamp(0.0, 100.0)
@@ -333,9 +320,7 @@ impl HudModel {
         }
 
         self.push_target_health(out, width, height);
-        self.push_health(out, width, height);
-        self.push_hunger(out, width, height);
-        self.push_stamina(out, width, height);
+        self.push_state(out, width, height);
         self.push_time_phase(out, width, height);
         self.push_message(out, width, height);
         self.push_hotbar(out, width, height, icons);
@@ -357,9 +342,9 @@ impl HudModel {
         }
         let viewport = (width, height);
         let alpha = (self.target_remaining / 0.35).clamp(0.0, 1.0);
-        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
-        let hp_top = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size - 13.0;
-        let name_y = hp_top - TARGET_GAP;
+        let state_top =
+            height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - STATE_BG_HEIGHT * STATE_SCALE;
+        let name_y = state_top - TARGET_GAP;
 
         let label = format!("{} {}/{}", target.name, target.health, target.max_health);
         let label_width = font::text_width(&label, 1.3);
@@ -433,49 +418,44 @@ impl HudModel {
         }
     }
 
-    /// 饥饿图标：每颗图标对应 2 点饥饿值，支持半颗显示。
-    fn push_hunger(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
+    /// 生命/体力/饥饿三行状态条：背景 106×19，填充 102×5，内边距 2 像素、间距 0。
+    fn push_state(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         let viewport = (width, height);
-        let icon = FOOD_PIXEL * FOOD_PATTERN.len() as f32;
-        let hearts = self.max_health.div_ceil(2) as usize;
-        if hearts == 0 {
-            return;
-        }
-        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
-        let health_width =
-            hearts as f32 * heart_size + (hearts.saturating_sub(1)) as f32 * HEART_GAP;
-        let start_x = (width - health_width) * 0.5 + health_width + 18.0;
-        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - icon;
-
-        for index in 0..10 {
-            let x = start_x + index as f32 * (icon + FOOD_GAP);
-            push_food_icon(out, viewport, x, y, self.hunger - index as f32 * 2.0);
-        }
-    }
-
-    /// 体力条：位于生命值标签上方，按 0-100 比例填充。
-    fn push_stamina(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
-        let viewport = (width, height);
-        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
-        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size - 26.0;
-        let x = (width - STAMINA_WIDTH) * 0.5;
-        push_quad(
-            out,
-            viewport,
-            UiRect::new(x, y, STAMINA_WIDTH, STAMINA_HEIGHT),
-            [0.08, 0.09, 0.11, 0.85],
+        let panel = UiRect::new(
+            (width - STATE_BG_WIDTH * STATE_SCALE) * 0.5,
+            height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - STATE_BG_HEIGHT * STATE_SCALE,
+            STATE_BG_WIDTH * STATE_SCALE,
+            STATE_BG_HEIGHT * STATE_SCALE,
         );
-        let ratio = if self.stamina.is_finite() {
-            (self.stamina / 100.0).clamp(0.0, 1.0)
+        if let Some(view) = self.ui_textures.get("state_bg") {
+            push_ui_view(out, viewport, panel, view, [1.0; 4]);
         } else {
-            1.0
+            push_quad(out, viewport, panel, STATE_BG_COLOR);
+        }
+
+        let health_ratio = if self.max_health == 0 {
+            0.0
+        } else {
+            self.health as f32 / self.max_health as f32
         };
-        if ratio > 0.0 {
-            push_quad(
+        let rows = [
+            ("state_heart_fill", health_ratio, STATE_HEART_COLOR),
+            (
+                "state_stamina_fill",
+                self.stamina / 100.0,
+                STATE_STAMINA_COLOR,
+            ),
+            ("state_hunger_fill", self.hunger / 100.0, STATE_HUNGER_COLOR),
+        ];
+        let fill_x = panel.x + STATE_PADDING * STATE_SCALE;
+        for (index, (name, ratio, fallback)) in rows.into_iter().enumerate() {
+            let row_y = panel.y + (STATE_PADDING + index as f32 * STATE_FILL_HEIGHT) * STATE_SCALE;
+            push_state_fill(
                 out,
                 viewport,
-                UiRect::new(x, y, STAMINA_WIDTH * ratio, STAMINA_HEIGHT),
-                STAMINA_FILL,
+                (fill_x, row_y),
+                (name, ratio, fallback),
+                &self.ui_textures,
             );
         }
     }
@@ -519,45 +499,6 @@ impl HudModel {
         let mut color = [1.0, 0.86, 0.44, 1.0];
         color[3] *= alpha;
         font::push_text(out, viewport, x, y, 2.0, color, text);
-    }
-
-    /// 心形生命值：满心、半心与空心按 2 点生命值换算，并在上方显示数值。
-    fn push_health(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
-        let viewport = (width, height);
-        let hearts = self.max_health.div_ceil(2) as usize;
-        if hearts == 0 {
-            return;
-        }
-        let heart_size = HEART_PIXEL * HEART_PATTERN.len() as f32;
-        let total_width =
-            hearts as f32 * heart_size + (hearts.saturating_sub(1)) as f32 * HEART_GAP;
-        let start_x = (width - total_width) * 0.5;
-        let y = height - BOTTOM_MARGIN - SLOT_SIZE - HEALTH_OFFSET - heart_size;
-
-        let label = format!("HP {}/{}", self.health, self.max_health);
-        let label_width = font::text_width(&label, 1.4);
-        font::push_text(
-            out,
-            viewport,
-            (width - label_width) * 0.5,
-            y - 13.0,
-            1.4,
-            theme::TEXT_MUTED,
-            &label,
-        );
-
-        for index in 0..hearts {
-            let x = start_x + index as f32 * (heart_size + HEART_GAP);
-            let remaining = (self.health as i64 - (index as i64) * 2).clamp(0, 2);
-            let fill = if remaining >= 2 {
-                HeartFill::Full
-            } else if remaining == 1 {
-                HeartFill::Half
-            } else {
-                HeartFill::Empty
-            };
-            push_heart(out, viewport, x, y, fill, &self.ui_textures);
-        }
     }
 
     /// 受伤后覆盖屏幕四周的红色反馈，随时间淡出。
@@ -777,139 +718,52 @@ impl HudModel {
     }
 }
 
-/// 绘制一颗食物图标；`points` 为剩余饥饿点数（0-2）。
-fn push_food_icon(out: &mut Vec<UiVertex>, viewport: (f32, f32), x: f32, y: f32, points: f32) {
-    push_food_pattern(out, viewport, x, y, FOOD_EMPTY, FOOD_PATTERN.len());
-    let points = points.clamp(0.0, 2.0);
-    if points >= 2.0 {
-        push_food_pattern(out, viewport, x, y, FOOD_FULL, FOOD_PATTERN.len());
-    } else if points >= 1.0 {
-        // 半颗：只填充左半部分像素列。
-        push_food_pattern(out, viewport, x, y, FOOD_FULL, FOOD_PATTERN.len() / 2 + 1);
-    }
-}
-
-fn push_food_pattern(
+/// 按百分比裁剪右侧像素绘制一条状态填充。
+///
+/// 102 像素对应 100 个 1% 档位：中间每档 1 列，首尾两档各占 2 列。
+fn push_state_fill(
     out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
-    x: f32,
-    y: f32,
-    color: [f32; 4],
-    max_columns: usize,
-) {
-    let columns = FOOD_PATTERN.len();
-    for (row, bits) in FOOD_PATTERN.iter().enumerate() {
-        let mut column = 0;
-        while column < columns {
-            let filled = bits & (1 << (columns - 1 - column)) != 0;
-            if !filled || column >= max_columns {
-                column += 1;
-                continue;
-            }
-            let start = column;
-            while column < columns
-                && column < max_columns
-                && FOOD_PATTERN[row] & (1 << (columns - 1 - column)) != 0
-            {
-                column += 1;
-            }
-            push_quad(
-                out,
-                viewport,
-                UiRect::new(
-                    x + start as f32 * FOOD_PIXEL,
-                    y + row as f32 * FOOD_PIXEL,
-                    (column - start) as f32 * FOOD_PIXEL,
-                    FOOD_PIXEL,
-                ),
-                color,
-            );
-        }
-    }
-}
-
-/// 心形填充状态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeartFill {
-    Full,
-    Half,
-    Empty,
-}
-
-/// 绘制一颗心形；存在 UI 图集时使用整图，否则回退 7×7 像素图案。
-fn push_heart(
-    out: &mut Vec<UiVertex>,
-    viewport: (f32, f32),
-    x: f32,
-    y: f32,
-    fill: HeartFill,
+    anchor: (f32, f32),
+    row: (&str, f32, [f32; 4]),
     ui: &UiTextureMap,
 ) {
-    let name = match fill {
-        HeartFill::Full => "heart_full",
-        HeartFill::Half => "heart_half",
-        HeartFill::Empty => "heart_empty",
-    };
-    if let Some(view) = ui.get(name) {
-        let size = HEART_PATTERN.len() as f32 * HEART_PIXEL;
-        push_ui_view(out, viewport, UiRect::new(x, y, size, size), view, [1.0; 4]);
+    let (name, ratio, fallback) = row;
+    let columns = state_fill_columns(ratio);
+    if columns <= 0.0 {
         return;
     }
-    let heart_columns = HEART_PATTERN.len();
-    for (row, bits) in HEART_PATTERN.iter().enumerate() {
-        let mut column = 0;
-        while column < heart_columns {
-            let filled = bits & (1 << (heart_columns - 1 - column)) != 0;
-            if !filled {
-                column += 1;
-                continue;
-            }
-            let start = column;
-            while column < heart_columns
-                && HEART_PATTERN[row] & (1 << (heart_columns - 1 - column)) != 0
-            {
-                column += 1;
-            }
-            let is_visible = match fill {
-                HeartFill::Full => true,
-                HeartFill::Half => start <= heart_columns / 2,
-                HeartFill::Empty => false,
-            };
-            let color = if is_visible {
-                theme::HEART_FULL
-            } else {
-                theme::HEART_EMPTY
-            };
-            let visible_end = match fill {
-                HeartFill::Half => column.min(heart_columns / 2 + 1),
-                _ => column,
-            };
-            if !is_visible {
-                push_quad(
-                    out,
-                    viewport,
-                    UiRect::new(
-                        x + start as f32 * HEART_PIXEL,
-                        y + row as f32 * HEART_PIXEL,
-                        (column - start) as f32 * HEART_PIXEL,
-                        HEART_PIXEL,
-                    ),
-                    theme::HEART_EMPTY,
-                );
-                continue;
-            }
-            push_quad(
-                out,
-                viewport,
-                UiRect::new(
-                    x + start as f32 * HEART_PIXEL,
-                    y + row as f32 * HEART_PIXEL,
-                    (visible_end - start) as f32 * HEART_PIXEL,
-                    HEART_PIXEL,
-                ),
-                color,
-            );
-        }
+    let rect = UiRect::new(
+        anchor.0,
+        anchor.1,
+        columns * STATE_SCALE,
+        STATE_FILL_HEIGHT * STATE_SCALE,
+    );
+    if let Some(view) = ui.get(name) {
+        let mut cropped = view;
+        cropped.draw = crate::texture::ui_texture::UiDrawMode::Stretch;
+        cropped.aspect = None;
+        cropped.uv.max[0] = cropped.uv.min[0] + cropped.uv.width() * (columns / STATE_FILL_WIDTH);
+        push_ui_view(out, viewport, rect, cropped, [1.0; 4]);
+    } else {
+        push_quad(out, viewport, rect, fallback);
+    }
+}
+
+/// 百分比对应的原图像素列数：0 为 0 列，100% 为 102 列，中间每 1% 增加 1 列。
+fn state_fill_columns(ratio: f32) -> f32 {
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let percent = (ratio * 100.0).round();
+    if percent <= 0.0 {
+        0.0
+    } else if percent >= 100.0 {
+        STATE_FILL_WIDTH
+    } else {
+        percent + 1.0
     }
 }
 
@@ -1251,43 +1105,57 @@ mod tests {
     }
 
     #[test]
-    fn health_is_clamped_and_defaults_are_safe() {
+    fn state_values_are_clamped_and_defaults_are_safe() {
         let mut model = HudModel::default();
-        model.set_health(50, 20);
-        assert_eq!(model.health, 20);
-        assert_eq!(model.max_health, 20);
+        model.set_health(150, 100);
+        assert_eq!(model.health, 100);
+        assert_eq!(model.max_health, 100);
         model.set_health(5, 0);
-        assert_eq!(model.max_health, 20, "非法最大值回落到默认值");
+        assert_eq!(model.max_health, 100, "非法最大值回落到默认值");
         assert_eq!(model.health, 5);
+        model.set_survival(120.0, -3.0, "DAY");
+        assert_eq!(model.hunger, 100.0);
+        assert_eq!(model.stamina, 0.0);
     }
 
     #[test]
-    fn half_hearts_render_a_partial_red_fill() {
-        let mut vertices = Vec::new();
-        let mut model = HudModel::default();
-        model.set_health(19, 20);
-        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
-
-        assert!(
-            vertices
-                .iter()
-                .any(|vertex| vertex.color == theme::HEART_EMPTY),
-            "19/20 应出现半颗心，右半部分保持空心色"
-        );
+    fn state_fill_columns_map_first_and_last_percent_to_two_columns() {
+        assert_eq!(state_fill_columns(0.0), 0.0);
+        assert_eq!(state_fill_columns(0.01), 2.0, "首个 1% 占两列");
+        assert_eq!(state_fill_columns(0.5), 51.0);
+        assert_eq!(state_fill_columns(0.99), 100.0, "最后一个 1% 占两列");
+        assert_eq!(state_fill_columns(1.0), 102.0);
+        assert_eq!(state_fill_columns(f32::NAN), 0.0);
     }
 
     #[test]
-    fn health_value_text_is_rendered() {
+    fn full_state_bars_draw_three_fills_over_the_background() {
         let mut vertices = Vec::new();
-        let mut model = HudModel::default();
-        model.set_health(7, 20);
-        model.build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
-        assert!(
-            vertices
-                .iter()
-                .any(|vertex| vertex.color == theme::TEXT_MUTED),
-            "生命值数值以次要文本颜色绘制"
-        );
+        HudModel::default().build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
+        for color in [STATE_HEART_COLOR, STATE_STAMINA_COLOR, STATE_HUNGER_COLOR] {
+            assert!(
+                vertices.iter().any(|vertex| vertex.color == color),
+                "满值时三条填充都应绘制"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_state_bars_skip_all_fills() {
+        let mut vertices = Vec::new();
+        HudModel {
+            health: 0,
+            hunger: 0.0,
+            stamina: 0.0,
+            ..HudModel::default()
+        }
+        .build(&mut vertices, 1280.0, 720.0, &ItemTextureMap::empty());
+        for color in [STATE_HEART_COLOR, STATE_STAMINA_COLOR, STATE_HUNGER_COLOR] {
+            assert!(
+                !vertices.iter().any(|vertex| vertex.color == color),
+                "空值不应绘制填充"
+            );
+        }
     }
 
     #[test]

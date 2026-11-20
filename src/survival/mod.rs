@@ -17,5 +17,5 @@ pub mod stamina;
 pub mod survival;
 pub mod world_time;
 
-pub use survival::{SavedVitals, Vitals};
+pub use survival::{SavedVitals, Vitals, VitalsInput};
 pub use world_time::{SavedWorldTime, WorldTime};

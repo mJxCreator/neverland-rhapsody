@@ -8,6 +8,8 @@
 //! 与 `campfires`（营火烹饪状态）；旧档缺省为满饥饿、满体力与清晨。
 //! v0.21（version 9）新增 `worldgen_version`（地形版本）；旧档按 1 处理，
 //! 继续使用原有高度图地形，避免已建世界外观改变。
+//! version 10 角色状态重做（项目版本仍为 v0.22）：生命上限改为 100、饥饿改为
+//! 0–100 并移除饱和度；旧档按比例换算生命与饥饿，体力裁剪到新的上限。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -36,7 +38,7 @@ use crate::world::{
 /// 默认存档位置，相对进程工作目录。
 pub const SAVE_PATH: &str = "saves/world.json";
 /// 当前存档格式版本：区块数据 + 掉落物 + 生物 + 生成记录 + 玩家状态 + 装备 + 生存 + 地形版本。
-const SAVE_VERSION: u32 = 9;
+const SAVE_VERSION: u32 = 10;
 /// v0.8 使用的旧版格式版本：世界坐标平铺记录。
 const LEGACY_SAVE_VERSION: u32 = 1;
 /// 后台写盘的最小间隔：把连续发生的存档变更合并成一次写入，减少序列化与磁盘 IO 次数。
@@ -333,6 +335,7 @@ impl WorldSave {
     /// 解析存档文本、校验版本与种子，并把改动载入内存。
     fn apply_text(&mut self, text: &str) -> Result<()> {
         let data: SaveFile = serde_json::from_str(text).context("解析存档失败")?;
+        let version = data.version;
         if !(LEGACY_SAVE_VERSION..=SAVE_VERSION).contains(&data.version) {
             bail!(
                 "存档版本 {} 与当前支持的版本 1..={} 不一致",
@@ -416,9 +419,21 @@ impl WorldSave {
         self.entities = entities;
         self.populated_chunks = populated_chunks;
         self.player = data.player;
-        self.survival = data.survival.map(SavedSurvival::sanitized);
+        if version < 10 {
+            // v9 及更早：20 点生命制与 0–20 饥饿制；按比例换算到新量程。
+            self.survival = data
+                .survival
+                .map(SavedSurvival::migrated_to_v10)
+                .map(SavedSurvival::sanitized);
+            self.vitals = data
+                .vitals
+                .map(SavedVitals::migrated_to_v10)
+                .map(SavedVitals::sanitized);
+        } else {
+            self.survival = data.survival.map(SavedSurvival::sanitized);
+            self.vitals = data.vitals.map(SavedVitals::sanitized);
+        }
         self.equipment = data.equipment;
-        self.vitals = data.vitals.map(SavedVitals::sanitized);
         self.world_time = data.world_time;
         self.campfires = data.campfires;
         self.worldgen_version = data.worldgen_version;
@@ -934,7 +949,7 @@ mod tests {
         .expect("写盘应成功");
 
         let text = fs::read_to_string(&path).expect("读取新存档失败");
-        assert!(text.contains("\"version\":9"));
+        assert!(text.contains("\"version\":10"));
         assert!(text.contains("chunk_edits"));
         assert_eq!(
             fs::read_to_string(suffixed(&path, ".bak")).expect("读取备份失败"),
@@ -1416,8 +1431,7 @@ mod tests {
         assert!(save.campfires().is_empty());
 
         let mut vitals = SavedVitals::default();
-        vitals.hunger.hunger = 12.0;
-        vitals.hunger.saturation = 3.0;
+        vitals.hunger.hunger = 60.0;
         vitals.stamina.stamina = 42.0;
         vitals.respawn = Some([4, 9, -6]);
         let campfire = SavedCampfire {
@@ -1437,7 +1451,7 @@ mod tests {
             .expect("写盘应成功");
 
         let reloaded = WorldSave::load(&path, DEFAULT_SEED);
-        assert_eq!(reloaded.vitals().unwrap().hunger.hunger, 12.0);
+        assert_eq!(reloaded.vitals().unwrap().hunger.hunger, 60.0);
         assert_eq!(reloaded.vitals().unwrap().stamina.stamina, 42.0);
         assert_eq!(reloaded.vitals().unwrap().respawn, Some([4, 9, -6]));
         assert!((reloaded.world_time().time_of_day - 0.75).abs() < 1e-6);
@@ -1497,10 +1511,10 @@ mod tests {
         assert_eq!(
             save.survival(),
             Some(SavedSurvival {
-                max_health: 20,
-                current_health: 20,
+                max_health: 100,
+                current_health: 100,
             }),
-            "崩溃时的死亡中间态必须恢复满血"
+            "旧档换算到 100 点生命制后，崩溃时的死亡中间态必须恢复满血"
         );
         remove_all(&path);
     }
@@ -1521,10 +1535,10 @@ mod tests {
         assert_eq!(
             save.survival(),
             Some(SavedSurvival {
-                max_health: 20,
-                current_health: 20,
+                max_health: 100,
+                current_health: 100,
             }),
-            "非法最大值回落默认，当前值钳制到最大值"
+            "旧档换算后非法值回落默认，当前值钳制到最大值"
         );
         remove_all(&path);
     }

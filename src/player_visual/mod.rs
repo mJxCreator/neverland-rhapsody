@@ -59,6 +59,8 @@ pub struct PlayerVisualState {
     pub mining: bool,
     pub eating: bool,
     pub attacking: bool,
+    /// 本帧是否处于奔跑状态（由输入与体力共同决定）。
+    pub sprinting: bool,
     /// 本帧真实落地事件。
     pub landed: bool,
 }
@@ -137,7 +139,7 @@ impl PlayerVisual {
             grounded: state.grounded,
             vertical_speed: state.velocity.y,
             horizontal_speed: self.speed,
-            sprinting: self.speed >= 4.8,
+            sprinting: state.sprinting,
             mining: state.mining,
             eating: state.eating,
             attacking: state.attacking,
@@ -339,11 +341,12 @@ mod tests {
             yaw: 0.0,
             velocity: Vec3::ZERO,
             grounded: true,
-            health: 20,
+            health: 100,
             dead: false,
             mining: false,
             eating: false,
             attacking: false,
+            sprinting: false,
             landed: false,
         }
     }

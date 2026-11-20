@@ -94,9 +94,7 @@ pub struct AnimationUpdate {
 /// 落地与受击缓冲时长（秒）。
 pub const LAND_DURATION: f32 = 0.22;
 pub const HURT_DURATION: f32 = 0.30;
-/// 冲刺动画的最低水平速度。
-const RUN_SPEED_THRESHOLD: f32 = 4.8;
-/// 行走动画的最低水平速度。
+/// 行走/奔跑动画的最低水平速度。
 const WALK_SPEED_THRESHOLD: f32 = 0.15;
 /// 起跳动画的最低向上速度。
 const JUMP_SPEED_THRESHOLD: f32 = 0.25;
@@ -167,7 +165,7 @@ impl PlayerAnimationController {
             PlayerAnimationState::Mining
         } else if context.eating {
             PlayerAnimationState::Eat
-        } else if context.sprinting && context.horizontal_speed >= RUN_SPEED_THRESHOLD {
+        } else if context.sprinting && context.horizontal_speed >= WALK_SPEED_THRESHOLD {
             PlayerAnimationState::Run
         } else if context.horizontal_speed >= WALK_SPEED_THRESHOLD {
             PlayerAnimationState::Walk

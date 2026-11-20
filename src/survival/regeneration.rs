@@ -1,40 +1,24 @@
-//! 自然恢复：饥饿值充足且未满血时，按固定间隔恢复生命并消耗饥饿值。
+//! 自然恢复：饥饿值高于 50% 且未满血时缓慢恢复生命。
+//!
+//! 恢复间隔随饥饿值变化：每 `500 / hunger` 秒恢复 1 点生命值。饥饿高于 50%
+//! 时饥饿越多恢复越快，且不再消耗饥饿值。
 
-/// 两次自然恢复之间的间隔（秒）。
-pub const REGEN_INTERVAL: f32 = 4.0;
-/// 每次自然恢复消耗的饥饿值。
-pub const REGEN_HUNGER_COST: f32 = 1.0;
+/// 恢复间隔公式的分子。
+pub const REGEN_SECONDS_NUMERATOR: f32 = 500.0;
 
-/// 自然恢复参数。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RegenConfig {
-    pub interval: f32,
-    pub hunger_cost: f32,
-}
-
-impl Default for RegenConfig {
-    fn default() -> Self {
-        Self {
-            interval: REGEN_INTERVAL,
-            hunger_cost: REGEN_HUNGER_COST,
-        }
+/// 按当前饥饿值计算恢复 1 点生命所需的秒数；饥饿为 0 时视为无穷大。
+pub fn interval_for(hunger: f32) -> f32 {
+    if hunger.is_finite() && hunger > 0.0 {
+        REGEN_SECONDS_NUMERATOR / hunger.min(crate::survival::hunger::MAX_HUNGER)
+    } else {
+        f32::INFINITY
     }
 }
 
 /// 恢复计时器；只有满足条件时才累计时间。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Regenerator {
     timer: f32,
-    config: RegenConfig,
-}
-
-impl Default for Regenerator {
-    fn default() -> Self {
-        Self {
-            timer: 0.0,
-            config: RegenConfig::default(),
-        }
-    }
 }
 
 impl Regenerator {
@@ -47,12 +31,8 @@ impl Regenerator {
         self.timer
     }
 
-    pub fn hunger_cost(self) -> f32 {
-        self.config.hunger_cost
-    }
-
-    /// 推进计时；满足条件且到达间隔时返回 `true`，并保留余数。
-    pub fn tick(&mut self, delta_seconds: f32, eligible: bool) -> bool {
+    /// 推进计时；满足条件且到达当前间隔时返回 `true`，并保留余数。
+    pub fn tick(&mut self, delta_seconds: f32, eligible: bool, hunger: f32) -> bool {
         if !eligible {
             self.timer = 0.0;
             return false;
@@ -60,9 +40,14 @@ impl Regenerator {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return false;
         }
+        let interval = interval_for(hunger);
+        if !interval.is_finite() {
+            self.timer = 0.0;
+            return false;
+        }
         self.timer += delta_seconds;
-        if self.timer >= self.config.interval {
-            self.timer -= self.config.interval;
+        if self.timer >= interval {
+            self.timer -= interval;
             true
         } else {
             false
@@ -75,25 +60,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heals_only_after_interval() {
+    fn interval_shrinks_as_hunger_rises() {
+        assert!((interval_for(100.0) - 5.0).abs() < 1e-6);
+        assert!((interval_for(50.0) - 10.0).abs() < 1e-6);
+        assert!(!interval_for(0.0).is_finite());
+    }
+
+    #[test]
+    fn heals_only_after_the_current_interval() {
         let mut regen = Regenerator::new();
-        assert!(!regen.tick(3.9, true));
-        assert!(regen.tick(0.2, true));
+        assert!(!regen.tick(4.9, true, 100.0));
+        assert!(regen.tick(0.2, true, 100.0));
+    }
+
+    #[test]
+    fn higher_hunger_heals_faster() {
+        let mut slow = Regenerator::new();
+        let mut fast = Regenerator::new();
+        assert!(!slow.tick(5.0, true, 51.0));
+        assert!(fast.tick(5.0, true, 100.0));
     }
 
     #[test]
     fn ineligible_resets_timer() {
         let mut regen = Regenerator::new();
-        assert!(!regen.tick(3.0, true));
-        assert!(!regen.tick(1.0, false));
+        assert!(!regen.tick(4.0, true, 100.0));
+        assert!(!regen.tick(1.0, false, 100.0));
         assert_eq!(regen.timer(), 0.0);
-        assert!(!regen.tick(3.0, true));
-    }
-
-    #[test]
-    fn large_delta_keeps_remainder() {
-        let mut regen = Regenerator::new();
-        assert!(regen.tick(9.0, true));
-        assert!((regen.timer() - 5.0).abs() < 1e-5);
+        assert!(!regen.tick(4.0, true, 100.0));
     }
 }

@@ -1,11 +1,14 @@
 //! 玩家输入控制器：采集键盘与鼠标事件，输出移动意图与视角增量。
 //!
 //! 控制器不直接修改玩家位置，最终位移统一由物理系统处理。
+//! 冲刺由方向键双击触发（Shift 也可作为等效请求），松开全部方向键后结束。
 
 use winit::keyboard::KeyCode;
 
 /// 每像素鼠标位移对应的弧度。
 const MOUSE_SENSITIVITY: f32 = 0.0022;
+/// 双击方向键触发奔跑的最大间隔（秒）。
+const DOUBLE_TAP_WINDOW: f32 = 0.3;
 
 /// 一次输入解析得到的移动意图。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -28,7 +31,13 @@ pub struct PlayerController {
     left: bool,
     right: bool,
     jump: bool,
-    sprint: bool,
+    shift_sprint: bool,
+    /// 双击方向键后锁定的奔跑状态；全部方向键松开时解除。
+    sprint_latched: bool,
+    /// 控制器内部时钟，用于判定双击间隔。
+    clock: f32,
+    /// 每个方向键上一次按下的时刻。
+    last_press: [Option<f32>; 4],
     look_delta: (f32, f32),
 }
 
@@ -37,18 +46,38 @@ impl PlayerController {
         Self::default()
     }
 
+    /// 推进控制器时钟；主循环每帧调用，用于双击判定。
+    pub fn tick(&mut self, delta_seconds: f32) {
+        if delta_seconds.is_finite() && delta_seconds > 0.0 {
+            self.clock += delta_seconds;
+        }
+    }
+
     /// 记录移动与跳跃键状态，其余按键忽略。
     pub fn handle_key(&mut self, code: KeyCode, pressed: bool) {
-        let slot = match code {
-            KeyCode::KeyW => &mut self.forward,
-            KeyCode::KeyS => &mut self.backward,
-            KeyCode::KeyA => &mut self.left,
-            KeyCode::KeyD => &mut self.right,
-            KeyCode::Space => &mut self.jump,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => &mut self.sprint,
-            _ => return,
-        };
-        *slot = pressed;
+        if let Some(index) = direction_index(code) {
+            let slot = self.direction_mut(index);
+            let was_down = *slot;
+            *slot = pressed;
+            if pressed && !was_down {
+                if let Some(last) = self.last_press[index] {
+                    if self.clock - last <= DOUBLE_TAP_WINDOW {
+                        self.sprint_latched = true;
+                    }
+                }
+                self.last_press[index] = Some(self.clock);
+            }
+            if !pressed && !self.any_direction_held() {
+                self.sprint_latched = false;
+            }
+            return;
+        }
+
+        match code {
+            KeyCode::Space => self.jump = pressed,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift_sprint = pressed,
+            _ => {}
+        }
     }
 
     /// 累加本帧的鼠标原始位移。
@@ -73,9 +102,9 @@ impl PlayerController {
         look
     }
 
-    /// 当前是否按住 Shift 请求冲刺。
+    /// 当前是否请求冲刺：双击方向键锁定或按住 Shift。
     pub fn sprint(&self) -> bool {
-        self.sprint
+        self.sprint_latched || self.shift_sprint
     }
 
     /// 当前按键组合对应的移动意图。
@@ -84,8 +113,32 @@ impl PlayerController {
             forward: axis(self.forward, self.backward),
             right: axis(self.right, self.left),
             jump: self.jump,
-            sprint: self.sprint,
+            sprint: self.sprint(),
         }
+    }
+
+    fn direction_mut(&mut self, index: usize) -> &mut bool {
+        match index {
+            0 => &mut self.forward,
+            1 => &mut self.backward,
+            2 => &mut self.left,
+            _ => &mut self.right,
+        }
+    }
+
+    fn any_direction_held(&self) -> bool {
+        self.forward || self.backward || self.left || self.right
+    }
+}
+
+/// 方向键在双击记录中的下标；非方向键返回 `None`。
+fn direction_index(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::KeyW => Some(0),
+        KeyCode::KeyS => Some(1),
+        KeyCode::KeyA => Some(2),
+        KeyCode::KeyD => Some(3),
+        _ => None,
     }
 }
 
@@ -125,6 +178,50 @@ mod tests {
         assert!(controller.intent().jump);
         controller.handle_key(KeyCode::Space, false);
         assert!(!controller.intent().jump);
+    }
+
+    #[test]
+    fn single_tap_walks_and_double_tap_sprints() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::KeyW, true);
+        assert!(!controller.sprint(), "单击方向键只应行走");
+        controller.handle_key(KeyCode::KeyW, false);
+
+        controller.tick(0.1);
+        controller.handle_key(KeyCode::KeyW, true);
+        assert!(controller.sprint(), "窗口内双击应进入奔跑");
+        assert!(controller.intent().sprint);
+
+        controller.handle_key(KeyCode::KeyW, false);
+        assert!(!controller.sprint(), "松开方向键应结束奔跑");
+    }
+
+    #[test]
+    fn double_tap_outside_the_window_walks() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::KeyW, true);
+        controller.handle_key(KeyCode::KeyW, false);
+        controller.tick(DOUBLE_TAP_WINDOW + 0.05);
+        controller.handle_key(KeyCode::KeyW, true);
+        assert!(!controller.sprint());
+    }
+
+    #[test]
+    fn key_repeat_is_not_a_double_tap() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::KeyW, true);
+        controller.tick(0.05);
+        controller.handle_key(KeyCode::KeyW, true);
+        assert!(!controller.sprint(), "按住产生的重复事件不应触发奔跑");
+    }
+
+    #[test]
+    fn shift_still_requests_sprint() {
+        let mut controller = PlayerController::new();
+        controller.handle_key(KeyCode::ShiftLeft, true);
+        assert!(controller.sprint());
+        controller.handle_key(KeyCode::ShiftLeft, false);
+        assert!(!controller.sprint());
     }
 
     #[test]

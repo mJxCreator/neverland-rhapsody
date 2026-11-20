@@ -121,7 +121,7 @@ impl EatingState {
         let food = food_registry::definition(item)?;
         let remaining = stack.count().saturating_sub(1);
         let _ = inventory.set_slot(self.slot, stack.with_count(remaining));
-        hunger.eat(food.hunger, food.saturation);
+        hunger.eat(food.hunger);
         if let FoodEffect::Hunger { chance, duration } = food.effect {
             if rng.next_f32() < chance {
                 hunger.apply_hunger_effect(duration);
@@ -199,7 +199,7 @@ mod tests {
         eating.update(2.0);
         let mut inventory = inventory_with(ItemId::BREAD, 2);
         let mut hunger = Hunger::new();
-        hunger.drain(10.0);
+        hunger.drain(50.0);
         let before = hunger.value();
         let mut rng = GameRng::new(1);
         assert_eq!(
@@ -207,7 +207,7 @@ mod tests {
             Some(ItemId::BREAD)
         );
         assert_eq!(inventory.slot(HOTBAR_OFFSET).unwrap().count(), 1);
-        assert!((hunger.value() - (before + 5.0)).abs() < 1e-5);
+        assert!((hunger.value() - (before + 25.0)).abs() < 1e-5);
         assert!(!eating.is_eating());
     }
 

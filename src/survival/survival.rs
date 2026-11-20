@@ -2,13 +2,16 @@
 //!
 //! 主循环只需要通过本结构推进生存状态；死亡、暂停与界面阻塞由调用方以显式
 //! 参数传入，避免各子系统各自判断游戏状态。
+//!
+//! 体力上限始终等于当前饥饿值。体力耗尽一轮后扣除 1 点饥饿并以新上限补满；
+//! 饥饿高于 50% 时按 `500 / hunger` 秒恢复 1 点生命。
 
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
-use super::hunger::{Activity, Hunger, SavedHunger};
+use super::hunger::{Hunger, SavedHunger};
 use super::regeneration::Regenerator;
-use super::stamina::{SavedStamina, Stamina};
+use super::stamina::{SavedStamina, Stamina, JUMP_COST};
 
 /// 存档中的玩家生存数据。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -23,13 +26,45 @@ pub struct SavedVitals {
 }
 
 impl SavedVitals {
-    /// 清洗越界复活点；垂直坐标越界时视为未设置。
+    /// 清洗越界数值：饥饿裁剪到上限，体力不得超过当前饥饿，复活点垂直越界时视为未设置。
     pub fn sanitized(self) -> Self {
+        let hunger = self.hunger.sanitized();
+        let stamina = self.stamina.sanitized(hunger.hunger);
         let respawn = self
             .respawn
             .filter(|point| (0..crate::world::WORLD_HEIGHT).contains(&point[1]));
-        Self { respawn, ..self }
+        Self {
+            hunger,
+            stamina,
+            respawn,
+        }
     }
+
+    /// 把 v9 及更早存档的 0–20 饥饿换算为 0–100，并同步裁剪体力。
+    pub fn migrated_to_v10(self) -> Self {
+        let hunger = SavedHunger {
+            hunger: (self.hunger.hunger * 5.0).clamp(0.0, super::hunger::MAX_HUNGER),
+        };
+        let stamina = self.stamina.sanitized(hunger.hunger);
+        Self {
+            hunger,
+            stamina,
+            respawn: self.respawn,
+        }
+    }
+}
+
+/// 一帧内影响生存结算的动作状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VitalsInput {
+    /// 是否存在移动输入。
+    pub moving: bool,
+    /// 是否正在奔跑。
+    pub sprinting: bool,
+    /// 本帧真实发生的跳跃次数。
+    pub jumps: u32,
+    /// 界面是否阻塞世界输入；阻塞期间体力保持不变。
+    pub blocked: bool,
 }
 
 /// 玩家生存运行时状态。
@@ -60,9 +95,12 @@ impl Vitals {
 
     pub fn from_saved(saved: SavedVitals) -> Self {
         let saved = saved.sanitized();
+        let hunger = Hunger::from_saved(saved.hunger);
+        let mut stamina = Stamina::from_saved(saved.stamina);
+        stamina.set_max(hunger.value());
         Self {
-            hunger: Hunger::from_saved(saved.hunger),
-            stamina: Stamina::from_saved(saved.stamina),
+            hunger,
+            stamina,
             regeneration: Regenerator::new(),
             respawn: saved
                 .respawn
@@ -106,61 +144,81 @@ impl Vitals {
         self.respawn = None;
     }
 
-    /// 是否允许开始冲刺：存活、未阻塞、有移动输入、体力与饥饿均允许。
+    /// 是否允许开始冲刺：存活、未阻塞、有移动输入、有体力且未完全饥饿。
     pub fn can_sprint(&self, alive: bool, blocked: bool, moving: bool) -> bool {
-        alive && !blocked && moving && self.stamina.can_sprint() && self.hunger.can_sprint()
+        alive && !blocked && moving && self.stamina.can_sprint() && self.hunger.value() > 0.0
     }
 
     /// 推进生存状态，返回本帧应恢复的生命值（0 或 1）。
     ///
-    /// - `blocked`：界面阻塞期间体力保持不变，但饥饿仍按游戏时间消耗。
-    /// - `alive` 为假时不推进任何数值。
-    /// - `needs_heal`：当前生命值未满。
-    #[allow(clippy::too_many_arguments)]
+    /// `alive` 为假时不推进任何数值；`needs_heal` 表示当前生命值未满。
     pub fn update(
         &mut self,
         delta_seconds: f32,
-        activity: Activity,
-        sprinting: bool,
-        moving: bool,
-        blocked: bool,
+        input: VitalsInput,
         alive: bool,
         needs_heal: bool,
     ) -> u32 {
         if !alive || !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return 0;
         }
-        if !blocked {
-            self.stamina.update(
-                delta_seconds,
-                sprinting,
-                moving,
-                self.hunger.regeneration_scale(),
-            );
+
+        // 体力上限始终跟随饥饿值；饥饿恢复后允许从零重新补满。
+        self.stamina.set_max(self.hunger.value());
+        if !input.blocked && !self.stamina.can_sprint() && self.stamina.max() > 0.0 {
+            self.stamina.refill();
         }
-        self.hunger.update(delta_seconds, activity);
+
+        if !input.blocked {
+            let multiplier = if self.hunger.hunger_effect_active() {
+                2.0
+            } else {
+                1.0
+            };
+            let mut depleted = self.stamina.update(
+                delta_seconds,
+                input.moving && !input.sprinting,
+                input.sprinting,
+                multiplier,
+            );
+            for _ in 0..input.jumps {
+                depleted |= self.stamina.drain(JUMP_COST);
+            }
+            if depleted {
+                self.consume_hunger_for_stamina();
+            }
+        }
         self.hunger.tick_effect(delta_seconds);
 
         let eligible = needs_heal && self.hunger.can_regenerate();
-        if self.regeneration.tick(delta_seconds, eligible) {
-            self.hunger.drain(self.regeneration.hunger_cost());
+        if self
+            .regeneration
+            .tick(delta_seconds, eligible, self.hunger.value())
+        {
             1
         } else {
             0
         }
+    }
+
+    /// 体力耗尽：扣 1 点饥饿并以新的上限补满体力。
+    fn consume_hunger_for_stamina(&mut self) {
+        self.hunger.drain(1.0);
+        self.stamina.set_max(self.hunger.value());
+        self.stamina.refill();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::survival::regeneration::REGEN_INTERVAL;
 
     #[test]
     fn default_vitals_are_full() {
         let vitals = Vitals::new();
-        assert_eq!(vitals.hunger().value(), 20.0);
+        assert_eq!(vitals.hunger().value(), 100.0);
         assert_eq!(vitals.stamina().value(), 100.0);
+        assert_eq!(vitals.stamina().max(), 100.0);
         assert!(vitals.respawn().is_none());
     }
 
@@ -169,52 +227,97 @@ mod tests {
         let mut vitals = Vitals::new();
         vitals.hunger_mut().drain(5.0);
         let before = *vitals.hunger();
-        vitals.update(10.0, Activity::Sprinting, true, true, false, false, true);
+        vitals.update(
+            10.0,
+            VitalsInput {
+                moving: true,
+                sprinting: true,
+                jumps: 3,
+                blocked: false,
+            },
+            false,
+            true,
+        );
         assert_eq!(*vitals.hunger(), before);
     }
 
     #[test]
-    fn blocked_ui_pauses_stamina_but_not_hunger() {
+    fn blocked_ui_pauses_stamina() {
         let mut vitals = Vitals::new();
-        vitals.stamina_mut().drain_sprint(1.0);
         let stamina_before = vitals.stamina().value();
-        let saturation_before = vitals.hunger().saturation();
-        vitals.update(1.0, Activity::Walking, true, true, true, true, false);
+        vitals.update(
+            1.0,
+            VitalsInput {
+                moving: true,
+                blocked: true,
+                ..VitalsInput::default()
+            },
+            true,
+            false,
+        );
         assert_eq!(vitals.stamina().value(), stamina_before);
-        assert!(vitals.hunger().saturation() < saturation_before);
     }
 
     #[test]
-    fn regeneration_heals_and_costs_hunger() {
+    fn walking_depletes_stamina_and_consumes_one_hunger() {
         let mut vitals = Vitals::new();
-        let saturation_before = vitals.hunger().saturation();
-        let healed = vitals.update(
-            REGEN_INTERVAL,
-            Activity::Idle,
-            false,
-            false,
-            false,
+        // 100 点体力在行走 1 点/秒下正好 100 秒耗尽。
+        vitals.update(
+            100.0,
+            VitalsInput {
+                moving: true,
+                ..VitalsInput::default()
+            },
             true,
-            true,
+            false,
         );
+        assert!((vitals.hunger().value() - 99.0).abs() < 1e-3);
+        assert!((vitals.stamina().value() - 99.0).abs() < 1e-3);
+        assert!((vitals.stamina().max() - 99.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn jumping_costs_one_stamina_each() {
+        let mut vitals = Vitals::new();
+        vitals.update(0.0, VitalsInput::default(), true, false);
+        // 用一次极短但有效的更新结算跳跃消耗。
+        vitals.stamina_mut().set_max(100.0);
+        let before = vitals.stamina().value();
+        vitals.update(
+            0.001,
+            VitalsInput {
+                jumps: 3,
+                ..VitalsInput::default()
+            },
+            true,
+            false,
+        );
+        assert!((vitals.stamina().value() - (before - 3.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn stamina_max_follows_hunger() {
+        let mut vitals = Vitals::new();
+        vitals.hunger_mut().drain(60.0);
+        vitals.update(0.001, VitalsInput::default(), true, false);
+        assert!((vitals.stamina().max() - 40.0).abs() < 1e-6);
+        assert!(vitals.stamina().value() <= 40.0);
+    }
+
+    #[test]
+    fn regeneration_heals_above_half_hunger_without_cost() {
+        let mut vitals = Vitals::new();
+        let hunger_before = vitals.hunger().value();
+        let healed = vitals.update(5.0, VitalsInput::default(), true, true);
         assert_eq!(healed, 1);
-        assert!(vitals.hunger().saturation() < saturation_before);
+        assert!((vitals.hunger().value() - hunger_before).abs() < 1e-6);
     }
 
     #[test]
-    fn regeneration_requires_enough_hunger() {
+    fn regeneration_requires_strictly_more_than_half_hunger() {
         let mut vitals = Vitals::new();
-        vitals.hunger_mut().drain(20.0);
-        assert!(!vitals.hunger().can_regenerate());
-        let healed = vitals.update(
-            REGEN_INTERVAL,
-            Activity::Idle,
-            false,
-            false,
-            false,
-            true,
-            true,
-        );
+        vitals.hunger_mut().drain(50.0);
+        let healed = vitals.update(100.0, VitalsInput::default(), true, true);
         assert_eq!(healed, 0);
     }
 
@@ -222,17 +325,39 @@ mod tests {
     fn sprint_requires_stamina_and_hunger() {
         let mut vitals = Vitals::new();
         assert!(vitals.can_sprint(true, false, true));
-        vitals.stamina_mut().drain_sprint(10.0);
+        vitals.stamina_mut().set_max(100.0);
+        vitals.stamina_mut().drain(100.0);
         assert!(!vitals.can_sprint(true, false, true));
         assert!(!vitals.can_sprint(true, false, false));
         assert!(!vitals.can_sprint(false, false, true));
     }
 
     #[test]
+    fn eating_after_starvation_refills_stamina() {
+        let mut vitals = Vitals::new();
+        vitals.hunger_mut().drain(100.0);
+        vitals.update(
+            0.001,
+            VitalsInput {
+                moving: true,
+                ..VitalsInput::default()
+            },
+            true,
+            false,
+        );
+        assert_eq!(vitals.stamina().max(), 0.0);
+        assert_eq!(vitals.stamina().value(), 0.0);
+        vitals.hunger_mut().eat(40.0);
+        vitals.update(0.001, VitalsInput::default(), true, false);
+        assert!((vitals.stamina().value() - 40.0).abs() < 1e-4);
+    }
+
+    #[test]
     fn saved_vitals_round_trip() {
         let mut vitals = Vitals::new();
         vitals.hunger_mut().drain(5.0);
-        vitals.stamina_mut().drain_sprint(2.0);
+        vitals.stamina_mut().set_max(95.0);
+        vitals.stamina_mut().drain(2.0);
         vitals.set_respawn(IVec3::new(3, 4, 5));
         let restored = Vitals::from_saved(vitals.to_saved());
         assert_eq!(restored.hunger().value(), vitals.hunger().value());
@@ -247,5 +372,17 @@ mod tests {
             ..SavedVitals::default()
         };
         assert!(Vitals::from_saved(saved).respawn().is_none());
+    }
+
+    #[test]
+    fn legacy_hunger_is_scaled_to_the_new_range() {
+        let saved = SavedVitals {
+            hunger: SavedHunger { hunger: 12.0 },
+            stamina: SavedStamina { stamina: 42.0 },
+            respawn: None,
+        }
+        .migrated_to_v10();
+        assert_eq!(saved.hunger.hunger, 60.0);
+        assert_eq!(saved.stamina.stamina, 42.0);
     }
 }

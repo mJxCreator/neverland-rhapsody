@@ -86,7 +86,7 @@ mod tests {
     fn sleep_advances_to_morning_and_refills_stamina() {
         let mut time = night();
         let mut stamina = Stamina::new();
-        stamina.drain_sprint(2.0);
+        stamina.drain(2.0);
         assert!(stamina.value() < stamina.max());
         assert_eq!(try_sleep(&mut time, &mut stamina, true, false), Ok(()));
         assert_eq!(time.fraction(), 0.0);
@@ -98,7 +98,7 @@ mod tests {
         let mut time = night();
         let before = time.fraction();
         let mut stamina = Stamina::new();
-        stamina.drain_sprint(2.0);
+        stamina.drain(2.0);
         let stamina_before = stamina.value();
         assert!(try_sleep(&mut time, &mut stamina, true, true).is_err());
         assert_eq!(time.fraction(), before);

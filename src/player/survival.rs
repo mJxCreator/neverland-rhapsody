@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::damage::Damage;
 
-/// 默认最大生命值：20 点，即 10 颗心。
-pub const DEFAULT_MAX_HEALTH: u32 = 20;
+/// 默认最大生命值：100 点。
+pub const DEFAULT_MAX_HEALTH: u32 = 100;
 /// 允许通过配置设置的最大生命值上限，防止异常存档造成不可控数值。
 pub const MAX_HEALTH_LIMIT: u32 = 200;
 /// 常规伤害后的无敌帧时长（秒）。
@@ -66,6 +66,21 @@ impl SavedSurvival {
         };
         Self {
             max_health,
+            current_health,
+        }
+    }
+
+    /// 把 v9 及更早存档的 20 点生命制换算为 100 点生命制。
+    pub fn migrated_to_v10(self) -> Self {
+        let current_health = if self.current_health == 0 {
+            DEFAULT_MAX_HEALTH
+        } else {
+            self.current_health
+                .saturating_mul(5)
+                .min(DEFAULT_MAX_HEALTH)
+        };
+        Self {
+            max_health: DEFAULT_MAX_HEALTH,
             current_health,
         }
     }
@@ -229,7 +244,7 @@ mod tests {
         let mut survival = Survival::default();
         assert_eq!(
             damage::apply(&mut survival, fall(4)),
-            DamageOutcome::Applied { health: 16 }
+            DamageOutcome::Applied { health: 96 }
         );
         assert!(survival.invulnerability_remaining() > 0.0);
         assert_eq!(
@@ -246,7 +261,7 @@ mod tests {
         survival.update(0.6);
         assert_eq!(
             damage::apply(&mut survival, fall(4)),
-            DamageOutcome::Applied { health: 12 }
+            DamageOutcome::Applied { health: 92 }
         );
     }
 
@@ -269,7 +284,7 @@ mod tests {
         let critical = fall(2).ignoring_invulnerability();
         assert_eq!(
             damage::apply(&mut survival, critical),
-            DamageOutcome::Applied { health: 17 }
+            DamageOutcome::Applied { health: 97 }
         );
     }
 

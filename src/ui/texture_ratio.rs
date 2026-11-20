@@ -20,6 +20,8 @@ pub const HEART_RATIO: (u32, u32) = (1, 1);
 pub const HOTBAR_BG_RATIO: (u32, u32) = super::modules::hotbar_geometry::BACKGROUND_RATIO;
 /// 挖掘/进食进度条底板的目标比例：240×12。
 pub const PROGRESS_BG_RATIO: (u32, u32) = (20, 1);
+/// 生命/体力/饥饿状态条背景的目标比例：106×19。
+pub const STATE_BG_RATIO: (u32, u32) = (106, 19);
 
 /// 查询控件贴图的目标长宽比（宽 : 高）。
 ///
@@ -35,6 +37,7 @@ pub fn expected_ratio(name: &str) -> Option<(u32, u32)> {
         "heart_full" | "heart_half" | "heart_empty" => Some(HEART_RATIO),
         "hotbar_bg" => Some(HOTBAR_BG_RATIO),
         "progress_bg" => Some(PROGRESS_BG_RATIO),
+        "state_bg" => Some(STATE_BG_RATIO),
         // 内容或窗口尺寸会改变比例：提示框、合成行、进度填充、全屏遮罩、共用面板等。
         _ => None,
     }
