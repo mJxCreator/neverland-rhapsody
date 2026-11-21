@@ -112,7 +112,7 @@ UI 纹理走独立图集，物品图标图集不受影响；宽高各自允许 1
   "ui": [
     { "name": "hotbar_bg", "image": "hotbar_bg", "draw": "nine_slice", "slice": [8, 8, 8, 8] },
     { "name": "hotbar_slot", "image": "hotbar_slot", "draw": "stretch" },
-    { "name": "heart_full", "image": "heart_full", "draw": "stretch" }
+    { "name": "state_bg", "image": "state_bg", "draw": "stretch" }
   ]
 }
 ```

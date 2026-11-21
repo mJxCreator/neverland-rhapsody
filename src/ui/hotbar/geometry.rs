@@ -1,11 +1,11 @@
 //! 快捷栏三张贴图的固定几何契约：槽位 `16n`、选中态 `18n`、底板 `184n × 24n`，
 //! 槽位间距与底板外侧留白均为 `4n`，选中态与槽位同心。
 //!
-//! 三者的比例与位置关系只在本模块定义：改 `hud.rs` 的槽位边长（即 n）时，
+//! 三者的比例与位置关系只在本模块定义：改 `hotbar/config.rs` 的槽位边长（即 n）时，
 //! 其余尺寸按这里的单位关系自动推导，界面代码不再重复写间距/留白常数。
 //! 人工可读的贴图规范见 `src/ui/README.md`。
 
-use crate::ui::layout::UiRect;
+use crate::ui::core::layout::UiRect;
 
 /// 槽位贴图的宽度单位：16n。
 pub const SLOT_UNITS: f32 = 16.0;
@@ -15,8 +15,9 @@ pub const SELECTED_UNITS: f32 = 18.0;
 pub const GAP_UNITS: f32 = 4.0;
 /// 底板相对槽位区的外侧留白单位：4n。
 pub const MARGIN_UNITS: f32 = 4.0;
-/// 底板贴图比例：9 格时为 184n : 24n = 23 : 3。
-pub const BACKGROUND_RATIO: (u32, u32) = (23, 3);
+/// 底板贴图比例：9 格时为 184n : 24n = 23 : 3，与 `texture_ratio` 契约一致。
+#[allow(dead_code)]
+pub const BACKGROUND_RATIO: (u32, u32) = crate::ui::core::texture_ratio::HOTBAR_BG_RATIO;
 
 /// 由槽位边长推导出的快捷栏像素几何。
 #[derive(Clone, Copy, Debug, PartialEq)]

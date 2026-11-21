@@ -48,7 +48,7 @@ pub struct UiManifestEntry {
 
 /// 内置 UI 控件清单；即使 `ui.json` 缺失，放入同名 PNG 也会自动生效。
 pub fn builtin_manifest() -> UiManifest {
-    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 23] = [
+    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 20] = [
         ("hotbar_bg", UiDrawMode::NineSlice, [8, 8, 8, 8]),
         ("hotbar_slot", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("hotbar_slot_selected", UiDrawMode::Stretch, [0, 0, 0, 0]),
@@ -61,9 +61,6 @@ pub fn builtin_manifest() -> UiManifest {
         ("crafting_row_hover", UiDrawMode::NineSlice, [6, 6, 6, 6]),
         ("crafting_row_selected", UiDrawMode::NineSlice, [6, 6, 6, 6]),
         ("crosshair", UiDrawMode::Stretch, [0, 0, 0, 0]),
-        ("heart_full", UiDrawMode::Stretch, [0, 0, 0, 0]),
-        ("heart_half", UiDrawMode::Stretch, [0, 0, 0, 0]),
-        ("heart_empty", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("progress_bg", UiDrawMode::NineSlice, [4, 4, 4, 4]),
         ("progress_fill", UiDrawMode::NineSlice, [4, 4, 4, 4]),
         ("state_bg", UiDrawMode::Stretch, [0, 0, 0, 0]),
@@ -375,8 +372,10 @@ mod tests {
 
     #[test]
     fn stretch_controls_carry_the_declared_ratio_and_warn_on_mismatch() {
-        let registry =
-            registry_with(&[("crosshair", 32, 32, false), ("heart_full", 32, 16, false)]);
+        let registry = registry_with(&[
+            ("crosshair", 32, 32, false),
+            ("inventory_slot_hover", 32, 16, false),
+        ]);
         let manifest = UiManifest {
             ui: vec![
                 UiManifestEntry {
@@ -384,7 +383,7 @@ mod tests {
                     ..UiManifestEntry::default()
                 },
                 UiManifestEntry {
-                    name: "heart_full".to_string(),
+                    name: "inventory_slot_hover".to_string(),
                     ..UiManifestEntry::default()
                 },
             ],
@@ -399,9 +398,9 @@ mod tests {
             Some([1, 1])
         );
         assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("heart_full") && warning.contains("1:1")),
+            warnings.iter().any(|warning| {
+                warning.contains("inventory_slot_hover") && warning.contains("1:1")
+            }),
             "比例不符时必须给出明确警告"
         );
     }

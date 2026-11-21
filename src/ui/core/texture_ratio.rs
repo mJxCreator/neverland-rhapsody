@@ -14,10 +14,8 @@ use super::layout::UiRect;
 pub const SLOT_RATIO: (u32, u32) = (1, 1);
 /// 准星的目标比例：正方形。
 pub const CROSSHAIR_RATIO: (u32, u32) = (1, 1);
-/// 心形生命值三态的目标比例：正方形。
-pub const HEART_RATIO: (u32, u32) = (1, 1);
-/// 快捷栏底板的目标比例：与 `modules::hotbar_geometry` 的固定几何一致（184×24，即 23:3）。
-pub const HOTBAR_BG_RATIO: (u32, u32) = super::modules::hotbar_geometry::BACKGROUND_RATIO;
+/// 快捷栏底板的目标比例：184×24，即 23:3；快捷栏几何直接引用本常量。
+pub const HOTBAR_BG_RATIO: (u32, u32) = (23, 3);
 /// 挖掘/进食进度条底板的目标比例：240×12。
 pub const PROGRESS_BG_RATIO: (u32, u32) = (20, 1);
 /// 生命/体力/饥饿状态条背景的目标比例：106×19。
@@ -34,7 +32,6 @@ pub fn expected_ratio(name: &str) -> Option<(u32, u32)> {
         | "inventory_slot_hover"
         | "inventory_slot_selected" => Some(SLOT_RATIO),
         "crosshair" => Some(CROSSHAIR_RATIO),
-        "heart_full" | "heart_half" | "heart_empty" => Some(HEART_RATIO),
         "hotbar_bg" => Some(HOTBAR_BG_RATIO),
         "progress_bg" => Some(PROGRESS_BG_RATIO),
         "state_bg" => Some(STATE_BG_RATIO),
@@ -104,7 +101,7 @@ mod tests {
     #[test]
     fn fixed_size_controls_declare_a_ratio_and_dynamic_ones_do_not() {
         assert_eq!(expected_ratio("hotbar_slot"), Some((1, 1)));
-        assert_eq!(expected_ratio("heart_half"), Some((1, 1)));
+        assert_eq!(expected_ratio("inventory_slot_hover"), Some((1, 1)));
         assert_eq!(expected_ratio("crosshair"), Some((1, 1)));
         assert_eq!(expected_ratio("hotbar_bg"), Some((23, 3)));
         assert_eq!(expected_ratio("progress_bg"), Some((20, 1)));

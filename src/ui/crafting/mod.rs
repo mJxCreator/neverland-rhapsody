@@ -4,41 +4,19 @@
 //! [`crate::item::crafting`] 原子执行。界面每帧从背包读取材料数量，
 //! 因此合成成功或外部拾取后，需求列表与按钮状态会立即更新。
 
-use super::draw::{push_border, push_quad, push_ui_view, UiVertex};
-use super::font;
-use super::layout::{centered_panel, valid_viewport, UiRect};
-use super::theme;
-use super::widget;
 use crate::item::crafting::{self, CraftError};
 use crate::item::{item_name, Inventory, ItemStack, Recipe, RecipeCategory, RecipeId};
 use crate::texture::{ItemTextureMap, UiTextureMap};
+use crate::ui::core::animation::UiAnimation;
+use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
+use crate::ui::core::font;
+use crate::ui::core::layout::{centered_panel, valid_viewport, UiRect};
+use crate::ui::core::theme;
+use crate::ui::core::widget;
 
-/// 面板基础尺寸（像素）。
-const BASE_PANEL_WIDTH: f32 = 900.0;
-const BASE_PANEL_HEIGHT: f32 = 620.0;
-const PADDING: f32 = 18.0;
-const HEADER_HEIGHT: f32 = 54.0;
-const GUTTER: f32 = 20.0;
-const LEFT_RATIO: f32 = 0.46;
-const TAB_HEIGHT: f32 = 30.0;
-const TAB_GAP: f32 = 6.0;
-const LIST_GAP: f32 = 6.0;
-const LIST_TOP_GAP: f32 = 10.0;
-const ROW_HEIGHT: f32 = 44.0;
-const MIN_ROW_HEIGHT: f32 = 10.0;
-const CRAFT_WIDTH: f32 = 180.0;
-const CRAFT_HEIGHT: f32 = 44.0;
-const DETAIL_ICON_SIZE: f32 = 52.0;
-const INGREDIENT_ROW: f32 = 24.0;
-const INGREDIENT_GAP: f32 = 4.0;
-const TITLE_PIXEL: f32 = 2.6;
-const TEXT_PIXEL: f32 = 1.6;
-const ROW_TEXT_PIXEL: f32 = 1.5;
-const TAB_PIXEL: f32 = 1.5;
-/// 成功/失败提示的显示时长（秒）。
-const MESSAGE_DURATION: f32 = 2.5;
-/// 提示最后阶段的淡出时长（秒）。
-const MESSAGE_FADE: f32 = 0.4;
+pub mod config;
+
+use self::config::*;
 
 /// 分类筛选；`All` 展示全部已启用配方。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +60,7 @@ pub struct CraftingUi {
     selected: Option<RecipeId>,
     message: Option<CraftMessage>,
     message_remaining: f32,
-    flash: super::animation::UiAnimation,
+    flash: UiAnimation,
     ui_textures: UiTextureMap,
 }
 
@@ -101,7 +79,7 @@ impl CraftingUi {
             selected: None,
             message: None,
             message_remaining: 0.0,
-            flash: super::animation::UiAnimation::default(),
+            flash: UiAnimation::default(),
             ui_textures: UiTextureMap::empty(),
         }
     }
@@ -117,7 +95,7 @@ impl CraftingUi {
         self.selected = None;
         self.message = None;
         self.message_remaining = 0.0;
-        self.flash = super::animation::UiAnimation::default();
+        self.flash = UiAnimation::default();
     }
 
     pub fn close(&mut self) {

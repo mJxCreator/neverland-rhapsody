@@ -5,7 +5,7 @@
 
 use winit::keyboard::KeyCode;
 
-use super::manager::UiState;
+use crate::ui::shell::manager::UiState;
 
 /// 统一的鼠标按键。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -3,23 +3,16 @@
 //! 死亡是最高优先级界面：打开时其他界面全部关闭，键盘快捷键被吞掉，
 //! 只保留鼠标对两个按钮的点击。
 
-use super::draw::{push_border, push_quad, push_ui_view, UiVertex};
-use super::font;
-use super::layout::UiRect;
-use super::theme;
 use crate::player::DamageSource;
 use crate::texture::UiTextureMap;
+use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
+use crate::ui::core::font;
+use crate::ui::core::layout::UiRect;
+use crate::ui::core::theme;
 
-/// 死亡按钮使用的暗红底色。
-const BUTTON: [f32; 4] = [0.28, 0.09, 0.10, 1.0];
-/// 悬停时的提亮底色。
-const BUTTON_HOVER: [f32; 4] = [0.42, 0.14, 0.16, 1.0];
-/// 按钮边框。
-const BUTTON_BORDER: [f32; 4] = [0.80, 0.42, 0.42, 1.0];
+pub mod config;
 
-const BUTTON_WIDTH: f32 = 250.0;
-const BUTTON_HEIGHT: f32 = 48.0;
-const BUTTON_GAP: f32 = 16.0;
+use self::config::*;
 
 /// 死亡界面可执行的动作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

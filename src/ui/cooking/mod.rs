@@ -5,17 +5,18 @@
 
 use glam::IVec3;
 
-use super::draw::{push_border, push_quad, UiVertex};
-use super::font;
-use super::layout::{centered_panel, UiRect};
-use super::theme;
-use super::widget::{self, SlotSkin, SlotState};
 use crate::item::{Inventory, ItemStack};
 use crate::survival::cooking::{recipe_for, CampfireState};
 use crate::texture::{ItemTextureMap, UiTextureMap};
+use crate::ui::core::draw::{push_border, push_quad, UiVertex};
+use crate::ui::core::font;
+use crate::ui::core::layout::{centered_panel, UiRect};
+use crate::ui::core::theme;
+use crate::ui::core::widget::{self, SlotSkin, SlotState};
 
-/// 每点击一次输入槽最多转移的物品数量。
-const TRANSFER_LIMIT: u32 = 16;
+pub mod config;
+
+use self::config::*;
 
 /// 烹饪界面的布局矩形。
 #[derive(Clone, Copy, Debug)]
@@ -27,16 +28,26 @@ struct Layout {
 }
 
 fn layout(viewport: (f32, f32)) -> Layout {
-    let panel = centered_panel(viewport, 560.0, 320.0);
-    let slot_size = 56.0;
-    let input = UiRect::new(panel.x + 84.0, panel.y + 150.0, slot_size, slot_size);
-    let output = UiRect::new(
-        panel.x + panel.width - 84.0 - slot_size,
-        panel.y + 150.0,
+    let panel = centered_panel(viewport, PANEL_WIDTH, PANEL_HEIGHT);
+    let slot_size = SLOT_SIZE;
+    let input = UiRect::new(
+        panel.x + SLOT_SIDE_MARGIN,
+        panel.y + SLOT_TOP,
         slot_size,
         slot_size,
     );
-    let progress = UiRect::new(panel.x + 180.0, panel.y + 172.0, panel.width - 360.0, 16.0);
+    let output = UiRect::new(
+        panel.x + panel.width - SLOT_SIDE_MARGIN - slot_size,
+        panel.y + SLOT_TOP,
+        slot_size,
+        slot_size,
+    );
+    let progress = UiRect::new(
+        panel.x + PROGRESS_SIDE_INSET,
+        panel.y + PROGRESS_TOP,
+        panel.width - PROGRESS_SIDE_INSET * 2.0,
+        PROGRESS_HEIGHT,
+    );
     Layout {
         panel,
         input,
@@ -197,6 +208,7 @@ impl CookingUi {
             out,
             viewport,
             layout.input,
+            None,
             input_state,
             input_stack,
             icons,
@@ -208,6 +220,7 @@ impl CookingUi {
             out,
             viewport,
             layout.output,
+            None,
             SlotState::Normal,
             output_stack,
             icons,

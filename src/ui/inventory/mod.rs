@@ -2,41 +2,22 @@
 //!
 //! 本模块只负责界面状态、布局与点击语义，不直接修改世界或存档；
 //! 所有槽位变更都通过 [`Inventory`] 接口完成，因此不会产生重复或丢失物品。
-//! 视觉细节复用 [`super::widget`]，保证与快捷栏、合成界面的槽位表现一致。
+//! 视觉细节复用 [`crate::ui::core::widget`]，保证与快捷栏、合成界面的槽位表现一致。
 
-use super::animation::UiAnimation;
-use super::draw::{push_border, push_quad, UiVertex};
-use super::font;
-use super::input::ClickButton;
-use super::layout::{centered_panel, UiRect};
-use super::theme;
-use super::widget::{self, SlotSkin, SlotState};
-use crate::equipment::{Equipment, EquipmentSlot, EQUIPMENT_SLOT_COUNT};
+use crate::equipment::{Equipment, EquipmentSlot};
 use crate::item::{Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
 use crate::texture::{ItemTextureMap, UiTextureMap};
+use crate::ui::core::animation::UiAnimation;
+use crate::ui::core::draw::{push_border, push_quad, UiVertex};
+use crate::ui::core::font;
+use crate::ui::core::input::ClickButton;
+use crate::ui::core::layout::{centered_panel, UiRect};
+use crate::ui::core::theme;
+use crate::ui::core::widget::{self, SlotSkin, SlotState};
 
-/// 基础布局尺寸（像素）。
-const BASE_SLOT: f32 = 44.0;
-const BASE_GAP: f32 = 6.0;
-const BASE_PADDING: f32 = 12.0;
-const BASE_TITLE: f32 = 24.0;
-const BASE_HOTBAR_GAP: f32 = 14.0;
-const BASE_INFO_GAP: f32 = 10.0;
-const BASE_INFO_HEIGHT: f32 = 38.0;
-/// 主背包与装备列之间的间距。
-const BASE_EQUIPMENT_GAP: f32 = 20.0;
-const COLUMNS: usize = 9;
-const MAIN_ROWS: usize = 3;
-/// 装备槽位在 UI 中的起始索引。
-const EQUIPMENT_SLOT_BASE: usize = TOTAL_SLOTS;
-/// 背包界面可点击槽位总数（36 个背包/快捷栏 + 4 个装备）。
-const UI_SLOTS: usize = TOTAL_SLOTS + EQUIPMENT_SLOT_COUNT;
-/// 标题字号。
-const TITLE_PIXEL: f32 = 2.4;
-/// 详情区字号。
-const INFO_PIXEL: f32 = 1.6;
-/// 拖动图标相对鼠标的偏移（像素）。
-const HELD_OFFSET: f32 = 8.0;
+pub mod config;
+
+use self::config::*;
 
 /// 背包界面状态：开关、鼠标位置、正在拖动的物品与按压反馈。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -334,6 +315,7 @@ impl InventoryUi {
                 out,
                 viewport,
                 rect,
+                None,
                 state,
                 stack,
                 icons,
@@ -378,6 +360,7 @@ impl InventoryUi {
                 out,
                 viewport,
                 rect,
+                None,
                 state,
                 stack,
                 icons,
@@ -517,7 +500,7 @@ struct Layout {
 
 impl Layout {
     fn compute(viewport: (f32, f32)) -> Option<Self> {
-        if !super::layout::valid_viewport(viewport.0, viewport.1) {
+        if !crate::ui::core::layout::valid_viewport(viewport.0, viewport.1) {
             return None;
         }
 

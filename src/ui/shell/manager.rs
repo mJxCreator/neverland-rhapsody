@@ -8,17 +8,17 @@
 
 use glam::IVec3;
 
-use super::cooking::{CookingAction, CookingUi};
-use super::crafting::CraftingUi;
-use super::death::{DeathAction, DeathUi};
-use super::draw::UiVertex;
-use super::input::ClickButton;
-use super::inventory::InventoryUi;
 use crate::equipment::Equipment;
 use crate::item::{Inventory, Recipe, RecipeId};
 use crate::player::DamageSource;
 use crate::survival::cooking::CampfireState;
 use crate::texture::{ItemTextureMap, UiTextureMap};
+use crate::ui::cooking::{CookingAction, CookingUi};
+use crate::ui::core::draw::UiVertex;
+use crate::ui::core::input::ClickButton;
+use crate::ui::crafting::CraftingUi;
+use crate::ui::death::{DeathAction, DeathUi};
+use crate::ui::inventory::InventoryUi;
 
 /// 全屏界面状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,17 +5,17 @@
 
 ## 1. 规则
 
-- **图片比例优先**：以你实际出图的比例为准（如 16×16 取最简 1:1），再把该比例写回 `texture_ratio.rs` 的常量；
+- **图片比例优先**：以你实际出图的比例为准（如 16×16 取最简 1:1），再把该比例写回 `core/texture_ratio.rs` 的常量；
   代码据此把 1:1 等比映射到 44×44、48×48 等任意目标尺寸，不做单方向拉伸。
-- **代码比例可改**：比例常量集中暴露在 [texture_ratio.rs](texture_ratio.rs)，改常量即可适配新图片，无需改布局。
-- **固定框控件**：比例在 [texture_ratio.rs](texture_ratio.rs) 的 `expected_ratio` 中集中规定。
+- **代码比例可改**：比例常量集中暴露在 [core/texture_ratio.rs](core/texture_ratio.rs)，改常量即可适配新图片，无需改布局。
+- **固定框控件**：比例在 [core/texture_ratio.rs](core/texture_ratio.rs) 的 `expected_ratio` 中集中规定。
   绘制时先把目标矩形收敛到该比例（等比 contain、居中留白）再采样，**整图拉伸与九宫格都适用**，
   不会出现任何单方向拉伸。你按表内比例出图，代码就按同一比例绘制。
 - **九宫格做到 1:1**：按“目标像素尺寸”出图（如 `hotbar_bg` 184×24）时，切边与中心都能与屏幕像素一一对应，完全不变形；
   按整数倍放大出图时，请同步按倍数修改 `slice`。
 - **快捷栏三图关系固定**：`hotbar_slot` / `hotbar_slot_selected` / `hotbar_bg` 的比例与位置关系
-  集中在 [modules/hotbar_geometry.rs](modules/hotbar_geometry.rs)：槽位 `16n`、选中 `18n`、间距 `4n`、外侧留白 `4n`、
-  底板 `184n×24n`，选中与槽位同心。只改 `SLOT_SIZE`（即 n）即可整体缩放，不要在界面里另写常数。
+  集中在 [hotbar/geometry.rs](hotbar/geometry.rs)：槽位 `16n`、选中 `18n`、间距 `4n`、外侧留白 `4n`、
+  底板 `184n×24n`，选中与槽位同心。只改 [hotbar/config.rs](hotbar/config.rs) 的 `slot_size`（即 n）即可整体缩放，不要在界面里另写常数。
 - **动态比例控件**：比例随文字内容、进度或窗口尺寸变化（提示框、进度填充、合成行、全屏遮罩、共用面板等），
   在代码中返回 `None`，随目标矩形铺满；这类控件无法用单一比例约束。
 - 启动时若 PNG 实际比例与规定不一致（偏差 > 1%），会输出带控件名和规定比例的警告。
@@ -24,24 +24,24 @@
 
 | 控件键 | 规定比例 | 推荐出图尺寸 | 绘制位置 |
 | --- | --- | --- | --- |
-| `hotbar_bg` | 23 : 3 | **184×24**（或 368×48 / 552×72，`slice` 同比放大） | `modules/hotbar_geometry.rs` `background_rect`，由 `hud.rs` `push_hotbar` 调用 |
-| `progress_bg` | 20 : 1 | **240×12**（或 480×24，`slice` 改 8） | `hud.rs` `push_progress`（`PROGRESS_WIDTH/HEIGHT`） |
-| `hotbar_slot` | 1 : 1 | 16×16（游戏内 16n） | `widget.rs` `push_slot`，快捷栏 `hud.rs` `SLOT_SIZE` |
-| `hotbar_slot_selected` | 1 : 1 | 18×18（游戏内 18n，与槽位同心） | `modules/hotbar_geometry.rs` `selected_rect`，由 `widget.rs` `skin_rect` 调用 |
-| `inventory_slot` | 1 : 1 | 同上 | `widget.rs` `push_slot`，背包/合成/烹饪槽位 |
+| `hotbar_bg` | 23 : 3 | **184×24**（或 368×48 / 552×72，`slice` 同比放大） | `hotbar/geometry.rs` `background_rect`，由 `hotbar/mod.rs` 绘制 |
+| `progress_bg` | 20 : 1 | **240×12**（或 480×24，`slice` 改 8） | `progress/mod.rs`（`ProgressConfig`） |
+| `hotbar_slot` | 1 : 1 | 16×16（游戏内 16n） | `core/widget.rs` `push_slot`，快捷栏 `hotbar/config.rs` `slot_size` |
+| `hotbar_slot_selected` | 1 : 1 | 18×18（游戏内 18n，与槽位同心） | `hotbar/geometry.rs` `selected_rect` 计算后，作为 `selected_rect` 参数传给 `core/widget.rs` |
+| `inventory_slot` | 1 : 1 | 同上 | `core/widget.rs` `push_slot`，背包/合成/烹饪槽位 |
 | `inventory_slot_hover` | 1 : 1 | 同上 | 同上 |
 | `inventory_slot_selected` | 1 : 1 | 同上 | 同上 |
-| `crosshair` | 1 : 1 | 16×16 / 32×32 / 64×64 | `hud.rs` `push_crosshair`（边长 `(CROSSHAIR_ARM + 4) × 2`） |
-| `state_bg` | 106 : 19 | **106×19** | `hud.rs` `push_state`（三行状态条底板，游戏内 3 倍缩放） |
+| `crosshair` | 1 : 1 | 16×16 / 32×32 / 64×64 | `crosshair/mod.rs`（边长 `(arm + 4) × 2`） |
+| `state_bg` | 106 : 19 | **106×19** | `state/mod.rs`（三行状态条底板，游戏内 3 倍缩放） |
 
-修改比例：编辑 `texture_ratio.rs` 中的 `HOTBAR_BG_RATIO` / `PROGRESS_BG_RATIO` / `SLOT_RATIO` /
+修改比例：编辑 `core/texture_ratio.rs` 中的 `HOTBAR_BG_RATIO` / `PROGRESS_BG_RATIO` / `SLOT_RATIO` /
 `CROSSHAIR_RATIO` / `STATE_BG_RATIO`，或在 `expected_ratio` 的 `match` 中增删控件键。
 返回 `None` 表示随目标矩形自由铺满。
 
 > 例：`hotbar_bg` 当前按 23:3（184×24）绘制，底板矩形由快捷栏几何直接生成，与 9 格槽位区严丝合缝；
-> 若换成 8:1 出图，需要同时改 `modules/hotbar_geometry.rs` 的单位与 `BACKGROUND_RATIO`，否则启动会告警。
+> 若换成 8:1 出图，需要同时改 `hotbar/geometry.rs` 的单位与 `BACKGROUND_RATIO`，否则启动会告警。
 >
-> 快捷栏几何（[modules/hotbar_geometry.rs](modules/hotbar_geometry.rs)，n = 槽位贴图宽 / 16，当前 `SLOT_SIZE = 48`，即 n = 3）：
+> 快捷栏几何（[hotbar/geometry.rs](hotbar/geometry.rs)，n = 槽位贴图宽 / 16，当前 `slot_size = 48`，即 n = 3）：
 > 槽位 `16n×16n`、间距 `4n`、外侧留白 `4n`、底板 `184n×24n`（552×72）；
 > 选中槽位 `18n×18n`，与普通槽位同心，因此会比槽位每边多出 `1n`（3px）。
 > 三者的相对关系固定，改 n 即整体缩放。
@@ -71,17 +71,19 @@
 
 | 要改什么 | 文件 | 位置 |
 | --- | --- | --- |
-| 控件的比例 | `src/ui/texture_ratio.rs` | `HOTBAR_BG_RATIO`、`PROGRESS_BG_RATIO`、`SLOT_RATIO`、`CROSSHAIR_RATIO`、`HEART_RATIO`、`expected_ratio` |
-| 比例收敛算法（contain + 居中） | `src/ui/texture_ratio.rs` | `fit_rect` |
-| 比例如何应用到绘制 | `src/ui/draw.rs` | `push_ui_view`（整图拉伸与九宫格都先收敛比例） |
+| 控件的比例 | `src/ui/core/texture_ratio.rs` | `HOTBAR_BG_RATIO`、`PROGRESS_BG_RATIO`、`SLOT_RATIO`、`CROSSHAIR_RATIO`、`STATE_BG_RATIO`、`expected_ratio` |
+| 比例收敛算法（contain + 居中） | `src/ui/core/texture_ratio.rs` | `fit_rect` |
+| 比例如何应用到绘制 | `src/ui/core/draw.rs` | `push_ui_view`（整图拉伸与九宫格都先收敛比例） |
 | 九宫格切边与绘制方式 | `src/texture/ui_texture.rs` | `builtin_manifest`；运行时以 `assets/textures/manifests/ui.json` 为准 |
 | 比例不符告警 | `src/texture/ui_texture.rs` | `UiTextureMap::from_manifest`、`ratio_mismatch` |
-| 快捷栏三图的固定比例与位置关系 | `src/ui/modules/hotbar_geometry.rs` | `SLOT_UNITS`、`SELECTED_UNITS`、`GAP_UNITS`、`MARGIN_UNITS`、`BACKGROUND_RATIO`、`HotbarGeometry` |
-| HUD 尺寸 | `src/ui/hud.rs` | `SLOT_SIZE`（决定 n）、`BOTTOM_MARGIN`、`PROGRESS_WIDTH/HEIGHT`、`STATE_SCALE`、`STATE_*`、`CROSSHAIR_ARM` |
-| 背包面板尺寸 | `src/ui/inventory.rs` | `BASE_SLOT`、`BASE_GAP`、`BASE_PADDING`、`BASE_TITLE` 等 `Layout::compute` |
-| 合成面板尺寸 | `src/ui/crafting.rs` | `BASE_PANEL_WIDTH/HEIGHT`、`ROW_HEIGHT`、`CRAFT_WIDTH/HEIGHT` |
-| 烹饪面板尺寸 | `src/ui/cooking.rs` | `layout`（面板 560×320、槽位 56、进度条高 16） |
-| 死亡界面尺寸 | `src/ui/death.rs` | `BUTTON_WIDTH/HEIGHT`、`DeathUi::build` 中的面板比例 |
+| 快捷栏三图的固定比例与位置关系 | `src/ui/hotbar/geometry.rs` | `SLOT_UNITS`、`SELECTED_UNITS`、`GAP_UNITS`、`MARGIN_UNITS`、`BACKGROUND_RATIO`、`HotbarGeometry` |
+| 快捷栏尺寸 | `src/ui/hotbar/config.rs` | `HotbarConfig`（`slot_size`、`bottom_margin`、`label_offset` 等） |
+| 状态条尺寸 | `src/ui/state/config.rs` | `StateBarConfig`（`scale`、`bottom_offset`、`padding` 等） |
+| 进度条/准星/目标/受伤/提示/时间 | 各自模块目录 | `ProgressConfig`、`CrosshairConfig`、`TargetConfig`、`DamageConfig`、`NotificationConfig`、`TimePhaseConfig` |
+| 背包面板尺寸 | `src/ui/inventory/config.rs` | `BASE_SLOT`、`BASE_GAP`、`BASE_PADDING`、`BASE_TITLE` 等 |
+| 合成面板尺寸 | `src/ui/crafting/config.rs` | `BASE_PANEL_WIDTH/HEIGHT`、`ROW_HEIGHT`、`CRAFT_WIDTH/HEIGHT` |
+| 烹饪面板尺寸 | `src/ui/cooking/config.rs` | `PANEL_WIDTH/HEIGHT`、`SLOT_SIZE`、`PROGRESS_TOP` |
+| 死亡界面尺寸 | `src/ui/death/config.rs` | `BUTTON_WIDTH/HEIGHT`、`BUTTON_GAP` |
 
 `assets/textures/manifests/ui.json` 只负责“用哪张图、切边多少、是否九宫格”，不参与长宽比约束；
 新增 PNG 若未在清单中登记，会自动按“整图拉伸、不约束比例”处理。
