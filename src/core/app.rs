@@ -51,6 +51,7 @@ use crate::survival::food::{EatingState, EatingUpdate};
 use crate::survival::respawn;
 use crate::survival::rng::GameRng;
 use crate::survival::sleep;
+use crate::survival::stamina::ATTACK_COST;
 use crate::survival::{Vitals, VitalsInput, WorldTime};
 use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
@@ -877,10 +878,12 @@ impl App {
         Some(hit.0)
     }
 
-    /// 当前手持物品的攻击参数；空手或损坏武器回退为空手。
+    /// 当前手持物品的攻击参数；空手或损坏武器回退为空手，
+    /// 空手伤害由饥饿派生的基础伤害决定。
     fn current_weapon(&self) -> WeaponStats {
         let index = HOTBAR_OFFSET + self.hotbar.selected_index();
         WeaponStats::for_stack(self.inventory.slot(index))
+            .with_base_damage(self.vitals.hunger().base_damage())
     }
 
     /// 发起一次攻击；冷却中或玩家已死亡时忽略。
@@ -940,6 +943,8 @@ impl App {
         }
         if hit_count > 0 {
             self.wear_weapon(stats);
+            // 攻击造成伤害后消耗体力；体力耗尽时由 Vitals 扣除饥饿。
+            self.vitals.spend_stamina(ATTACK_COST);
             info!(
                 targets = hit_count,
                 damage = stats.damage,
@@ -1608,6 +1613,16 @@ impl App {
         let outcome =
             self.mining
                 .update(self.mining_held && !ui_blocking, mining_target, delta_secs);
+        // 破坏方块按累计挖掘时间消耗体力：每累计 1 秒扣 1 点。
+        if !self.paused
+            && !self.survival.is_dead()
+            && matches!(
+                outcome,
+                MiningOutcome::Mining { .. } | MiningOutcome::Completed { .. }
+            )
+        {
+            self.vitals.drain_mining(delta_secs);
+        }
 
         // 视觉层只消费本帧状态：真实速度、落地事件、战斗/挖掘/进食与装备数据。
         let feet = eye - Vec3::Y * self.physics.config().dimensions.eye_height;

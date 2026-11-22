@@ -11,7 +11,9 @@ pub const MAX_HUNGER: f32 = 100.0;
 pub const BASE_WALK_SPEED: f32 = 3.0;
 /// 基础跳跃高度（格）：实际高度 = 基础值 + 饥饿比例。
 pub const BASE_JUMP_HEIGHT: f32 = 0.5;
-/// 自然恢复生命所需的最低饥饿比例（严格大于 50%）。
+/// 基础伤害基准值：空手伤害 = 基础值 + 饥饿比例。
+pub const BASE_DAMAGE: f32 = 2.0;
+/// 自然恢复生命所需的最低饥饿比例（不低于 50%）。
 pub const REGEN_HUNGER_RATIO: f32 = 0.5;
 
 /// 存档中的饥饿数据；异常值在载入时清洗。
@@ -87,9 +89,9 @@ impl Hunger {
         self.value >= MAX_HUNGER
     }
 
-    /// 是否允许自然恢复生命：严格高于 50%。
+    /// 是否允许自然恢复生命：不低于 50%。
     pub fn can_regenerate(self) -> bool {
-        self.ratio() > REGEN_HUNGER_RATIO
+        self.ratio() >= REGEN_HUNGER_RATIO
     }
 
     /// 基础行走速度（格/秒）：3 + 饥饿比例。
@@ -105,6 +107,11 @@ impl Hunger {
     /// 基础跳跃高度（格）：0.5 + 饥饿比例。
     pub fn jump_height(self) -> f32 {
         BASE_JUMP_HEIGHT + self.ratio()
+    }
+
+    /// 基础伤害：2 + 饥饿比例（2–3），空手攻击使用。
+    pub fn base_damage(self) -> f32 {
+        BASE_DAMAGE + self.ratio()
     }
 
     /// 饥饿状态是否生效；生效时体力消耗翻倍。
@@ -173,13 +180,13 @@ mod tests {
     }
 
     #[test]
-    fn regeneration_requires_more_than_half_hunger() {
+    fn regeneration_requires_at_least_half_hunger() {
         let mut hunger = Hunger::new();
         assert!(hunger.can_regenerate());
         hunger.drain(50.0);
-        assert!(!hunger.can_regenerate(), "恰好 50% 不应恢复生命");
-        hunger.eat(1.0);
-        assert!(hunger.can_regenerate());
+        assert!(hunger.can_regenerate(), "恰好 50% 应允许恢复生命");
+        hunger.drain(0.5);
+        assert!(!hunger.can_regenerate());
     }
 
     #[test]
@@ -198,6 +205,16 @@ mod tests {
         assert!((hunger.walk_speed() - 3.0).abs() < 1e-6);
         assert!((hunger.run_speed() - 3.0).abs() < 1e-6);
         assert!((hunger.jump_height() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn base_damage_follows_hunger_ratio() {
+        let mut hunger = Hunger::new();
+        assert!((hunger.base_damage() - 3.0).abs() < 1e-6);
+        hunger.drain(50.0);
+        assert!((hunger.base_damage() - 2.5).abs() < 1e-6);
+        hunger.drain(50.0);
+        assert!((hunger.base_damage() - 2.0).abs() < 1e-6);
     }
 
     #[test]

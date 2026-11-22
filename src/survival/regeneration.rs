@@ -1,10 +1,14 @@
-//! 自然恢复：饥饿值高于 50% 且未满血时缓慢恢复生命。
+//! 自然恢复：饥饿值不低于 50% 且未满血时缓慢恢复生命。
 //!
-//! 恢复间隔随饥饿值变化：每 `500 / hunger` 秒恢复 1 点生命值。饥饿高于 50%
-//! 时饥饿越多恢复越快，且不再消耗饥饿值。
+//! 恢复间隔随饥饿值变化：每 `1000 / hunger` 秒恢复 1 点生命值。饥饿不低于
+//! 50% 时饥饿越多恢复越快；每次恢复额外消耗 20 点体力。
 
+/// 每次自然恢复的生命值。
+pub const NAT_HEART_RECOVER: u32 = 1;
 /// 恢复间隔公式的分子。
-pub const REGEN_SECONDS_NUMERATOR: f32 = 500.0;
+pub const REGEN_SECONDS_NUMERATOR: f32 = 1000.0;
+/// 自然恢复 1 点生命所消耗的体力。
+pub const HEAL_STAMINA_COST: f32 = 20.0;
 
 /// 按当前饥饿值计算恢复 1 点生命所需的秒数；饥饿为 0 时视为无穷大。
 pub fn interval_for(hunger: f32) -> f32 {
@@ -61,15 +65,15 @@ mod tests {
 
     #[test]
     fn interval_shrinks_as_hunger_rises() {
-        assert!((interval_for(100.0) - 5.0).abs() < 1e-6);
-        assert!((interval_for(50.0) - 10.0).abs() < 1e-6);
+        assert!((interval_for(100.0) - 10.0).abs() < 1e-6);
+        assert!((interval_for(50.0) - 20.0).abs() < 1e-6);
         assert!(!interval_for(0.0).is_finite());
     }
 
     #[test]
     fn heals_only_after_the_current_interval() {
         let mut regen = Regenerator::new();
-        assert!(!regen.tick(4.9, true, 100.0));
+        assert!(!regen.tick(9.9, true, 100.0));
         assert!(regen.tick(0.2, true, 100.0));
     }
 
@@ -77,16 +81,16 @@ mod tests {
     fn higher_hunger_heals_faster() {
         let mut slow = Regenerator::new();
         let mut fast = Regenerator::new();
-        assert!(!slow.tick(5.0, true, 51.0));
-        assert!(fast.tick(5.0, true, 100.0));
+        assert!(!slow.tick(10.0, true, 51.0));
+        assert!(fast.tick(10.0, true, 100.0));
     }
 
     #[test]
     fn ineligible_resets_timer() {
         let mut regen = Regenerator::new();
-        assert!(!regen.tick(4.0, true, 100.0));
+        assert!(!regen.tick(9.0, true, 100.0));
         assert!(!regen.tick(1.0, false, 100.0));
         assert_eq!(regen.timer(), 0.0);
-        assert!(!regen.tick(4.0, true, 100.0));
+        assert!(!regen.tick(9.0, true, 100.0));
     }
 }

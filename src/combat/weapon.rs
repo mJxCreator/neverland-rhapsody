@@ -60,8 +60,8 @@ impl WeaponDefinition {
     }
 }
 
-/// 空手攻击参数：伤害低、间隔长、无耐久。
-pub const UNARMED_DAMAGE: u32 = 1;
+/// 空手伤害的回退值；玩家空手时实际伤害由饥饿派生的基础伤害覆盖。
+pub const UNARMED_DAMAGE: u32 = 2;
 /// 空手攻击间隔（秒）。
 pub const UNARMED_INTERVAL: f32 = 1.0;
 /// 空手攻击距离（格）。
@@ -124,6 +124,21 @@ impl WeaponStats {
         self.weapon.is_some()
     }
 
+    /// 空手时用饥饿派生的基础伤害覆盖回退值；持剑时保留武器自身伤害。
+    ///
+    /// 后续若引入“基础伤害的倍数”武器，可在此按武器类型乘算。
+    pub fn with_base_damage(mut self, base_damage: f32) -> Self {
+        if !self.is_armed() {
+            let scaled = if base_damage.is_finite() {
+                base_damage.round().max(1.0)
+            } else {
+                UNARMED_DAMAGE as f32
+            };
+            self.damage = scaled as u32;
+        }
+        self
+    }
+
     /// 消耗 1 点武器耐久；空手或已损坏时原样返回。
     pub fn wear(self, stack: ItemStack) -> ItemStack {
         if self.weapon != Some(stack.item()) {
@@ -162,6 +177,20 @@ mod tests {
         assert_eq!(stats.range, 3.0);
         assert_eq!(stats.angle_deg, 120.0);
         assert!(stats.is_armed());
+    }
+
+    #[test]
+    fn base_damage_replaces_only_unarmed_damage() {
+        let stats = WeaponStats::for_stack(None).with_base_damage(3.0);
+        assert_eq!(stats.damage, 3);
+        assert_eq!(
+            WeaponStats::for_stack(None).with_base_damage(2.4).damage,
+            2
+        );
+
+        let sword = ItemStack::new(ItemId::IRON_SWORD, 1).expect("剑合法");
+        let stats = WeaponStats::for_stack(Some(sword)).with_base_damage(3.0);
+        assert_eq!(stats.damage, 6);
     }
 
     #[test]

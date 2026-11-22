@@ -1,8 +1,8 @@
 //! 体力：上限随当前饥饿值变化，行走/奔跑/静止持续消耗，耗尽后由饥饿补充。
 //!
 //! 体力不再自动恢复：行走每秒 1 点、奔跑每秒 2 点、静止每 2 分钟 1 点、
-//! 每次跳跃 1 点。体力归零时由 [`super::survival::Vitals`] 扣除 1 点饥饿并
-//! 以新的上限补满。
+//! 每 2 次跳跃 1 点、攻击造成伤害 1 点、破坏方块每秒 1 点、自然恢复生命 20 点。
+//! 体力归零时由 [`super::survival::Vitals`] 扣除 1 点饥饿并以新的上限补满。
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +14,12 @@ pub const WALK_DRAIN_PER_SECOND: f32 = 1.0;
 pub const SPRINT_DRAIN_PER_SECOND: f32 = 2.0;
 /// 静止每秒消耗：每 2 分钟 1 点。
 pub const IDLE_DRAIN_PER_SECOND: f32 = 1.0 / 120.0;
-/// 每次跳跃消耗。
-pub const JUMP_COST: f32 = 1.0;
+/// 每次跳跃消耗：每 2 次跳跃 1 点。
+pub const JUMP_COST: f32 = 0.5;
+/// 攻击且造成伤害后的消耗。
+pub const ATTACK_COST: f32 = 1.0;
+/// 破坏方块时每累计 1 秒的消耗。
+pub const MINING_DRAIN_PER_SECOND: f32 = 1.0;
 
 /// 存档中的体力数据。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -218,10 +222,19 @@ mod tests {
     }
 
     #[test]
-    fn jump_cost_can_deplete() {
+    fn two_jumps_cost_one_stamina() {
+        assert!((JUMP_COST - 0.5).abs() < 1e-6);
+        let mut stamina = Stamina::new();
+        stamina.drain(JUMP_COST);
+        assert!((stamina.value() - 99.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jump_cost_can_deplete_on_second_jump() {
         let mut stamina = Stamina::new();
         stamina.set_max(1.0);
         stamina.value = 1.0;
+        assert!(!stamina.drain(JUMP_COST));
         assert!(stamina.drain(JUMP_COST));
     }
 

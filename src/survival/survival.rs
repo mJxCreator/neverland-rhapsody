@@ -4,14 +4,14 @@
 //! 参数传入，避免各子系统各自判断游戏状态。
 //!
 //! 体力上限始终等于当前饥饿值。体力耗尽一轮后扣除 1 点饥饿并以新上限补满；
-//! 饥饿高于 50% 时按 `500 / hunger` 秒恢复 1 点生命。
+//! 饥饿不低于 50% 时按 `1000 / hunger` 秒恢复 1 点生命，每次恢复消耗 20 点体力。
 
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
 use super::hunger::{Hunger, SavedHunger};
-use super::regeneration::Regenerator;
-use super::stamina::{SavedStamina, Stamina, JUMP_COST};
+use super::regeneration::{Regenerator, HEAL_STAMINA_COST, NAT_HEART_RECOVER};
+use super::stamina::{SavedStamina, Stamina, JUMP_COST, MINING_DRAIN_PER_SECOND};
 
 /// 存档中的玩家生存数据。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -73,6 +73,8 @@ pub struct Vitals {
     hunger: Hunger,
     stamina: Stamina,
     regeneration: Regenerator,
+    /// 破坏方块的累计秒数，满 1 秒结算 1 点体力消耗。
+    mining_seconds: f32,
     respawn: Option<IVec3>,
 }
 
@@ -82,6 +84,7 @@ impl Default for Vitals {
             hunger: Hunger::new(),
             stamina: Stamina::new(),
             regeneration: Regenerator::new(),
+            mining_seconds: 0.0,
             respawn: None,
         }
     }
@@ -102,6 +105,7 @@ impl Vitals {
             hunger,
             stamina,
             regeneration: Regenerator::new(),
+            mining_seconds: 0.0,
             respawn: saved
                 .respawn
                 .map(|point| IVec3::new(point[0], point[1], point[2])),
@@ -195,9 +199,30 @@ impl Vitals {
             .regeneration
             .tick(delta_seconds, eligible, self.hunger.value())
         {
-            1
+            // 每恢复 1 点生命额外消耗 20 点体力。
+            self.spend_stamina(HEAL_STAMINA_COST);
+            NAT_HEART_RECOVER
         } else {
             0
+        }
+    }
+
+    /// 立即结算一次事件消耗（攻击命中、破坏方块等）；耗尽时同样扣 1 点饥饿。
+    pub fn spend_stamina(&mut self, amount: f32) {
+        if self.stamina.drain(amount) {
+            self.consume_hunger_for_stamina();
+        }
+    }
+
+    /// 破坏方块按累计挖掘时间消耗体力：每累计 1 秒扣 1 点。
+    pub fn drain_mining(&mut self, delta_seconds: f32) {
+        if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
+            return;
+        }
+        self.mining_seconds += delta_seconds;
+        while self.mining_seconds >= 1.0 {
+            self.mining_seconds -= 1.0;
+            self.spend_stamina(MINING_DRAIN_PER_SECOND);
         }
     }
 
@@ -211,6 +236,7 @@ impl Vitals {
 
 #[cfg(test)]
 mod tests {
+    use super::super::stamina::ATTACK_COST;
     use super::*;
 
     #[test]
@@ -277,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn jumping_costs_one_stamina_each() {
+    fn jumping_costs_half_stamina_each() {
         let mut vitals = Vitals::new();
         vitals.update(0.0, VitalsInput::default(), true, false);
         // 用一次极短但有效的更新结算跳跃消耗。
@@ -292,7 +318,7 @@ mod tests {
             true,
             false,
         );
-        assert!((vitals.stamina().value() - (before - 3.0)).abs() < 1e-3);
+        assert!((vitals.stamina().value() - (before - 1.5)).abs() < 1e-3);
     }
 
     #[test]
@@ -305,20 +331,57 @@ mod tests {
     }
 
     #[test]
-    fn regeneration_heals_above_half_hunger_without_cost() {
+    fn regeneration_heals_above_half_hunger_without_hunger_cost() {
         let mut vitals = Vitals::new();
         let hunger_before = vitals.hunger().value();
-        let healed = vitals.update(5.0, VitalsInput::default(), true, true);
+        let stamina_before = vitals.stamina().value();
+        let healed = vitals.update(10.0, VitalsInput::default(), true, true);
         assert_eq!(healed, 1);
         assert!((vitals.hunger().value() - hunger_before).abs() < 1e-6);
+        assert!(
+            (vitals.stamina().value() - (stamina_before - HEAL_STAMINA_COST)).abs() < 0.2,
+            "自然恢复应消耗 20 点体力"
+        );
     }
 
     #[test]
-    fn regeneration_requires_strictly_more_than_half_hunger() {
+    fn regeneration_requires_at_least_half_hunger() {
         let mut vitals = Vitals::new();
         vitals.hunger_mut().drain(50.0);
+        let healed = vitals.update(20.0, VitalsInput::default(), true, true);
+        assert_eq!(healed, 1, "恰好 50% 饥饿应允许恢复");
+        vitals.hunger_mut().drain(0.5);
         let healed = vitals.update(100.0, VitalsInput::default(), true, true);
         assert_eq!(healed, 0);
+    }
+
+    #[test]
+    fn attack_hit_spends_stamina() {
+        let mut vitals = Vitals::new();
+        vitals.spend_stamina(ATTACK_COST);
+        assert!((vitals.stamina().value() - 99.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mining_drains_one_stamina_per_accumulated_second() {
+        let mut vitals = Vitals::new();
+        vitals.drain_mining(0.5);
+        assert!((vitals.stamina().value() - 100.0).abs() < 1e-6);
+        vitals.drain_mining(0.5);
+        assert!((vitals.stamina().value() - 99.0).abs() < 1e-6);
+        vitals.drain_mining(2.5);
+        assert!((vitals.stamina().value() - 97.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn event_spending_depletes_into_hunger() {
+        let mut vitals = Vitals::new();
+        vitals.stamina_mut().set_max(2.0);
+        vitals.stamina_mut().drain(1.0);
+        vitals.spend_stamina(2.0);
+        assert_eq!(vitals.hunger().value(), 99.0);
+        assert!((vitals.stamina().max() - 99.0).abs() < 1e-6);
+        assert!((vitals.stamina().value() - 99.0).abs() < 1e-6);
     }
 
     #[test]
