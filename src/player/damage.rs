@@ -27,12 +27,7 @@ pub enum DamageSource {
 impl DamageSource {
     /// 面向玩家的简短原因。
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::Fall => "坠落",
-            Self::Environmental => "环境",
-            Self::Entity => "生物",
-            Self::Custom => "未知",
-        }
+        crate::text::damage_source(self)
     }
 }
 

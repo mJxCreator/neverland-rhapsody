@@ -6,6 +6,7 @@
 
 use crate::equipment::{Equipment, EquipmentSlot};
 use crate::item::{Inventory, ItemStack, HOTBAR_OFFSET, TOTAL_SLOTS};
+use crate::text;
 use crate::texture::{ItemTextureMap, UiTextureMap};
 use crate::ui::core::animation::UiAnimation;
 use crate::ui::core::draw::{push_border, push_quad, UiVertex};
@@ -284,9 +285,9 @@ impl InventoryUi {
             layout.panel.y + layout.padding,
             TITLE_PIXEL,
             theme::TEXT_TITLE,
-            "背包",
+            text::INVENTORY_TITLE,
         );
-        let hint = "E / ESC 关闭";
+        let hint = text::INVENTORY_HINT;
         let hint_width = font::text_width(hint, 1.0);
         font::push_text(
             out,
@@ -343,7 +344,7 @@ impl InventoryUi {
             layout.panel.y + layout.padding,
             1.0,
             theme::TEXT_MUTED,
-            "护甲",
+            text::ARMOR_LABEL,
         );
         for slot in EquipmentSlot::ALL {
             let index = EQUIPMENT_SLOT_BASE + slot.index();
@@ -457,7 +458,7 @@ fn push_info_area(
             rect.y + 11.0,
             INFO_PIXEL,
             theme::TEXT_MUTED,
-            "空手",
+            text::EMPTY_HAND,
         );
         return;
     };

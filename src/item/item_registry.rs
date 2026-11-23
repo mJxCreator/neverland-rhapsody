@@ -583,60 +583,6 @@ pub fn name(item: ItemId) -> &'static str {
     definition(item).map_or("?", |definition| definition.name)
 }
 
-/// 中文展示名称；内部 ID 与英文名称保持不变。
-pub fn display_name(item: ItemId) -> &'static str {
-    match item {
-        ItemId::STONE => "石头",
-        ItemId::DIRT => "泥土",
-        ItemId::GRASS => "草方块",
-        ItemId::WOODEN_PICKAXE => "木镐",
-        ItemId::STONE_PICKAXE => "石镐",
-        ItemId::IRON_PICKAXE => "铁镐",
-        ItemId::WOODEN_AXE => "木斧",
-        ItemId::STONE_AXE => "石斧",
-        ItemId::IRON_AXE => "铁斧",
-        ItemId::WOODEN_SHOVEL => "木铲",
-        ItemId::STONE_SHOVEL => "石铲",
-        ItemId::IRON_SHOVEL => "铁铲",
-        ItemId::WOOD => "木头",
-        ItemId::STICK => "木棍",
-        ItemId::IRON_INGOT => "铁锭",
-        ItemId::RAW_PORKCHOP => "生猪排",
-        ItemId::RAW_BEEF => "生牛肉",
-        ItemId::LEATHER => "皮革",
-        ItemId::DIAMOND => "钻石",
-        ItemId::WOODEN_SWORD => "木剑",
-        ItemId::STONE_SWORD => "石剑",
-        ItemId::IRON_SWORD => "铁剑",
-        ItemId::DIAMOND_SWORD => "钻石剑",
-        ItemId::LEATHER_HELMET => "皮革头盔",
-        ItemId::LEATHER_CHESTPLATE => "皮革胸甲",
-        ItemId::LEATHER_LEGGINGS => "皮革护腿",
-        ItemId::LEATHER_BOOTS => "皮革靴子",
-        ItemId::IRON_HELMET => "铁头盔",
-        ItemId::IRON_CHESTPLATE => "铁胸甲",
-        ItemId::IRON_LEGGINGS => "铁护腿",
-        ItemId::IRON_BOOTS => "铁靴子",
-        ItemId::DIAMOND_HELMET => "钻石头盔",
-        ItemId::DIAMOND_CHESTPLATE => "钻石胸甲",
-        ItemId::DIAMOND_LEGGINGS => "钻石护腿",
-        ItemId::DIAMOND_BOOTS => "钻石靴子",
-        ItemId::ROTTEN_FLESH => "腐肉",
-        ItemId::COOKED_PORKCHOP => "熟猪排",
-        ItemId::COOKED_BEEF => "熟牛排",
-        ItemId::APPLE => "苹果",
-        ItemId::BREAD => "面包",
-        ItemId::CAMPFIRE => "营火",
-        ItemId::BED => "床",
-        ItemId::SAND => "沙子",
-        ItemId::SANDSTONE => "砂岩",
-        ItemId::CACTUS => "仙人掌",
-        ItemId::COAL => "煤炭",
-        ItemId::GOLD_INGOT => "金锭",
-        _ => name(item),
-    }
-}
-
 /// 物品图标颜色；无效 ID 返回透明黑。
 pub fn icon_color(item: ItemId) -> Vec3 {
     definition(item).map_or(Vec3::ZERO, |definition| definition.icon.color)

@@ -61,8 +61,6 @@ pub enum CreatureModel {
 pub struct EntityDefinition {
     /// 类型标识。
     pub kind: EntityTypeId,
-    /// 展示名称，用于日志与调试。
-    pub name: &'static str,
     /// 碰撞箱宽度。
     pub width: f32,
     /// 碰撞箱高度。
@@ -130,7 +128,7 @@ mod tests {
             assert!(def.width > 0.0 && def.height > 0.0);
             assert!(def.max_health > 0);
             assert!(def.move_speed > 0.0);
-            assert!(!def.name.is_empty());
+            assert!(!crate::text::creature_name(def.kind).is_empty());
         }
     }
 

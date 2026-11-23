@@ -4,6 +4,7 @@
 //! 只保留鼠标对两个按钮的点击。
 
 use crate::player::DamageSource;
+use crate::text;
 use crate::texture::UiTextureMap;
 use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
 use crate::ui::core::font;
@@ -131,7 +132,7 @@ impl DeathUi {
             );
         }
 
-        let title = "你死了";
+        let title = text::DEATH_TITLE;
         let title_scale = 3.0;
         font::push_text(
             out,
@@ -143,7 +144,7 @@ impl DeathUi {
             title,
         );
 
-        let cause = format!("死因：{}", self.cause.label());
+        let cause = text::death_cause(self.cause.label());
         font::push_text(
             out,
             viewport,
@@ -159,7 +160,7 @@ impl DeathUi {
             out,
             viewport,
             respawn,
-            "重生",
+            text::RESPAWN,
             respawn.contains(self.cursor.0, self.cursor.1),
             &self.ui_textures,
         );
@@ -167,7 +168,7 @@ impl DeathUi {
             out,
             viewport,
             main_menu,
-            "主菜单",
+            text::MAIN_MENU,
             main_menu.contains(self.cursor.0, self.cursor.1),
             &self.ui_textures,
         );

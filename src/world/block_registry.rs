@@ -191,8 +191,6 @@ impl BlockColors {
 pub struct BlockProperties {
     /// 稳定的方块 ID，与存档中的方块枚举判别值一致。
     pub id: u8,
-    /// 展示用名称。
-    pub name: &'static str,
     /// 硬度；0 表示不可挖掘。挖掘时间 = 硬度 × 基础系数。
     pub hardness: f32,
     /// 该方块所属的挖掘类别，决定哪类工具能获得效率加成。
@@ -226,7 +224,6 @@ impl BlockProperties {
 
 pub const AIR: BlockProperties = BlockProperties {
     id: 0,
-    name: "空气",
     hardness: 0.0,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -242,7 +239,6 @@ pub const AIR: BlockProperties = BlockProperties {
 
 pub const STONE: BlockProperties = BlockProperties {
     id: 1,
-    name: "石头",
     hardness: 1.5,
     mining_category: MiningCategory::Stone,
     // v0.14 起木镐即可获得石头掉落，保证“木镐采石→石镐”的合成闭环。
@@ -259,7 +255,6 @@ pub const STONE: BlockProperties = BlockProperties {
 
 pub const DIRT: BlockProperties = BlockProperties {
     id: 2,
-    name: "泥土",
     hardness: 0.5,
     mining_category: MiningCategory::Dirt,
     // 铲子只是推荐工具：通过挖掘类别带来速度加成，但徒手也能正常采集。
@@ -276,7 +271,6 @@ pub const DIRT: BlockProperties = BlockProperties {
 
 pub const GRASS: BlockProperties = BlockProperties {
     id: 3,
-    name: "草方块",
     hardness: 0.6,
     mining_category: MiningCategory::Dirt,
     // 铲子只是推荐工具：通过挖掘类别带来速度加成，但徒手也能正常采集。
@@ -293,7 +287,6 @@ pub const GRASS: BlockProperties = BlockProperties {
 
 pub const WOOD: BlockProperties = BlockProperties {
     id: 4,
-    name: "木头",
     hardness: 2.0,
     mining_category: MiningCategory::Wood,
     // 斧只是推荐工具：徒手也能采集木材，保证新世界可以从零开始合成。
@@ -310,7 +303,6 @@ pub const WOOD: BlockProperties = BlockProperties {
 
 pub const CAMPFIRE: BlockProperties = BlockProperties {
     id: 5,
-    name: "营火",
     hardness: 0.4,
     mining_category: MiningCategory::Wood,
     required_tool: None,
@@ -326,7 +318,6 @@ pub const CAMPFIRE: BlockProperties = BlockProperties {
 
 pub const BED: BlockProperties = BlockProperties {
     id: 6,
-    name: "床",
     hardness: 0.3,
     mining_category: MiningCategory::Wood,
     required_tool: None,
@@ -342,7 +333,6 @@ pub const BED: BlockProperties = BlockProperties {
 
 pub const SAND: BlockProperties = BlockProperties {
     id: 7,
-    name: "沙子",
     hardness: 0.5,
     mining_category: MiningCategory::Dirt,
     required_tool: None,
@@ -358,7 +348,6 @@ pub const SAND: BlockProperties = BlockProperties {
 
 pub const SANDSTONE: BlockProperties = BlockProperties {
     id: 8,
-    name: "砂岩",
     hardness: 1.2,
     mining_category: MiningCategory::Stone,
     required_tool: Some(ToolType::Pickaxe),
@@ -374,7 +363,6 @@ pub const SANDSTONE: BlockProperties = BlockProperties {
 
 pub const COAL_ORE: BlockProperties = BlockProperties {
     id: 9,
-    name: "煤矿石",
     hardness: 2.0,
     mining_category: MiningCategory::Stone,
     required_tool: Some(ToolType::Pickaxe),
@@ -390,7 +378,6 @@ pub const COAL_ORE: BlockProperties = BlockProperties {
 
 pub const IRON_ORE: BlockProperties = BlockProperties {
     id: 10,
-    name: "铁矿石",
     hardness: 2.4,
     mining_category: MiningCategory::Stone,
     required_tool: Some(ToolType::Pickaxe),
@@ -406,7 +393,6 @@ pub const IRON_ORE: BlockProperties = BlockProperties {
 
 pub const GOLD_ORE: BlockProperties = BlockProperties {
     id: 11,
-    name: "金矿石",
     hardness: 2.8,
     mining_category: MiningCategory::Stone,
     required_tool: Some(ToolType::Pickaxe),
@@ -422,7 +408,6 @@ pub const GOLD_ORE: BlockProperties = BlockProperties {
 
 pub const DIAMOND_ORE: BlockProperties = BlockProperties {
     id: 12,
-    name: "钻石矿石",
     hardness: 3.2,
     mining_category: MiningCategory::Stone,
     required_tool: Some(ToolType::Pickaxe),
@@ -438,7 +423,6 @@ pub const DIAMOND_ORE: BlockProperties = BlockProperties {
 
 pub const WATER: BlockProperties = BlockProperties {
     id: 13,
-    name: "水",
     hardness: 0.0,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -454,7 +438,6 @@ pub const WATER: BlockProperties = BlockProperties {
 
 pub const LEAVES: BlockProperties = BlockProperties {
     id: 14,
-    name: "树叶",
     hardness: 0.2,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -470,7 +453,6 @@ pub const LEAVES: BlockProperties = BlockProperties {
 
 pub const TALL_GRASS: BlockProperties = BlockProperties {
     id: 15,
-    name: "高草",
     hardness: 0.1,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -486,7 +468,6 @@ pub const TALL_GRASS: BlockProperties = BlockProperties {
 
 pub const FLOWER_RED: BlockProperties = BlockProperties {
     id: 16,
-    name: "红花",
     hardness: 0.1,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -502,7 +483,6 @@ pub const FLOWER_RED: BlockProperties = BlockProperties {
 
 pub const FLOWER_YELLOW: BlockProperties = BlockProperties {
     id: 17,
-    name: "黄花",
     hardness: 0.1,
     mining_category: MiningCategory::None,
     required_tool: None,
@@ -518,7 +498,6 @@ pub const FLOWER_YELLOW: BlockProperties = BlockProperties {
 
 pub const CACTUS: BlockProperties = BlockProperties {
     id: 18,
-    name: "仙人掌",
     hardness: 0.4,
     mining_category: MiningCategory::Dirt,
     required_tool: None,
@@ -534,7 +513,6 @@ pub const CACTUS: BlockProperties = BlockProperties {
 
 pub const BEDROCK: BlockProperties = BlockProperties {
     id: 19,
-    name: "基岩",
     hardness: 0.0,
     mining_category: MiningCategory::None,
     required_tool: None,

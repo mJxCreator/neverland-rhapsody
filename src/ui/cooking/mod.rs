@@ -7,6 +7,7 @@ use glam::IVec3;
 
 use crate::item::{Inventory, ItemStack};
 use crate::survival::cooking::{recipe_for, CampfireState};
+use crate::text;
 use crate::texture::{ItemTextureMap, UiTextureMap};
 use crate::ui::core::draw::{push_border, push_quad, UiVertex};
 use crate::ui::core::font;
@@ -178,7 +179,7 @@ impl CookingUi {
         );
         push_border(out, viewport, layout.panel, 2.0, theme::PANEL_BORDER);
 
-        let title = "营火";
+        let title = text::COOKING_TITLE;
         let title_width = font::text_width(title, 2.0);
         font::push_text(
             out,
@@ -252,9 +253,9 @@ impl CookingUi {
         );
 
         let (hint, color) = if cooking {
-            ("烹饪中", theme::CRAFT_SUCCESS)
+            (text::COOKING_ACTIVE, theme::CRAFT_SUCCESS)
         } else {
-            ("点击输入槽放入生肉", theme::TEXT_MUTED)
+            (text::COOKING_INSERT, theme::TEXT_MUTED)
         };
         let hint_width = font::text_width(hint, 2.0);
         font::push_text(
@@ -266,7 +267,7 @@ impl CookingUi {
             color,
             hint,
         );
-        let close = "按 E 或 ESC 关闭";
+        let close = text::COOKING_CLOSE_HINT;
         let close_width = font::text_width(close, 1.0);
         font::push_text(
             out,
@@ -280,7 +281,7 @@ impl CookingUi {
 
         // 背包中的可烹饪物品数量，帮助玩家确认输入来源。
         let available = cookable_count(inventory);
-        let info = format!("背包中生肉：{available}");
+        let info = text::cooking_raw_meat(available);
         let info_width = font::text_width(&info, 1.0);
         font::push_text(
             out,

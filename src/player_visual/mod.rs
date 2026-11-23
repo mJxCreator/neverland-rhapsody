@@ -39,10 +39,7 @@ impl CameraMode {
     }
 
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::FirstPerson => "第一人称",
-            Self::ThirdPerson => "第三人称",
-        }
+        crate::text::camera_mode(self)
     }
 }
 

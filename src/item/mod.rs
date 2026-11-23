@@ -21,6 +21,7 @@ pub use self::dropped_item::{DroppedItemConfig, DroppedItemRecord, DroppedItemSt
 pub use self::inventory::{Inventory, SavedInventory, HOTBAR_OFFSET, HOTBAR_SLOTS, TOTAL_SLOTS};
 pub use self::item::{ItemId, ItemStack};
 pub use self::item_pickup::collect as collect_pickups;
-pub use self::item_registry::{block_for_item, display_name as item_name, icon_color};
+pub use self::item_registry::{block_for_item, icon_color};
+pub use crate::text::item_name;
 pub use self::recipe::{Recipe, RecipeCategory, RecipeId};
 pub use self::tool::Wear;

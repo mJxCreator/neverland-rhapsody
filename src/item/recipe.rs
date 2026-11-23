@@ -60,15 +60,7 @@ pub enum RecipeCategory {
 impl RecipeCategory {
     /// 展示用分类标签。
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::Materials => "材料",
-            Self::Tools => "工具",
-            Self::Utility => "功能",
-            Self::Weapons => "武器",
-            Self::Armor => "护甲",
-            Self::Consumables => "食物",
-            Self::Building => "建筑",
-        }
+        crate::text::recipe_category(self)
     }
 }
 

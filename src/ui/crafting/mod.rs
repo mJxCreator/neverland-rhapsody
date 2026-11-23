@@ -6,6 +6,7 @@
 
 use crate::item::crafting::{self, CraftError};
 use crate::item::{item_name, Inventory, ItemStack, Recipe, RecipeCategory, RecipeId};
+use crate::text;
 use crate::texture::{ItemTextureMap, UiTextureMap};
 use crate::ui::core::animation::UiAnimation;
 use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
@@ -35,7 +36,7 @@ impl Filter {
 
     fn label(self) -> &'static str {
         match self {
-            Self::All => "全部",
+            Self::All => text::CRAFTING_ALL,
             Self::Category(category) => category.label(),
         }
     }
@@ -229,9 +230,9 @@ impl CraftingUi {
             layout.panel.y + PADDING,
             TITLE_PIXEL,
             theme::TEXT_TITLE,
-            "合成",
+            text::CRAFTING_TITLE,
         );
-        let hint = "C / ESC 关闭";
+        let hint = text::CRAFTING_HINT;
         let hint_width = font::text_width(hint, 1.0);
         font::push_text(
             out,
@@ -425,14 +426,14 @@ impl CraftingUi {
                 layout.right.y + 24.0,
                 TEXT_PIXEL,
                 theme::TEXT_MUTED,
-                "选择一个配方",
+                text::CRAFTING_EMPTY,
             );
             return;
         };
 
         let status = crafting::check(recipe, inventory);
         let (status_text, status_color) = match status {
-            Ok(()) => ("可合成", theme::CRAFT_MATERIAL_OK),
+            Ok(()) => (text::CRAFTABLE, theme::CRAFT_MATERIAL_OK),
             Err(error) => (error.message(), theme::CRAFT_MATERIAL_MISSING),
         };
 
@@ -483,7 +484,7 @@ impl CraftingUi {
             layout.requirements_y,
             1.0,
             theme::TEXT_MUTED,
-            "所需材料",
+            text::REQUIRED_MATERIALS,
         );
         let mut y = layout.ingredients_y;
         for ingredient in recipe.ingredients {
@@ -493,11 +494,10 @@ impl CraftingUi {
             push_quad(out, viewport, icon_rect, theme::SLOT_BACKGROUND);
             push_border(out, viewport, icon_rect, 1.0, theme::SLOT_BORDER);
             widget::push_icon(out, viewport, icon_rect.inset(2.0), ingredient.item, icons);
-            let text = format!(
-                "{} {}/{}",
+            let text = text::ingredient_line(
                 item_name(ingredient.item),
                 owned.min(ingredient.count),
-                ingredient.count
+                ingredient.count,
             );
             font::push_text(
                 out,
@@ -521,7 +521,7 @@ impl CraftingUi {
             out,
             viewport,
             layout.craft,
-            "合成",
+            text::CRAFT_BUTTON,
             hovered,
             enabled,
             2.0,
@@ -531,10 +531,9 @@ impl CraftingUi {
         if let Some(message) = self.message {
             let alpha = message_alpha(self.message_remaining);
             let (text, mut color) = match message {
-                CraftMessage::Success { item, count } => (
-                    format!("合成了 {} 个{}", count, item_name(item)),
-                    theme::CRAFT_SUCCESS,
-                ),
+                CraftMessage::Success { item, count } => {
+                    (text::crafted(count, item_name(item)), theme::CRAFT_SUCCESS)
+                }
                 CraftMessage::Failure(error) => (error.message().to_string(), theme::CRAFT_FAILURE),
             };
             color[3] *= alpha;

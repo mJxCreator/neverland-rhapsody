@@ -22,11 +22,7 @@ pub enum CraftError {
 impl CraftError {
     /// 面向玩家的简短说明；字体仅覆盖 ASCII。
     pub const fn message(self) -> &'static str {
-        match self {
-            Self::UnknownRecipe => "配方不可用",
-            Self::InsufficientMaterials => "材料不足",
-            Self::NoSpace => "背包已满",
-        }
+        crate::text::craft_error(self)
     }
 }
 

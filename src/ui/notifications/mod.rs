@@ -1,6 +1,7 @@
 //! 短提示模块：屏幕中部状态消息与快捷栏上方的拾取/工具损坏提示。
 
 use crate::item::{item_name, ItemId};
+use crate::text;
 use crate::texture::ItemTextureMap;
 use crate::ui::core::draw::{push_item_icon, push_quad, UiVertex};
 use crate::ui::core::font;
@@ -196,11 +197,11 @@ impl Notifications {
         let alpha = (toast.remaining / config.toast_fade).clamp(0.0, 1.0);
         let (text, base_color) = match toast.kind {
             ToastKind::Pickup => (
-                format!("+{} {}", toast.count, item_name(toast.item)),
+                text::pickup(toast.count, item_name(toast.item)),
                 config.toast_text,
             ),
             ToastKind::ToolBroken => (
-                format!("{} 已损坏", item_name(toast.item)),
+                text::item_broken(item_name(toast.item)),
                 config.broken_text,
             ),
         };

@@ -7,6 +7,7 @@ pub mod config;
 pub mod geometry;
 
 use crate::item::{item_name, ItemStack, HOTBAR_SLOTS};
+use crate::text;
 use crate::texture::{ItemTextureMap, UiTextureMap};
 use crate::ui::core::animation::UiClock;
 use crate::ui::core::draw::{push_quad, push_ui_view, UiVertex};
@@ -129,7 +130,7 @@ impl HotbarUi {
             return;
         };
         let text = if stack.is_broken() {
-            format!("{} 已损坏", item_name(stack.item()))
+            text::item_broken(item_name(stack.item()))
         } else {
             item_name(stack.item()).to_string()
         };

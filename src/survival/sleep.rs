@@ -19,11 +19,7 @@ pub enum SleepError {
 impl SleepError {
     /// 面向玩家的提示。
     pub const fn message(self) -> &'static str {
-        match self {
-            Self::Dead => "现在无法入睡",
-            Self::NotNight => "只能在夜晚入睡",
-            Self::HostileNearby => "附近有怪物",
-        }
+        crate::text::sleep_error(self)
     }
 }
 

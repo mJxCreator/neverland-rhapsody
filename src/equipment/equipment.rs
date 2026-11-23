@@ -54,12 +54,7 @@ impl EquipmentSlot {
 
     /// 展示用名称。
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::Head => "头",
-            Self::Chest => "胸",
-            Self::Legs => "腿",
-            Self::Feet => "脚",
-        }
+        crate::text::equipment_slot(self)
     }
 }
 

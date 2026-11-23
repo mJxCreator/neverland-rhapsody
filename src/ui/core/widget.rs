@@ -5,6 +5,7 @@
 
 use crate::item::item_registry::definition;
 use crate::item::{item_name, ItemId, ItemStack};
+use crate::text;
 use crate::texture::ItemTextureMap;
 
 use super::draw::{push_border, push_item_icon, push_quad, push_ui_view, UiVertex};
@@ -296,11 +297,7 @@ pub fn push_button(
 /// 物品详情区使用的两行摘要：名称与类型/耐久。
 pub fn item_summary_lines(stack: ItemStack) -> Vec<String> {
     let name = item_name(stack.item()).to_uppercase();
-    let first = if stack.count() > 1 {
-        format!("{} X{}", name, stack.count())
-    } else {
-        name.to_string()
-    };
+    let first = text::item_title(&name, stack.count());
     let second = if crate::combat::weapon_registry::definition(stack.item()).is_some() {
         weapon_summary(stack)
     } else if crate::equipment::equipment_registry::definition(stack.item()).is_some() {
@@ -317,15 +314,11 @@ pub fn item_summary_lines(stack: ItemStack) -> Vec<String> {
 pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
     let mut lines = Vec::new();
     let name = item_name(stack.item()).to_uppercase();
-    let first = if stack.count() > 1 {
-        format!("{} X{}", name, stack.count())
-    } else {
-        name.to_string()
-    };
+    let first = text::item_title(&name, stack.count());
     lines.push((first, theme::TEXT));
     lines.push((type_label(stack.item()).to_string(), theme::TEXT_MUTED));
     if stack.is_broken() {
-        lines.push(("已损坏".to_string(), theme::TOOL_BROKEN));
+        lines.push((text::BROKEN.to_string(), theme::TOOL_BROKEN));
     } else if crate::combat::weapon_registry::definition(stack.item()).is_some() {
         lines.push((weapon_summary(stack), tool_summary_color(stack)));
     } else if crate::equipment::equipment_registry::definition(stack.item()).is_some() {
@@ -334,7 +327,7 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
         lines.push((tool_summary(stack), tool_summary_color(stack)));
     } else if stack.max_stack_size() > 1 {
         lines.push((
-            format!("堆叠 {}/{}", stack.count(), stack.max_stack_size()),
+            text::stack_line(stack.count(), stack.max_stack_size()),
             theme::TEXT_MUTED,
         ));
     }
@@ -342,56 +335,47 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
 }
 
 fn type_label(item: ItemId) -> &'static str {
-    match definition(item).map(|definition| definition.item_type) {
-        Some(crate::item::item::ItemType::Block) => "方块",
-        Some(crate::item::item::ItemType::Tool) => "工具",
-        Some(crate::item::item::ItemType::Weapon) => "武器",
-        Some(crate::item::item::ItemType::Armor) => "护甲",
-        Some(crate::item::item::ItemType::Consumable) => "食物",
-        _ => "材料",
-    }
+    definition(item)
+        .map(|definition| text::item_type_label(definition.item_type))
+        .unwrap_or(text::item_type_label(crate::item::item::ItemType::Material))
 }
 
 fn tool_summary(stack: ItemStack) -> String {
     let Some(max) = stack.max_durability() else {
-        return "工具".to_string();
+        return text::TOOL_LABEL.to_string();
     };
     let current = stack.durability().unwrap_or(max);
     let kind = item_name(stack.item());
     if current == 0 {
-        format!("{} 已损坏", kind)
+        text::item_broken(kind)
     } else {
-        format!("{} 耐久 {}/{}", kind, current, max)
+        text::tool_line(kind, current, max)
     }
 }
 
 fn weapon_summary(stack: ItemStack) -> String {
     let Some(definition) = crate::combat::weapon_registry::definition(stack.item()) else {
-        return "武器".to_string();
+        return text::WEAPON_LABEL.to_string();
     };
     let current = stack.durability().unwrap_or(definition.max_durability);
     let kind = item_name(stack.item());
     if current == 0 {
-        format!("{} {} 伤害 已损坏", kind, definition.damage)
+        text::weapon_broken_line(kind, definition.damage)
     } else {
-        format!(
-            "{} {} 伤害 耐久 {}/{}",
-            kind, definition.damage, current, definition.max_durability
-        )
+        text::weapon_line(kind, definition.damage, current, definition.max_durability)
     }
 }
 
 fn armor_summary(stack: ItemStack) -> String {
     let Some(definition) = crate::equipment::equipment_registry::definition(stack.item()) else {
-        return "护甲".to_string();
+        return text::ARMOR_LABEL.to_string();
     };
     let current = stack.durability().unwrap_or(definition.max_durability);
-    format!(
-        "{} {} 防御 耐久 {}/{}",
+    text::armor_line(
         item_name(stack.item()),
         definition.defense,
         current,
-        definition.max_durability
+        definition.max_durability,
     )
 }
 

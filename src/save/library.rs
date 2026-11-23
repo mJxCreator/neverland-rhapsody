@@ -129,14 +129,14 @@ impl SaveLibrary {
         write_world_meta(
             &self.world_meta_path(world_id),
             &WorldMeta {
-                name: "世界 1".to_owned(),
+                name: format!("{} 1", crate::text::WORLD_PREFIX),
                 seed,
             },
         )?;
 
         let character = CharacterSave {
             version: super::character_save::CHARACTER_SAVE_VERSION,
-            name: "角色 1".to_owned(),
+            name: format!("{} 1", crate::text::CHARACTER_PREFIX),
             inventory: save.player().cloned(),
             survival: save.survival(),
             equipment: save.equipment().cloned(),
@@ -170,7 +170,7 @@ impl SaveLibrary {
                 continue;
             };
             let name = if save.name.trim().is_empty() {
-                display_name("角色", id)
+                display_name(crate::text::CHARACTER_PREFIX, id)
             } else {
                 save.name
             };
@@ -210,7 +210,7 @@ impl SaveLibrary {
             let name = meta
                 .map(|meta| meta.name)
                 .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| display_name("世界", id));
+                .unwrap_or_else(|| display_name(crate::text::WORLD_PREFIX, id));
             entries.push(SaveEntry {
                 id: id.to_owned(),
                 name,
@@ -225,7 +225,7 @@ impl SaveLibrary {
     pub fn create_character(&self) -> Result<SaveEntry> {
         let id = unique_id(&self.characters_dir(), "character", ".json");
         let index = numeric_suffix(&id).unwrap_or(1);
-        let name = format!("角色 {index}");
+        let name = format!("{} {index}", crate::text::CHARACTER_PREFIX);
         CharacterSave::new(name.clone()).save(self.character_path(&id))?;
         info!(id, name, "已新建角色");
         Ok(SaveEntry {
@@ -267,7 +267,7 @@ impl SaveLibrary {
     pub fn create_world(&self) -> Result<SaveEntry> {
         let id = unique_id(&self.worlds_dir(), "world", "");
         let index = numeric_suffix(&id).unwrap_or(1);
-        let name = format!("世界 {index}");
+        let name = format!("{} {index}", crate::text::WORLD_PREFIX);
         let seed = random_seed();
         let dir = self.world_dir(&id);
         fs::create_dir_all(&dir)

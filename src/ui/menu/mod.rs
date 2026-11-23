@@ -6,6 +6,7 @@
 
 use winit::keyboard::KeyCode;
 
+use crate::text;
 use crate::texture::UiTextureMap;
 use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
 use crate::ui::core::font;
@@ -343,11 +344,11 @@ impl MenuUi {
                 let buttons = main_buttons(viewport);
                 let actions = [
                     MenuAction::SinglePlayer,
-                    MenuAction::Unavailable("多人游戏暂未开放"),
-                    MenuAction::Unavailable("成就暂未开放"),
-                    MenuAction::Unavailable("设置暂未开放"),
-                    MenuAction::Unavailable("WIKI 暂未开放"),
-                    MenuAction::Unavailable("关于暂未开放"),
+                    MenuAction::Unavailable(text::MULTIPLAYER_UNAVAILABLE),
+                    MenuAction::Unavailable(text::ACHIEVEMENTS_UNAVAILABLE),
+                    MenuAction::Unavailable(text::SETTINGS_UNAVAILABLE),
+                    MenuAction::Unavailable(text::WIKI_UNAVAILABLE),
+                    MenuAction::Unavailable(text::ABOUT_UNAVAILABLE),
                     MenuAction::Quit,
                 ];
                 for (index, rect) in buttons.iter().enumerate() {
@@ -408,9 +409,9 @@ impl MenuUi {
             MenuScreen::Pause => {
                 let buttons = pause_buttons(viewport);
                 let actions = [
-                    MenuAction::Unavailable("设置暂未开放"),
-                    MenuAction::Unavailable("角色成就暂未开放"),
-                    MenuAction::Unavailable("世界成就暂未开放"),
+                    MenuAction::Unavailable(text::SETTINGS_UNAVAILABLE),
+                    MenuAction::Unavailable(text::CHARACTER_ACHIEVEMENTS_UNAVAILABLE),
+                    MenuAction::Unavailable(text::WORLD_ACHIEVEMENTS_UNAVAILABLE),
                     MenuAction::SaveAndQuit,
                 ];
                 for (index, rect) in buttons.iter().enumerate() {
@@ -438,15 +439,7 @@ impl MenuUi {
                     MENU_BACKGROUND,
                 );
                 self.draw_title(out, viewport);
-                let labels = [
-                    "单人游戏",
-                    "多人游戏",
-                    "成就",
-                    "设置",
-                    "WIKI",
-                    "关于",
-                    "退出",
-                ];
+                let labels = text::MAIN_BUTTONS;
                 for (index, rect) in main_buttons(viewport).iter().enumerate() {
                     let hovered = rect.contains(self.cursor.0, self.cursor.1);
                     push_button(
@@ -482,20 +475,20 @@ impl MenuUi {
                 );
                 let panel = list_panel(viewport);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-                push_header(out, viewport, panel, "选择角色", None);
+                push_header(out, viewport, panel, text::CHARACTER_SELECT_TITLE, None);
                 if self.characters.is_empty() {
                     push_centered_text(
                         out,
                         viewport,
                         panel,
-                        "暂无角色 - 请新建",
+                        text::EMPTY_CHARACTERS,
                         MENU_TEXT_MUTED,
                     );
                 }
                 for (index, entry) in self.characters.iter().take(MAX_ROWS).enumerate() {
                     self.draw_list_row(out, viewport, index, &entry.name, 2);
                 }
-                self.draw_footer(out, viewport, "新建角色", "返回");
+                self.draw_footer(out, viewport, text::NEW_CHARACTER, text::BACK);
                 self.draw_notice(out, viewport, panel);
             }
             MenuScreen::WorldSelect => {
@@ -509,7 +502,7 @@ impl MenuUi {
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
                 let subtitle = self.selected_character.as_ref().map(|entry| {
                     font::truncate_to_width(
-                        &format!("角色: {}", entry.name),
+                        &text::character_caption(&entry.name),
                         2.0,
                         panel.width - PANEL_PADDING * 2.0,
                     )
@@ -518,7 +511,7 @@ impl MenuUi {
                     out,
                     viewport,
                     panel,
-                    "选择世界",
+                    text::WORLD_SELECT_TITLE,
                     subtitle.as_deref(),
                 );
                 if self.worlds.is_empty() {
@@ -526,14 +519,14 @@ impl MenuUi {
                         out,
                         viewport,
                         panel,
-                        "暂无世界 - 请新建",
+                        text::EMPTY_WORLDS,
                         MENU_TEXT_MUTED,
                     );
                 }
                 for (index, entry) in self.worlds.iter().take(MAX_ROWS).enumerate() {
                     self.draw_list_row(out, viewport, index, &entry.name, 1);
                 }
-                self.draw_footer(out, viewport, "新建世界", "返回");
+                self.draw_footer(out, viewport, text::NEW_WORLD, text::BACK);
                 self.draw_notice(out, viewport, panel);
             }
             MenuScreen::Pause => {
@@ -545,13 +538,8 @@ impl MenuUi {
                 );
                 let panel = centered_panel(viewport, PANEL_WIDTH * 0.82, PANEL_HEIGHT);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-                push_header(out, viewport, panel, "已暂停", None);
-                let labels = [
-                    "设置",
-                    "角色成就",
-                    "世界成就",
-                    "保存并退出",
-                ];
+                push_header(out, viewport, panel, text::PAUSED_TITLE, None);
+                let labels = text::PAUSE_BUTTONS;
                 for (index, rect) in pause_buttons(viewport).iter().enumerate() {
                     let hovered = rect.contains(self.cursor.0, self.cursor.1);
                     push_button(
@@ -565,7 +553,7 @@ impl MenuUi {
                         &self.ui_textures,
                     );
                 }
-                let hint = "按 ESC 继续游戏";
+                let hint = text::RESUME_HINT;
                 let scale = 2.0;
                 font::push_text(
                     out,
@@ -614,16 +602,16 @@ impl MenuUi {
                 return;
             }
         }
-        let text = "NEVERLAND RHAPSODY";
+        let text_label = text::GAME_TITLE;
         let scale = 3.0;
         font::push_text(
             out,
             viewport,
-            (width - font::text_width(text, scale)) * 0.5,
+            (width - font::text_width(text_label, scale)) * 0.5,
             area.y + (area.height - font::line_height(scale)) * 0.5,
             scale,
             theme::TEXT_TITLE,
-            text,
+            text_label,
         );
     }
 
@@ -655,7 +643,7 @@ impl MenuUi {
                 out,
                 viewport,
                 edit,
-                "编辑",
+                text::EDIT,
                 edit.contains(self.cursor.0, self.cursor.1),
                 true,
                 scale,
@@ -667,7 +655,7 @@ impl MenuUi {
             out,
             viewport,
             delete,
-            "删除",
+            text::DELETE,
             delete.contains(self.cursor.0, self.cursor.1),
             true,
             scale,
@@ -726,7 +714,7 @@ impl MenuUi {
         );
         let panel = rename_panel(viewport);
         push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-        let title = "重命名角色";
+        let title = text::RENAME_TITLE;
         let scale = 3.0;
         font::push_text(
             out,
@@ -767,7 +755,7 @@ impl MenuUi {
                 &preedit,
             );
         }
-        let hint = "支持中文输入 · ENTER 确认";
+        let hint = text::RENAME_HINT;
         font::push_text(
             out,
             viewport,
@@ -782,7 +770,7 @@ impl MenuUi {
             out,
             viewport,
             confirm,
-            "确认",
+            text::CONFIRM,
             confirm.contains(self.cursor.0, self.cursor.1),
             true,
             BUTTON_TEXT_PIXEL,
@@ -792,7 +780,7 @@ impl MenuUi {
             out,
             viewport,
             cancel,
-            "取消",
+            text::CANCEL,
             cancel.contains(self.cursor.0, self.cursor.1),
             true,
             BUTTON_TEXT_PIXEL,

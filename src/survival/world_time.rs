@@ -27,12 +27,7 @@ pub enum TimePhase {
 impl TimePhase {
     /// 展示用时段标签。
     pub const fn label(self) -> &'static str {
-        match self {
-            Self::Day => "白天",
-            Self::Dusk => "黄昏",
-            Self::Night => "夜晚",
-            Self::Dawn => "黎明",
-        }
+        crate::text::time_phase(self)
     }
 
     /// 是否允许睡眠。

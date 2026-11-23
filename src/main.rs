@@ -17,6 +17,7 @@ mod player_visual;
 mod renderer;
 mod save;
 mod survival;
+mod text;
 mod texture;
 mod ui;
 mod world;

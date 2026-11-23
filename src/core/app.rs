@@ -55,6 +55,7 @@ use crate::survival::rng::GameRng;
 use crate::survival::sleep;
 use crate::survival::stamina::ATTACK_COST;
 use crate::survival::{Vitals, VitalsInput, WorldTime};
+use crate::text;
 use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
 use crate::ui::menu::config::MAX_ROWS;
@@ -503,7 +504,7 @@ impl App {
             .find(|entry| entry.id == character_id)
         else {
             self.menu
-                .show_notice("未找到角色");
+                .show_notice(text::NOTICE_CHARACTER_NOT_FOUND);
             return;
         };
         let worlds = Self::menu_entries(self.library.worlds());
@@ -515,12 +516,12 @@ impl App {
     fn start_session(&mut self, character_id: &str, world_id: &str) {
         let Some(seed) = self.library.world_seed(world_id) else {
             warn!(world = world_id, "世界缺少种子，无法进入");
-            self.menu.show_notice("世界数据缺失");
+            self.menu.show_notice(text::NOTICE_WORLD_DATA_MISSING);
             return;
         };
         let Some(character_save) = self.library.character(character_id) else {
             warn!(character = character_id, "角色存档缺失，无法进入");
-            self.menu.show_notice("角色数据缺失");
+            self.menu.show_notice(text::NOTICE_CHARACTER_DATA_MISSING);
             return;
         };
 
@@ -722,16 +723,16 @@ impl App {
             MenuAction::Unavailable(text) => self.menu.show_notice(text),
             MenuAction::NewCharacter => {
                 if self.library.characters().len() >= MAX_ROWS {
-                    self.menu.show_notice("角色数量已达上限");
+                    self.menu.show_notice(text::NOTICE_CHARACTER_LIMIT);
                     return;
                 }
                 if let Err(err) = self.library.create_character() {
                     warn!(error = %format!("{err:#}"), "新建角色失败");
-                    self.menu.show_notice("新建角色失败");
+                    self.menu.show_notice(text::NOTICE_CREATE_CHARACTER_FAILED);
                     return;
                 }
                 self.open_character_select();
-                self.menu.show_notice("角色已创建");
+                self.menu.show_notice(text::NOTICE_CHARACTER_CREATED);
             }
             MenuAction::SelectCharacter(id) => self.open_world_select(&id),
             MenuAction::EditCharacter(id) => {
@@ -745,11 +746,11 @@ impl App {
             MenuAction::DeleteCharacter(id) => {
                 if let Err(err) = self.library.delete_character(&id) {
                     warn!(error = %format!("{err:#}"), "删除角色失败");
-                    self.menu.show_notice("删除角色失败");
+                    self.menu.show_notice(text::NOTICE_DELETE_CHARACTER_FAILED);
                     return;
                 }
                 self.open_character_select();
-                self.menu.show_notice("角色已删除");
+                self.menu.show_notice(text::NOTICE_CHARACTER_DELETED);
             }
             MenuAction::ConfirmRename => {
                 let id = self.menu.rename_character_id().map(str::to_owned);
@@ -762,40 +763,40 @@ impl App {
                     Ok(_) => {
                         self.menu.cancel_rename();
                         self.open_character_select();
-                        self.menu.show_notice("角色已重命名");
+                        self.menu.show_notice(text::NOTICE_CHARACTER_RENAMED);
                     }
                     Err(err) => {
                         warn!(error = %format!("{err:#}"), "重命名角色失败");
-                        self.menu.show_notice("名称不合法");
+                        self.menu.show_notice(text::NOTICE_INVALID_NAME);
                     }
                 }
             }
             MenuAction::CancelRename => self.menu.cancel_rename(),
             MenuAction::NewWorld => {
                 if self.library.worlds().len() >= MAX_ROWS {
-                    self.menu.show_notice("世界数量已达上限");
+                    self.menu.show_notice(text::NOTICE_WORLD_LIMIT);
                     return;
                 }
                 if let Err(err) = self.library.create_world() {
                     warn!(error = %format!("{err:#}"), "新建世界失败");
-                    self.menu.show_notice("新建世界失败");
+                    self.menu.show_notice(text::NOTICE_CREATE_WORLD_FAILED);
                     return;
                 }
                 self.refresh_world_list();
-                self.menu.show_notice("世界已创建");
+                self.menu.show_notice(text::NOTICE_WORLD_CREATED);
             }
             MenuAction::DeleteWorld(id) => {
                 if let Err(err) = self.library.delete_world(&id) {
                     warn!(error = %format!("{err:#}"), "删除世界失败");
-                    self.menu.show_notice("删除世界失败");
+                    self.menu.show_notice(text::NOTICE_DELETE_WORLD_FAILED);
                     return;
                 }
                 self.refresh_world_list();
-                self.menu.show_notice("世界已删除");
+                self.menu.show_notice(text::NOTICE_WORLD_DELETED);
             }
             MenuAction::SelectWorld(id) => {
                 let Some(character) = self.menu.selected_character().cloned() else {
-                    self.menu.show_notice("请先选择角色");
+                    self.menu.show_notice(text::NOTICE_SELECT_CHARACTER_FIRST);
                     return;
                 };
                 self.start_session(&character.id, &id);
@@ -960,7 +961,7 @@ impl App {
         if let Some(stack) = self.inventory.hotbar_stack(selected) {
             if crate::survival::food_registry::definition(stack.item()).is_some() {
                 if self.vitals.hunger().is_full() {
-                    self.show_message("还不饿");
+                    self.show_message(text::MESSAGE_NOT_HUNGRY);
                     return;
                 }
                 if self.eating.start(stack.item(), HOTBAR_OFFSET + selected) {
@@ -984,7 +985,7 @@ impl App {
                 self.eating.cancel();
                 self.vitals.set_respawn(bed);
                 self.persist_survival();
-                self.show_message("睡到了早晨");
+                self.show_message(text::MESSAGE_SLEPT_UNTIL_MORNING);
                 info!(x = bed.x, y = bed.y, z = bed.z, "玩家已入睡并设置床复活点");
             }
             Err(error) => {
@@ -1345,7 +1346,11 @@ impl App {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer
                     .hud_mut()
-                    .show_target(definition.name, remaining, definition.max_health);
+                    .show_target(
+                        crate::text::creature_name(definition.kind),
+                        remaining,
+                        definition.max_health,
+                    );
             }
         }
         if let Some(renderer) = self.renderer.as_mut() {
@@ -1549,7 +1554,7 @@ impl App {
                 .is_solid()
         {
             debug!(block = ?target, "功能性方块缺少地面支撑");
-            self.show_message("需要坚实地面");
+            self.show_message(text::MESSAGE_NEED_SOLID_GROUND);
             return;
         }
 
@@ -2051,7 +2056,7 @@ impl App {
                 }
                 let definition = entity_registry::definition(creature.kind())?;
                 Some((
-                    definition.name,
+                    crate::text::creature_name(definition.kind),
                     creature.entity.health(),
                     definition.max_health,
                 ))
