@@ -25,13 +25,13 @@ pub enum TimePhase {
 }
 
 impl TimePhase {
-    /// 展示用英文标签；字体仅覆盖 ASCII。
+    /// 展示用时段标签。
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Day => "DAY",
-            Self::Dusk => "DUSK",
-            Self::Night => "NIGHT",
-            Self::Dawn => "DAWN",
+            Self::Day => "白天",
+            Self::Dusk => "黄昏",
+            Self::Night => "夜晚",
+            Self::Dawn => "黎明",
         }
     }
 
@@ -186,14 +186,15 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_ascii() {
+    fn labels_are_localized() {
         for phase in [
             TimePhase::Day,
             TimePhase::Dusk,
             TimePhase::Night,
             TimePhase::Dawn,
         ] {
-            assert!(phase.label().is_ascii());
+            assert!(!phase.label().is_empty());
+            assert!(!phase.label().is_ascii());
         }
     }
 }

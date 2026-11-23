@@ -5,6 +5,7 @@
 pub mod animation;
 pub mod draw;
 pub mod font;
+pub mod font_atlas;
 pub mod input;
 pub mod layout;
 pub mod texture_ratio;

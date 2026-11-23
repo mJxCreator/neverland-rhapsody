@@ -129,14 +129,14 @@ impl SaveLibrary {
         write_world_meta(
             &self.world_meta_path(world_id),
             &WorldMeta {
-                name: "WORLD 1".to_owned(),
+                name: "世界 1".to_owned(),
                 seed,
             },
         )?;
 
         let character = CharacterSave {
             version: super::character_save::CHARACTER_SAVE_VERSION,
-            name: "CHARACTER 1".to_owned(),
+            name: "角色 1".to_owned(),
             inventory: save.player().cloned(),
             survival: save.survival(),
             equipment: save.equipment().cloned(),
@@ -170,7 +170,7 @@ impl SaveLibrary {
                 continue;
             };
             let name = if save.name.trim().is_empty() {
-                display_name("CHARACTER", id)
+                display_name("角色", id)
             } else {
                 save.name
             };
@@ -210,7 +210,7 @@ impl SaveLibrary {
             let name = meta
                 .map(|meta| meta.name)
                 .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| display_name("WORLD", id));
+                .unwrap_or_else(|| display_name("世界", id));
             entries.push(SaveEntry {
                 id: id.to_owned(),
                 name,
@@ -225,7 +225,7 @@ impl SaveLibrary {
     pub fn create_character(&self) -> Result<SaveEntry> {
         let id = unique_id(&self.characters_dir(), "character", ".json");
         let index = numeric_suffix(&id).unwrap_or(1);
-        let name = format!("CHARACTER {index}");
+        let name = format!("角色 {index}");
         CharacterSave::new(name.clone()).save(self.character_path(&id))?;
         info!(id, name, "已新建角色");
         Ok(SaveEntry {
@@ -235,10 +235,10 @@ impl SaveLibrary {
         })
     }
 
-    /// 重命名角色；名称会被规范化为字体可显示的 ASCII。
+    /// 重命名角色；名称允许 Unicode 字母、数字与空格。
     pub fn rename_character(&self, id: &str, name: &str) -> Result<SaveEntry> {
         let name = normalize_name(name)
-            .with_context(|| format!("角色名称不合法: {name}（仅支持 A-Z、0-9、空格与 - .）"))?;
+            .with_context(|| format!("角色名称不合法: {name}（仅支持中英文、数字与空格）"))?;
         let path = self.character_path(id);
         let mut save = CharacterSave::load(&path)
             .with_context(|| format!("角色不存在或无法读取: {id}"))?;
@@ -267,7 +267,7 @@ impl SaveLibrary {
     pub fn create_world(&self) -> Result<SaveEntry> {
         let id = unique_id(&self.worlds_dir(), "world", "");
         let index = numeric_suffix(&id).unwrap_or(1);
-        let name = format!("WORLD {index}");
+        let name = format!("世界 {index}");
         let seed = random_seed();
         let dir = self.world_dir(&id);
         fs::create_dir_all(&dir)
@@ -314,13 +314,20 @@ impl SaveLibrary {
     }
 }
 
-/// 名称规范化：仅保留字体可显示的 ASCII 字符，压缩多余空格并限制长度。
+/// 名称规范化：保留 Unicode 字母/数字/空格与常见连接符，压缩多余空格并限制长度。
 pub fn normalize_name(input: &str) -> Option<String> {
     let mut filtered = String::new();
     for character in input.chars() {
-        let upper = character.to_ascii_uppercase();
-        if upper.is_ascii_alphanumeric() || matches!(upper, ' ' | '-' | '.' | '_') {
-            filtered.push(upper);
+        if character.is_control() {
+            continue;
+        }
+        let character = if character.is_ascii() {
+            character.to_ascii_uppercase()
+        } else {
+            character
+        };
+        if character.is_alphanumeric() || matches!(character, ' ' | '-' | '.' | '_') {
+            filtered.push(character);
         }
     }
     let name = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -433,7 +440,7 @@ mod tests {
 
         let character = library.create_character().expect("新建角色");
         assert_eq!(character.id, "character_1");
-        assert_eq!(character.name, "CHARACTER 1");
+        assert_eq!(character.name, "角色 1");
         assert!(library.character_path("character_1").exists());
 
         let second = library.create_character().expect("新建第二个角色");
@@ -464,9 +471,10 @@ mod tests {
     #[test]
     fn names_are_normalized_and_rejected_when_empty() {
         assert_eq!(normalize_name("  ab  c "), Some("AB C".to_owned()));
-        // 字体不支持的字符会被丢弃；只剩数字时仍是合法名称。
-        assert_eq!(normalize_name("角色1"), Some("1".to_owned()));
-        assert_eq!(normalize_name("角色"), None);
+        // Unicode 字母与数字保留；控制字符被过滤。
+        assert_eq!(normalize_name("角色1"), Some("角色1".to_owned()));
+        assert_eq!(normalize_name("新角色\u{0007}"), Some("新角色".to_owned()));
+        assert_eq!(normalize_name("角色"), Some("角色".to_owned()));
         assert_eq!(normalize_name(""), None);
         assert_eq!(normalize_name(&"A".repeat(MAX_NAME_CHARS + 1)), None);
     }
@@ -489,7 +497,7 @@ mod tests {
         assert!(library.world_path("world_1").exists());
         let worlds = library.worlds();
         assert_eq!(worlds.len(), 1);
-        assert_eq!(worlds[0].name, "WORLD 1");
+        assert_eq!(worlds[0].name, "世界 1");
         assert_eq!(worlds[0].seed, Some(24301));
 
         let characters = library.characters();

@@ -50,9 +50,9 @@ pub const ROW_BUTTON_GAP: f32 = 8.0;
 /// 底部按钮宽度（像素）。
 pub const FOOTER_BUTTON_WIDTH: f32 = 176.0;
 /// 按钮文字字号（像素格）。
-pub const BUTTON_TEXT_PIXEL: f32 = 2.0;
+pub const BUTTON_TEXT_PIXEL: f32 = 1.0;
 /// 面板标题字号（像素格）。
-pub const HEADER_TEXT_PIXEL: f32 = 3.0;
+pub const HEADER_TEXT_PIXEL: f32 = 2.0;
 /// 重命名输入框字号（像素格）。
 pub const INPUT_TEXT_PIXEL: f32 = 2.0;
 /// 角色名称最大字符数（与存档层规范一致）。

@@ -1,5 +1,6 @@
 // 屏幕空间 HUD：顶点位置直接使用裁剪空间坐标，颜色携带透明度。
-// UV 为负值时表示纯色顶点；否则由 atlas 选择物品图集或 UI 图集采样。
+// UV 为负值时表示纯色顶点；否则由 atlas 选择物品图集、UI 图集或字体图集。
+// 字体图集为 R8 覆盖率，只写入 Alpha，RGB 取顶点颜色。
 
 struct SceneUniforms {
     view_proj: mat4x4<f32>,
@@ -19,6 +20,12 @@ var ui_atlas: texture_2d<f32>;
 
 @group(0) @binding(4)
 var ui_sampler: sampler;
+
+@group(0) @binding(5)
+var font_atlas: texture_2d<f32>;
+
+@group(0) @binding(6)
+var font_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -46,11 +53,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // 两种图集都无条件采样，避免在非一致控制流中调用带导数的 textureSample。
+    // 三种图集都无条件采样，避免在非一致控制流中调用带导数的 textureSample。
     let item_sample = textureSample(item_atlas, item_sampler, input.uv);
     let ui_sample = textureSample(ui_atlas, ui_sampler, input.uv);
-    let sampled = select(item_sample, ui_sample, input.atlas > 0.5);
-    let textured = sampled * input.color;
+    let font_sample = textureSample(font_atlas, font_sampler, input.uv);
+    let item_or_ui = select(item_sample, ui_sample, input.atlas > 0.5);
+    let is_font = input.atlas > 1.5;
+    let sampled_rgb = select(item_or_ui.rgb, vec3<f32>(1.0, 1.0, 1.0), is_font);
+    let sampled_alpha = select(item_or_ui.a, font_sample.r, is_font);
+    let textured = vec4<f32>(sampled_rgb * input.color.rgb, sampled_alpha * input.color.a);
     // UV 为负值是纯色顶点，直接使用顶点颜色。
     return select(textured, input.color, input.uv.x < 0.0);
 }

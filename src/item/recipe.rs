@@ -58,16 +58,16 @@ pub enum RecipeCategory {
 }
 
 impl RecipeCategory {
-    /// 展示用英文标签；字体仅覆盖 ASCII。
+    /// 展示用分类标签。
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Materials => "MATERIALS",
-            Self::Tools => "TOOLS",
-            Self::Utility => "UTILITY",
-            Self::Weapons => "WEAPONS",
-            Self::Armor => "ARMOR",
-            Self::Consumables => "CONSUMABLES",
-            Self::Building => "BUILDING",
+            Self::Materials => "材料",
+            Self::Tools => "工具",
+            Self::Utility => "功能",
+            Self::Weapons => "武器",
+            Self::Armor => "护甲",
+            Self::Consumables => "食物",
+            Self::Building => "建筑",
         }
     }
 }

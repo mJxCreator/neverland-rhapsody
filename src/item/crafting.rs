@@ -23,9 +23,9 @@ impl CraftError {
     /// 面向玩家的简短说明；字体仅覆盖 ASCII。
     pub const fn message(self) -> &'static str {
         match self {
-            Self::UnknownRecipe => "RECIPE UNAVAILABLE",
-            Self::InsufficientMaterials => "NOT ENOUGH MATERIALS",
-            Self::NoSpace => "INVENTORY FULL",
+            Self::UnknownRecipe => "配方不可用",
+            Self::InsufficientMaterials => "材料不足",
+            Self::NoSpace => "背包已满",
         }
     }
 }

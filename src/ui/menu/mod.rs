@@ -2,7 +2,7 @@
 //!
 //! 本模块只负责界面状态、布局与点击/按键解析，不读写磁盘：
 //! 存档库由应用层驱动，菜单通过 [`MenuAction`] 把用户意图交回应用层执行。
-//! 字体仅覆盖 ASCII，因此所有按钮与默认名称均使用英文。
+//! 文案为中文；重命名输入同时接受 IME 提交文本与键盘文本事件。
 
 use winit::keyboard::KeyCode;
 
@@ -70,6 +70,8 @@ pub enum MenuAction {
 struct RenameState {
     character_id: String,
     text: String,
+    /// IME 预编辑文本；只作预览，不写入最终名称。
+    preedit: String,
 }
 
 /// 菜单状态与输入。
@@ -131,6 +133,14 @@ impl MenuUi {
 
     pub fn rename_text(&self) -> Option<&str> {
         self.rename.as_ref().map(|state| state.text.as_str())
+    }
+
+    /// IME 预编辑文本；为空表示没有正在组字。
+    pub fn preedit_text(&self) -> Option<&str> {
+        self.rename
+            .as_ref()
+            .map(|state| state.preedit.as_str())
+            .filter(|text| !text.is_empty())
     }
 
     pub fn rename_character_id(&self) -> Option<&str> {
@@ -195,13 +205,69 @@ impl MenuUi {
     pub fn begin_rename(&mut self, character_id: impl Into<String>, current_name: &str) {
         let text: String = current_name
             .chars()
-            .filter(|character| character.is_ascii_alphanumeric() || character.is_ascii_whitespace())
+            .filter(|character| !character.is_control())
             .take(RENAME_MAX_CHARS)
             .collect();
         self.rename = Some(RenameState {
             character_id: character_id.into(),
             text,
+            preedit: String::new(),
         });
+    }
+
+    /// 追加 IME 提交文本；长度按字符数限制。
+    pub fn ime_commit(&mut self, text: &str) {
+        self.append_name_text(text);
+    }
+
+    /// 更新 IME 预编辑文本；只作预览。
+    pub fn ime_preedit(&mut self, text: Option<&str>) {
+        if let Some(state) = self.rename.as_mut() {
+            state.preedit = text.unwrap_or_default().to_owned();
+        }
+    }
+
+    /// 键盘文本事件：优先使用系统提交的文本，物理键位仅在文本缺失时回退。
+    pub fn key_with_text(
+        &mut self,
+        code: KeyCode,
+        pressed: bool,
+        text: Option<&str>,
+    ) -> MenuAction {
+        if !pressed {
+            return MenuAction::None;
+        }
+        if self.rename.is_none() {
+            return self.key(code, pressed);
+        }
+        match code {
+            KeyCode::Escape => MenuAction::CancelRename,
+            KeyCode::Enter => MenuAction::ConfirmRename,
+            KeyCode::Backspace => {
+                if let Some(state) = self.rename.as_mut() {
+                    state.text.pop();
+                }
+                MenuAction::None
+            }
+            _ => {
+                if let Some(text) = text.filter(|text| !text.is_empty()) {
+                    self.append_name_text(text);
+                }
+                MenuAction::None
+            }
+        }
+    }
+
+    fn append_name_text(&mut self, text: &str) {
+        let Some(state) = self.rename.as_mut() else {
+            return;
+        };
+        for character in text.chars().filter(|character| !character.is_control()) {
+            if state.text.chars().count() >= RENAME_MAX_CHARS {
+                break;
+            }
+            state.text.push(character);
+        }
     }
 
     pub fn cancel_rename(&mut self) {
@@ -277,11 +343,11 @@ impl MenuUi {
                 let buttons = main_buttons(viewport);
                 let actions = [
                     MenuAction::SinglePlayer,
-                    MenuAction::Unavailable("MULTIPLAYER NOT AVAILABLE"),
-                    MenuAction::Unavailable("ACHIEVEMENTS NOT AVAILABLE"),
-                    MenuAction::Unavailable("SETTINGS NOT AVAILABLE"),
-                    MenuAction::Unavailable("WIKI NOT AVAILABLE"),
-                    MenuAction::Unavailable("ABOUT NOT AVAILABLE"),
+                    MenuAction::Unavailable("多人游戏暂未开放"),
+                    MenuAction::Unavailable("成就暂未开放"),
+                    MenuAction::Unavailable("设置暂未开放"),
+                    MenuAction::Unavailable("WIKI 暂未开放"),
+                    MenuAction::Unavailable("关于暂未开放"),
                     MenuAction::Quit,
                 ];
                 for (index, rect) in buttons.iter().enumerate() {
@@ -342,9 +408,9 @@ impl MenuUi {
             MenuScreen::Pause => {
                 let buttons = pause_buttons(viewport);
                 let actions = [
-                    MenuAction::Unavailable("SETTINGS NOT AVAILABLE"),
-                    MenuAction::Unavailable("CHARACTER ACHIEVEMENTS NOT AVAILABLE"),
-                    MenuAction::Unavailable("WORLD ACHIEVEMENTS NOT AVAILABLE"),
+                    MenuAction::Unavailable("设置暂未开放"),
+                    MenuAction::Unavailable("角色成就暂未开放"),
+                    MenuAction::Unavailable("世界成就暂未开放"),
                     MenuAction::SaveAndQuit,
                 ];
                 for (index, rect) in buttons.iter().enumerate() {
@@ -373,13 +439,13 @@ impl MenuUi {
                 );
                 self.draw_title(out, viewport);
                 let labels = [
-                    "SINGLE PLAYER",
-                    "MULTIPLAYER",
-                    "ACHIEVEMENTS",
-                    "SETTINGS",
+                    "单人游戏",
+                    "多人游戏",
+                    "成就",
+                    "设置",
                     "WIKI",
-                    "ABOUT",
-                    "QUIT",
+                    "关于",
+                    "退出",
                 ];
                 for (index, rect) in main_buttons(viewport).iter().enumerate() {
                     let hovered = rect.contains(self.cursor.0, self.cursor.1);
@@ -416,20 +482,20 @@ impl MenuUi {
                 );
                 let panel = list_panel(viewport);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-                push_header(out, viewport, panel, "SELECT CHARACTER", None);
+                push_header(out, viewport, panel, "选择角色", None);
                 if self.characters.is_empty() {
                     push_centered_text(
                         out,
                         viewport,
                         panel,
-                        "NO CHARACTERS - CREATE ONE",
+                        "暂无角色 - 请新建",
                         MENU_TEXT_MUTED,
                     );
                 }
                 for (index, entry) in self.characters.iter().take(MAX_ROWS).enumerate() {
                     self.draw_list_row(out, viewport, index, &entry.name, 2);
                 }
-                self.draw_footer(out, viewport, "NEW CHARACTER", "BACK");
+                self.draw_footer(out, viewport, "新建角色", "返回");
                 self.draw_notice(out, viewport, panel);
             }
             MenuScreen::WorldSelect => {
@@ -441,15 +507,18 @@ impl MenuUi {
                 );
                 let panel = list_panel(viewport);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-                let subtitle = self
-                    .selected_character
-                    .as_ref()
-                    .map(|entry| format!("PLAYER: {}", entry.name));
+                let subtitle = self.selected_character.as_ref().map(|entry| {
+                    font::truncate_to_width(
+                        &format!("角色: {}", entry.name),
+                        2.0,
+                        panel.width - PANEL_PADDING * 2.0,
+                    )
+                });
                 push_header(
                     out,
                     viewport,
                     panel,
-                    "SELECT WORLD",
+                    "选择世界",
                     subtitle.as_deref(),
                 );
                 if self.worlds.is_empty() {
@@ -457,14 +526,14 @@ impl MenuUi {
                         out,
                         viewport,
                         panel,
-                        "NO WORLDS - CREATE ONE",
+                        "暂无世界 - 请新建",
                         MENU_TEXT_MUTED,
                     );
                 }
                 for (index, entry) in self.worlds.iter().take(MAX_ROWS).enumerate() {
                     self.draw_list_row(out, viewport, index, &entry.name, 1);
                 }
-                self.draw_footer(out, viewport, "NEW WORLD", "BACK");
+                self.draw_footer(out, viewport, "新建世界", "返回");
                 self.draw_notice(out, viewport, panel);
             }
             MenuScreen::Pause => {
@@ -476,12 +545,12 @@ impl MenuUi {
                 );
                 let panel = centered_panel(viewport, PANEL_WIDTH * 0.82, PANEL_HEIGHT);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-                push_header(out, viewport, panel, "PAUSED", None);
+                push_header(out, viewport, panel, "已暂停", None);
                 let labels = [
-                    "SETTINGS",
-                    "CHARACTER ACHIEVEMENTS",
-                    "WORLD ACHIEVEMENTS",
-                    "SAVE AND QUIT",
+                    "设置",
+                    "角色成就",
+                    "世界成就",
+                    "保存并退出",
                 ];
                 for (index, rect) in pause_buttons(viewport).iter().enumerate() {
                     let hovered = rect.contains(self.cursor.0, self.cursor.1);
@@ -496,13 +565,13 @@ impl MenuUi {
                         &self.ui_textures,
                     );
                 }
-                let hint = "PRESS ESC TO RESUME";
+                let hint = "按 ESC 继续游戏";
                 let scale = 2.0;
                 font::push_text(
                     out,
                     viewport,
                     (width - font::text_width(hint, scale)) * 0.5,
-                    panel.bottom() - PANEL_PADDING - font::GLYPH_HEIGHT as f32 * scale,
+                    panel.bottom() - PANEL_PADDING - font::line_height(scale),
                     scale,
                     MENU_TEXT_MUTED,
                     hint,
@@ -512,7 +581,7 @@ impl MenuUi {
                         out,
                         viewport,
                         (width - font::text_width(notice, scale)) * 0.5,
-                        panel.bottom() - PANEL_PADDING - font::GLYPH_HEIGHT as f32 * scale - 24.0,
+                        panel.bottom() - PANEL_PADDING - font::line_height(scale) - 24.0,
                         scale,
                         MENU_NOTICE,
                         notice,
@@ -546,12 +615,12 @@ impl MenuUi {
             }
         }
         let text = "NEVERLAND RHAPSODY";
-        let scale = 4.0;
+        let scale = 3.0;
         font::push_text(
             out,
             viewport,
             (width - font::text_width(text, scale)) * 0.5,
-            area.y + (area.height - font::GLYPH_HEIGHT as f32 * scale) * 0.5,
+            area.y + (area.height - font::line_height(scale)) * 0.5,
             scale,
             theme::TEXT_TITLE,
             text,
@@ -570,14 +639,15 @@ impl MenuUi {
         let hovered = name_rect.contains(self.cursor.0, self.cursor.1);
         push_row(out, viewport, name_rect, hovered);
         let scale = BUTTON_TEXT_PIXEL;
+        let name = font::truncate_to_width(name, scale, name_rect.width - 24.0);
         font::push_text(
             out,
             viewport,
             name_rect.x + 12.0,
-            name_rect.y + (name_rect.height - font::GLYPH_HEIGHT as f32 * scale) * 0.5,
+            name_rect.y + (name_rect.height - font::line_height(scale)) * 0.5,
             scale,
             MENU_TEXT,
-            name,
+            &name,
         );
         if actions >= 2 {
             let edit = row_action_rect(viewport, index, actions, 0);
@@ -585,7 +655,7 @@ impl MenuUi {
                 out,
                 viewport,
                 edit,
-                "EDIT",
+                "编辑",
                 edit.contains(self.cursor.0, self.cursor.1),
                 true,
                 scale,
@@ -597,7 +667,7 @@ impl MenuUi {
             out,
             viewport,
             delete,
-            "DELETE",
+            "删除",
             delete.contains(self.cursor.0, self.cursor.1),
             true,
             scale,
@@ -656,7 +726,7 @@ impl MenuUi {
         );
         let panel = rename_panel(viewport);
         push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
-        let title = "RENAME CHARACTER";
+        let title = "重命名角色";
         let scale = 3.0;
         font::push_text(
             out,
@@ -671,22 +741,39 @@ impl MenuUi {
         push_row(out, viewport, input, false);
         let text = self.rename_text().unwrap_or("");
         let text_scale = INPUT_TEXT_PIXEL;
-        font::push_text(
+        let text_x = input.x + 12.0;
+        let text_y = input.y + (input.height - font::line_height(text_scale)) * 0.5;
+        let max_width = (input.width - 24.0).max(0.0);
+        let text = font::truncate_to_width(text, text_scale, max_width);
+        let text_width = font::push_text(
             out,
             viewport,
-            input.x + 12.0,
-            input.y + (input.height - font::GLYPH_HEIGHT as f32 * text_scale) * 0.5,
+            text_x,
+            text_y,
             text_scale,
             MENU_TEXT,
-            text,
+            &text,
         );
-        let hint = "A-Z 0-9 SPACE - . ENTER TO CONFIRM";
+        if let Some(preedit) = self.preedit_text() {
+            let remaining = (max_width - text_width).max(0.0);
+            let preedit = font::truncate_to_width(preedit, text_scale, remaining);
+            font::push_text(
+                out,
+                viewport,
+                text_x + text_width,
+                text_y,
+                text_scale,
+                MENU_TEXT_MUTED,
+                &preedit,
+            );
+        }
+        let hint = "支持中文输入 · ENTER 确认";
         font::push_text(
             out,
             viewport,
-            panel.x + (panel.width - font::text_width(hint, 1.5)) * 0.5,
+            panel.x + (panel.width - font::text_width(hint, 1.0)) * 0.5,
             input.bottom() + 10.0,
-            1.5,
+            1.0,
             MENU_TEXT_MUTED,
             hint,
         );
@@ -695,7 +782,7 @@ impl MenuUi {
             out,
             viewport,
             confirm,
-            "CONFIRM",
+            "确认",
             confirm.contains(self.cursor.0, self.cursor.1),
             true,
             BUTTON_TEXT_PIXEL,
@@ -705,7 +792,7 @@ impl MenuUi {
             out,
             viewport,
             cancel,
-            "CANCEL",
+            "取消",
             cancel.contains(self.cursor.0, self.cursor.1),
             true,
             BUTTON_TEXT_PIXEL,
@@ -905,7 +992,7 @@ fn push_header(
             out,
             viewport,
             panel.x + (panel.width - font::text_width(subtitle, small)) * 0.5,
-            panel.y + 18.0 + font::GLYPH_HEIGHT as f32 * scale + 6.0,
+            panel.y + 18.0 + font::line_height(scale) + 6.0,
             small,
             MENU_TEXT_MUTED,
             subtitle,
@@ -954,7 +1041,7 @@ mod tests {
         );
         assert_eq!(
             menu.click_at(viewport(), (buttons[1].x + 4.0, buttons[1].y + 4.0)),
-            MenuAction::Unavailable("MULTIPLAYER NOT AVAILABLE")
+            MenuAction::Unavailable("多人游戏暂未开放")
         );
     }
 
@@ -1005,12 +1092,12 @@ mod tests {
         );
         assert_eq!(
             menu.click_at(viewport(), (buttons[0].x + 4.0, buttons[0].y + 4.0)),
-            MenuAction::Unavailable("SETTINGS NOT AVAILABLE")
+            MenuAction::Unavailable("设置暂未开放")
         );
     }
 
     #[test]
-    fn rename_input_filters_and_limits_ascii_text() {
+    fn rename_input_accepts_unicode_ime_text() {
         let mut menu = MenuUi::new();
         menu.open_characters(vec![MenuEntry::new("character_1", "ALICE")]);
         menu.begin_rename("character_1", "ALICE");
@@ -1019,8 +1106,16 @@ mod tests {
 
         assert_eq!(menu.key(KeyCode::Backspace, true), MenuAction::None);
         assert_eq!(menu.rename_text(), Some("ALIC"));
-        assert_eq!(menu.key(KeyCode::KeyE, true), MenuAction::None);
-        assert_eq!(menu.rename_text(), Some("ALICE"));
+        // IME 提交中文：内部保存 Unicode，不做 ASCII 过滤。
+        menu.ime_commit("小明");
+        assert_eq!(menu.rename_text(), Some("ALIC小明"));
+        // 预编辑只作预览，不写入名称。
+        menu.ime_preedit(Some("zhong"));
+        assert_eq!(menu.preedit_text(), Some("zhong"));
+        assert_eq!(menu.rename_text(), Some("ALIC小明"));
+        // 组字期间物理键位不产生字符，避免与 IME 重复输入。
+        assert_eq!(menu.key_with_text(KeyCode::KeyZ, true, None), MenuAction::None);
+        assert_eq!(menu.rename_text(), Some("ALIC小明"));
         assert_eq!(menu.key(KeyCode::Enter, true), MenuAction::ConfirmRename);
         assert_eq!(menu.key(KeyCode::Escape, true), MenuAction::CancelRename);
     }

@@ -32,7 +32,7 @@ pub const COW_DROPS: [ItemDrop; 2] = [
 /// 猪：矮胖体型、10 点生命、移动较快、生成权重更高。
 pub const PIG: EntityDefinition = EntityDefinition {
     kind: EntityTypeId::PIG,
-    name: "Pig",
+    name: "猪",
     width: 0.9,
     height: 0.9,
     max_health: 10,
@@ -48,7 +48,7 @@ pub const PIG: EntityDefinition = EntityDefinition {
 /// 牛：高大体型、14 点生命、移动稍慢、生成权重较低。
 pub const COW: EntityDefinition = EntityDefinition {
     kind: EntityTypeId::COW,
-    name: "Cow",
+    name: "牛",
     width: 0.9,
     height: 1.4,
     max_health: 14,
@@ -71,7 +71,7 @@ pub const ZOMBIE_DROPS: [ItemDrop; 1] = [ItemDrop {
 /// 僵尸：人形敌对生物，近战攻击，白天也会生成。
 pub const ZOMBIE: EntityDefinition = EntityDefinition {
     kind: EntityTypeId::ZOMBIE,
-    name: "Zombie",
+    name: "僵尸",
     width: 0.6,
     height: 1.8,
     max_health: 20,

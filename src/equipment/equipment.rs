@@ -52,13 +52,13 @@ impl EquipmentSlot {
         self.code() as usize
     }
 
-    /// 展示用名称；字体仅覆盖 ASCII。
+    /// 展示用名称。
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Head => "HEAD",
-            Self::Chest => "CHEST",
-            Self::Legs => "LEGS",
-            Self::Feet => "FEET",
+            Self::Head => "头",
+            Self::Chest => "胸",
+            Self::Legs => "腿",
+            Self::Feet => "脚",
         }
     }
 }

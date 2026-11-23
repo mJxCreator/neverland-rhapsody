@@ -35,13 +35,13 @@ pub const INGREDIENT_ROW: f32 = 24.0;
 /// 材料行间距（像素）。
 pub const INGREDIENT_GAP: f32 = 4.0;
 /// 标题字号（像素格）。
-pub const TITLE_PIXEL: f32 = 2.6;
+pub const TITLE_PIXEL: f32 = 2.0;
 /// 正文字号（像素格）。
-pub const TEXT_PIXEL: f32 = 1.6;
+pub const TEXT_PIXEL: f32 = 1.0;
 /// 配方行字号（像素格）。
-pub const ROW_TEXT_PIXEL: f32 = 1.5;
+pub const ROW_TEXT_PIXEL: f32 = 1.0;
 /// 分类标签字号（像素格）。
-pub const TAB_PIXEL: f32 = 1.5;
+pub const TAB_PIXEL: f32 = 1.0;
 /// 成功/失败提示的显示时长（秒）。
 pub const MESSAGE_DURATION: f32 = 2.5;
 /// 提示最后阶段的淡出时长（秒）。

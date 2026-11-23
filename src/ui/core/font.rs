@@ -1,49 +1,231 @@
-//! 极简 5×7 位图字体：把大写字幕与数字渲染成纯色四边形，供所有 UI 使用。
+//! 文字渲染：优先使用字体图集采样，字体缺失时回退到内置 5×7 位图字形。
 //!
-//! 不引入字体文件与纹理，所有字形以位掩码内联；小写字母统一映射为大写。
+//! 对外保持 `push_text`/`text_width` 的调用方式：`scale` 表示基础字号 12px 的整数倍
+//! （1/2/3），返回文本实际像素宽度；JSON 存档不依赖这里，只有界面绘制与名称测量使用。
 
-use super::draw::{push_quad, UiVertex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use tracing::warn;
+
+use super::draw::{push_font_quad, push_quad, UiVertex};
+use super::font_atlas::FontAtlas;
 use super::layout::UiRect;
 
-/// 字形宽度（像素格）。
+/// 内置位图回退字形的像素格宽。
 pub const GLYPH_WIDTH: u32 = 5;
-/// 字形高度（像素格）。
+/// 内置位图回退字形的像素格高。
 pub const GLYPH_HEIGHT: u32 = 7;
-/// 字间距（像素格）。
+/// 内置位图回退字形的字距（像素格）。
 const GLYPH_SPACING: u32 = 1;
+/// 基础字号（像素）。
+pub const BASE_PX: f32 = 12.0;
+/// 允许的字号档位：12 / 24 / 36。
+pub const MAX_SCALE: f32 = 3.0;
+
+static FONT_ATLAS: OnceLock<Mutex<FontAtlas>> = OnceLock::new();
+static FONT_LOADED: AtomicBool = AtomicBool::new(false);
+
+fn atlas() -> &'static Mutex<FontAtlas> {
+    FONT_ATLAS.get_or_init(|| Mutex::new(FontAtlas::new()))
+}
+
+fn lock_atlas() -> std::sync::MutexGuard<'static, FontAtlas> {
+    atlas().lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// 启动时载入字体；失败时保持内置位图回退。
+pub fn load_font(bytes: Vec<u8>) -> Result<(), String> {
+    let mut guard = lock_atlas();
+    guard.set_font(bytes)?;
+    FONT_LOADED.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 字体是否可用。
+pub fn font_loaded() -> bool {
+    FONT_LOADED.load(Ordering::Relaxed)
+}
+
+/// 图集初始像素；渲染器创建 GPU 纹理时上传一次。
+pub fn initial_pixels() -> Vec<u8> {
+    lock_atlas().pixels().to_vec()
+}
+
+/// 上传图集脏区域；没有新增字形时不产生任何拷贝。
+pub fn upload_dirty(queue: &wgpu::Queue, texture: &wgpu::Texture) {
+    let Some((rect, pixels, stride)) = lock_atlas().take_dirty() else {
+        return;
+    };
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: rect.x,
+                y: rect.y,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(stride),
+            rows_per_image: Some(rect.height),
+        },
+        wgpu::Extent3d {
+            width: rect.width,
+            height: rect.height,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// 把任意 `scale` 收敛到 1/2/3，禁止小数倍缩放。
+pub fn normalized_scale(scale: f32) -> f32 {
+    if !scale.is_finite() || scale <= 0.0 {
+        return 0.0;
+    }
+    scale.round().clamp(1.0, MAX_SCALE)
+}
+
+/// 当前字号档位对应的像素字号。
+pub fn pixel_size(scale: f32) -> f32 {
+    BASE_PX * normalized_scale(scale)
+}
+
+/// 当前字号档位的行高；布局用它做垂直居中。
+pub fn line_height(scale: f32) -> f32 {
+    let scale = normalized_scale(scale);
+    if scale <= 0.0 {
+        return 0.0;
+    }
+    if font_loaded() {
+        lock_atlas().line_height(pixel_size(scale) as u32)
+    } else {
+        (GLYPH_HEIGHT as f32) * scale
+    }
+}
 
 /// 一行文本的像素宽度。
-pub fn text_width(text: &str, pixel: f32) -> f32 {
+pub fn text_width(text: &str, scale: f32) -> f32 {
+    let scale = normalized_scale(scale);
+    if scale <= 0.0 {
+        return 0.0;
+    }
+    if font_loaded() {
+        let px = (BASE_PX * scale) as u32;
+        let mut guard = lock_atlas();
+        let mut width = 0.0;
+        for character in text.chars() {
+            width += guard.advance(character, px);
+        }
+        return width;
+    }
     let glyphs = text.chars().count() as f32;
     if glyphs <= 0.0 {
         return 0.0;
     }
-    (glyphs * (GLYPH_WIDTH + GLYPH_SPACING) as f32 - GLYPH_SPACING as f32) * pixel
+    (glyphs * (GLYPH_WIDTH + GLYPH_SPACING) as f32 - GLYPH_SPACING as f32) * scale
 }
 
-/// 把文本写入 HUD 顶点列表；`x`、`y` 是左上角像素坐标。
+/// 与 [`text_width`] 等价的显式接口，便于不绘制时测量。
+#[cfg(test)]
+pub fn measure_text(text: &str, scale: f32) -> f32 {
+    text_width(text, scale)
+}
+
+/// 按像素宽度截断文本；溢出时追加 `...` 省略号。
+pub fn truncate_to_width(text: &str, scale: f32, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if text_width(text, scale) <= max_width {
+        return text.to_owned();
+    }
+    let ellipsis = "...";
+    let ellipsis_width = text_width(ellipsis, scale);
+    let mut truncated = String::new();
+    for character in text.chars() {
+        let mut candidate = truncated.clone();
+        candidate.push(character);
+        if text_width(&candidate, scale) + ellipsis_width > max_width {
+            break;
+        }
+        truncated = candidate;
+    }
+    truncated.push_str(ellipsis);
+    truncated
+}
+
+/// 把文本写入 HUD 顶点列表；`x`、`y` 是左上角像素坐标，返回实际宽度。
 pub fn push_text(
     out: &mut Vec<UiVertex>,
     viewport: (f32, f32),
     x: f32,
     y: f32,
-    pixel: f32,
+    scale: f32,
     color: [f32; 4],
     text: &str,
-) {
-    if pixel <= 0.0 || !pixel.is_finite() {
-        return;
+) -> f32 {
+    let scale = normalized_scale(scale);
+    if scale <= 0.0 {
+        return 0.0;
+    }
+    let width = text_width(text, scale);
+    if font_loaded() {
+        let px = (BASE_PX * scale) as u32;
+        let mut guard = lock_atlas();
+        let ascent = guard.ascent(px);
+        let fallback_advance = guard.advance('?', px).max(px as f32 * 0.5);
+        let mut cursor = x;
+        for character in text.chars() {
+            if character == '\n' {
+                continue;
+            }
+            let glyph = guard.glyph(character, px).or_else(|| {
+                guard.warn_missing_once(character);
+                guard.glyph('?', px)
+            });
+            match glyph {
+                Some(glyph) => {
+                    if glyph.size[0] > 0.0 && glyph.size[1] > 0.0 {
+                        push_font_quad(
+                            out,
+                            viewport,
+                            UiRect {
+                                x: cursor + glyph.offset[0],
+                                y: y + ascent - glyph.offset[1],
+                                width: glyph.size[0],
+                                height: glyph.size[1],
+                            },
+                            glyph.uv,
+                            color,
+                        );
+                    }
+                    if character == ' ' {
+                        cursor += glyph.advance;
+                    } else {
+                        cursor += glyph.advance.max(0.0);
+                    }
+                }
+                None => cursor += fallback_advance,
+            }
+        }
+        return width;
     }
 
     let mut cursor = x;
     for character in text.chars() {
         if character != ' ' {
             if let Some(glyph) = glyph(character) {
-                push_glyph(out, viewport, cursor, y, pixel, color, &glyph);
+                push_glyph(out, viewport, cursor, y, scale, color, &glyph);
             }
         }
-        cursor += (GLYPH_WIDTH + GLYPH_SPACING) as f32 * pixel;
+        cursor += (GLYPH_WIDTH + GLYPH_SPACING) as f32 * scale;
     }
+    width
 }
 
 fn push_glyph(
@@ -128,9 +310,15 @@ fn glyph(character: char) -> Option<[u8; GLYPH_HEIGHT as usize]> {
         '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00],
         ':' => [0x00, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00],
         '/' => [0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00],
+        '?' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],
         _ => return None,
     };
     Some(glyph)
+}
+
+/// 启动告警：字体加载失败时的统一日志。
+pub fn warn_fallback(error: &str) {
+    warn!(error, "字体加载失败，回退到内置 ASCII 字形");
 }
 
 #[cfg(test)]
@@ -138,16 +326,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_width_matches_glyph_advance() {
+    fn text_width_matches_fallback_glyph_advance() {
+        assert!(!font_loaded());
         assert_eq!(text_width("", 2.0), 0.0);
         assert_eq!(text_width("1", 2.0), 10.0);
         assert_eq!(text_width("12", 2.0), 22.0);
+        assert_eq!(measure_text("12", 2.0), text_width("12", 2.0));
+    }
+
+    #[test]
+    fn scales_are_quantized_to_integer_sizes() {
+        assert_eq!(normalized_scale(1.5), 2.0);
+        assert_eq!(normalized_scale(1.4), 1.0);
+        assert_eq!(normalized_scale(3.7), 3.0);
+        assert_eq!(normalized_scale(-1.0), 0.0);
+        assert_eq!(pixel_size(2.0), 24.0);
     }
 
     #[test]
     fn digits_and_letters_produce_geometry() {
         let mut vertices = Vec::new();
-        push_text(
+        let width = push_text(
             &mut vertices,
             (1280.0, 720.0),
             100.0,
@@ -156,6 +355,7 @@ mod tests {
             [1.0; 4],
             "+12 STONE",
         );
+        assert!(width > 0.0);
         assert!(!vertices.is_empty());
         assert_eq!(vertices.len() % 6, 0);
         for vertex in &vertices {
@@ -165,9 +365,19 @@ mod tests {
     }
 
     #[test]
+    fn long_text_is_truncated_by_pixels_with_an_ellipsis() {
+        assert_eq!(truncate_to_width("AB", 1.0, 100.0), "AB");
+        let truncated = truncate_to_width("ABCDEFGHIJ", 2.0, 50.0);
+        assert!(truncated.ends_with("..."));
+        assert!(text_width(&truncated, 2.0) <= 50.0);
+        assert_eq!(truncate_to_width("ABC", 1.0, 0.0), "");
+    }
+
+    #[test]
     fn lowercase_is_rendered_as_uppercase() {
         assert!(glyph('a').is_some());
         assert_eq!(glyph('a'), glyph('A'));
-        assert!(glyph('?').is_none());
+        assert!(glyph('?').is_some());
+        assert!(glyph('~').is_none());
     }
 }

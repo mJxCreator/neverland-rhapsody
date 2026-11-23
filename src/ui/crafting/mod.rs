@@ -35,7 +35,7 @@ impl Filter {
 
     fn label(self) -> &'static str {
         match self {
-            Self::All => "ALL",
+            Self::All => "全部",
             Self::Category(category) => category.label(),
         }
     }
@@ -229,16 +229,16 @@ impl CraftingUi {
             layout.panel.y + PADDING,
             TITLE_PIXEL,
             theme::TEXT_TITLE,
-            "CRAFTING",
+            "合成",
         );
-        let hint = "C / ESC TO CLOSE";
-        let hint_width = font::text_width(hint, 1.4);
+        let hint = "C / ESC 关闭";
+        let hint_width = font::text_width(hint, 1.0);
         font::push_text(
             out,
             viewport,
             layout.panel.x + layout.panel.width - PADDING - hint_width,
             layout.panel.y + PADDING + 4.0,
-            1.4,
+            1.0,
             theme::TEXT_MUTED,
             hint,
         );
@@ -290,7 +290,7 @@ impl CraftingUi {
                 out,
                 viewport,
                 rect.x + (rect.width - text_width) * 0.5,
-                rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * TAB_PIXEL) * 0.5,
+                rect.y + (rect.height - font::line_height(TAB_PIXEL)) * 0.5,
                 TAB_PIXEL,
                 if active {
                     theme::TEXT
@@ -375,7 +375,7 @@ impl CraftingUi {
                 out,
                 viewport,
                 icon_rect.right() + 10.0,
-                rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * ROW_TEXT_PIXEL) * 0.5,
+                rect.y + (rect.height - font::line_height(ROW_TEXT_PIXEL)) * 0.5,
                 ROW_TEXT_PIXEL,
                 if craftable {
                     theme::TEXT
@@ -390,7 +390,7 @@ impl CraftingUi {
                 out,
                 viewport,
                 rect.right() - 10.0 - count_width,
-                rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * ROW_TEXT_PIXEL) * 0.5,
+                rect.y + (rect.height - font::line_height(ROW_TEXT_PIXEL)) * 0.5,
                 ROW_TEXT_PIXEL,
                 if craftable {
                     theme::CRAFT_MATERIAL_OK
@@ -425,14 +425,14 @@ impl CraftingUi {
                 layout.right.y + 24.0,
                 TEXT_PIXEL,
                 theme::TEXT_MUTED,
-                "SELECT A RECIPE",
+                "选择一个配方",
             );
             return;
         };
 
         let status = crafting::check(recipe, inventory);
         let (status_text, status_color) = match status {
-            Ok(()) => ("CRAFTABLE", theme::CRAFT_MATERIAL_OK),
+            Ok(()) => ("可合成", theme::CRAFT_MATERIAL_OK),
             Err(error) => (error.message(), theme::CRAFT_MATERIAL_MISSING),
         };
 
@@ -481,9 +481,9 @@ impl CraftingUi {
             viewport,
             layout.right.x + 12.0,
             layout.requirements_y,
-            1.4,
+            1.0,
             theme::TEXT_MUTED,
-            "REQUIREMENTS",
+            "所需材料",
         );
         let mut y = layout.ingredients_y;
         for ingredient in recipe.ingredients {
@@ -503,7 +503,7 @@ impl CraftingUi {
                 out,
                 viewport,
                 icon_rect.right() + 8.0,
-                y + (18.0 - font::GLYPH_HEIGHT as f32 * ROW_TEXT_PIXEL) * 0.5,
+                y + (18.0 - font::line_height(ROW_TEXT_PIXEL)) * 0.5,
                 ROW_TEXT_PIXEL,
                 if enough {
                     theme::CRAFT_MATERIAL_OK
@@ -521,7 +521,7 @@ impl CraftingUi {
             out,
             viewport,
             layout.craft,
-            "CRAFT",
+            "合成",
             hovered,
             enabled,
             2.0,
@@ -532,7 +532,7 @@ impl CraftingUi {
             let alpha = message_alpha(self.message_remaining);
             let (text, mut color) = match message {
                 CraftMessage::Success { item, count } => (
-                    format!("+{} {} CRAFTED", count, item_name(item)),
+                    format!("合成了 {} 个{}", count, item_name(item)),
                     theme::CRAFT_SUCCESS,
                 ),
                 CraftMessage::Failure(error) => (error.message().to_string(), theme::CRAFT_FAILURE),

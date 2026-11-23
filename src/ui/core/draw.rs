@@ -20,6 +20,8 @@ pub const SOLID_UV: [f32; 2] = [-1.0, -1.0];
 pub const ATLAS_ITEM: f32 = 0.0;
 /// 顶点使用 UI 控件图集。
 pub const ATLAS_UI: f32 = 1.0;
+/// 顶点使用字体覆盖率图集。
+pub const ATLAS_FONT: f32 = 2.0;
 
 /// 一个 UI 顶点：裁剪空间坐标、图集 UV、图集来源与带透明度的颜色。
 #[repr(C)]
@@ -50,6 +52,33 @@ pub fn push_item_icon(
     };
     push_textured_quad(out, viewport, rect, icon.uv, [1.0, 1.0, 1.0, 1.0]);
 }
+
+/// 绘制字体图集中的字形：覆盖率写入 Alpha，颜色保持顶点颜色。
+pub fn push_font_quad(
+    out: &mut Vec<UiVertex>,
+    viewport: (f32, f32),
+    rect: UiRect,
+    uv: [f32; 2],
+    color: [f32; 4],
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let u0 = uv[0];
+    let v0 = uv[1];
+    let u1 = u0 + rect.width / FONT_ATLAS_SIZE;
+    let v1 = v0 + rect.height / FONT_ATLAS_SIZE;
+    push_quad_uv(
+        out,
+        viewport,
+        rect,
+        [[u0, v0], [u0, v1], [u1, v1], [u1, v0]],
+        color,
+        ATLAS_FONT,
+    );
+}
+
+const FONT_ATLAS_SIZE: f32 = super::font_atlas::ATLAS_SIZE as f32;
 
 /// 按物品图集 UV 子区域采样绘制矩形；`uv` 为 `min` 左上、`max` 右下。
 pub fn push_textured_quad(

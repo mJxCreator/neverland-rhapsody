@@ -17,9 +17,12 @@ use super::pipeline::{self, DEPTH_FORMAT};
 use crate::mesh::{build_chunk_mesh, BlockVertex, ChunkMesh, ChunkSnapshot, Vertex};
 use crate::model::{ModelDraw, ModelRegistry};
 use crate::texture::{
-    create_hud_bind_group, create_hud_bind_group_layout, create_texture_bind_group_layout,
-    upload_atlas, upload_texture, BlockTextureMap, GpuAtlasTexture, GpuTexture, TextureAssets,
+    create_font_texture, create_hud_bind_group, create_hud_bind_group_layout,
+    create_texture_bind_group_layout, upload_atlas, upload_texture, BlockTextureMap,
+    GpuAtlasTexture, GpuTexture, TextureAssets,
 };
+use crate::ui::core::font;
+use crate::ui::core::font_atlas::ATLAS_SIZE;
 use crate::ui::{HudModel, UiVertex};
 use crate::world::{Block, ChunkPos, World};
 
@@ -101,7 +104,9 @@ pub struct Renderer {
     item_atlas: GpuAtlasTexture,
     /// UI 独立图集：面板、槽位、按钮等控件。
     ui_atlas: GpuTexture,
-    /// HUD 绑定组同时引用物品图集与 UI 图集。
+    /// 字体覆盖率图集：R8，新增字形每帧上传脏区域。
+    font_atlas: GpuTexture,
+    /// HUD 绑定组同时引用物品图集、UI 图集与字体图集。
     hud_bind_group: wgpu::BindGroup,
     textures: Arc<TextureAssets>,
     selection_pipeline: wgpu::RenderPipeline,
@@ -254,12 +259,20 @@ impl Renderer {
             "item texture atlas",
         );
         let ui_atlas = upload_texture(&device, &queue, &textures.ui_atlas, "ui texture atlas");
+        let font_atlas = create_font_texture(
+            &device,
+            &queue,
+            ATLAS_SIZE,
+            &font::initial_pixels(),
+            "font coverage atlas",
+        );
         let hud_bind_group = create_hud_bind_group(
             &device,
             &hud_texture_layout,
             &uniform_buffer,
             &item_atlas,
             &ui_atlas,
+            &font_atlas,
             "hud bind group",
         );
         let (chunks, water_chunks) = upload_chunk_meshes(&device, world, &textures.block_textures);
@@ -292,6 +305,7 @@ impl Renderer {
             block_atlas,
             item_atlas,
             ui_atlas,
+            font_atlas,
             hud_bind_group,
             textures,
             selection_pipeline,
@@ -488,6 +502,7 @@ impl Renderer {
             &self.uniform_buffer,
             &self.item_atlas,
             &self.ui_atlas,
+            &self.font_atlas,
             "hud bind group",
         );
         self.hud_model.set_ui_textures(textures.ui_textures.clone());
@@ -605,6 +620,8 @@ impl Renderer {
             &self.textures.item_textures,
         );
         self.hud_vertices.extend_from_slice(&self.ui_vertices);
+        // HUD 构建期间可能首次栅格化部分字形；在提交绘制前上传图集脏区域。
+        font::upload_dirty(&self.queue, &self.font_atlas.texture);
         let hud_count = self.hud_vertices.len().min(HUD_VERTEX_CAPACITY) as u32;
         if hud_count > 0 {
             self.queue.write_buffer(

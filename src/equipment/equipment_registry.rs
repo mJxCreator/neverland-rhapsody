@@ -17,16 +17,6 @@ pub enum ArmorMaterial {
     Diamond,
 }
 
-impl ArmorMaterial {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Leather => "LEATHER",
-            Self::Iron => "IRON",
-            Self::Diamond => "DIAMOND",
-        }
-    }
-}
-
 /// 一件护甲的静态属性。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ArmorDefinition {
@@ -55,23 +45,6 @@ impl ArmorDefinition {
             max_durability,
             material,
         }
-    }
-
-    /// 展示用描述，例如 `IRON CHEST 6DEF 240/240`。
-    pub fn summary(self, current: u32) -> String {
-        format!(
-            "{} {} {}DEF {}/{}",
-            self.material.name(),
-            match self.slot {
-                EquipmentSlot::Head => "HELMET",
-                EquipmentSlot::Chest => "CHEST",
-                EquipmentSlot::Legs => "LEGGINGS",
-                EquipmentSlot::Feet => "BOOTS",
-            },
-            self.defense,
-            current,
-            self.max_durability
-        )
     }
 }
 

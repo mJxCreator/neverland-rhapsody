@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{
-    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+    DeviceEvent, DeviceId, ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -75,6 +75,8 @@ const CHUNK_MESH_BUDGET: Duration = Duration::from_millis(2);
 const TEXTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 纹理资源根目录环境变量；未设置时使用 `assets`。
 const ASSET_ROOT_ENV: &str = "NEVERLAND_ASSET_ROOT";
+/// 中文字体相对资源根的路径；缺失时回退内置 ASCII 字形。
+const FONT_FILE: &str = "fonts/fusion-pixel-12px-monospaced-zh_hans.ttf";
 
 /// 应用级界面：菜单与游戏世界二选一，暂停菜单覆盖在冻结的游戏画面上。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,6 +260,17 @@ impl App {
         }
         let asset_root =
             std::env::var(ASSET_ROOT_ENV).unwrap_or_else(|_| DEFAULT_ASSET_ROOT.to_string());
+        // 字体在启动时加载一次；失败时绘制层自动回退到内置 ASCII 字形。
+        let font_path = Path::new(&asset_root).join(FONT_FILE);
+        match std::fs::read(&font_path) {
+            Ok(bytes) => match crate::ui::core::font::load_font(bytes) {
+                Ok(()) => info!(path = %font_path.display(), "字体已加载"),
+                Err(error) => crate::ui::core::font::warn_fallback(&error),
+            },
+            Err(error) => {
+                warn!(path = %font_path.display(), error = %error, "字体文件读取失败，回退内置字形");
+            }
+        }
         let textures = Arc::new(TextureAssets::load(&asset_root));
         let texture_summary = textures.summary();
         info!(
@@ -456,6 +469,7 @@ impl App {
                 }
 
                 self.window = Some(window);
+                self.sync_ime();
                 self.timer = FrameTimer::new();
                 self.next_frame = Instant::now();
             }
@@ -489,7 +503,7 @@ impl App {
             .find(|entry| entry.id == character_id)
         else {
             self.menu
-                .show_notice("CHARACTER NOT FOUND");
+                .show_notice("未找到角色");
             return;
         };
         let worlds = Self::menu_entries(self.library.worlds());
@@ -501,12 +515,12 @@ impl App {
     fn start_session(&mut self, character_id: &str, world_id: &str) {
         let Some(seed) = self.library.world_seed(world_id) else {
             warn!(world = world_id, "世界缺少种子，无法进入");
-            self.menu.show_notice("WORLD DATA MISSING");
+            self.menu.show_notice("世界数据缺失");
             return;
         };
         let Some(character_save) = self.library.character(character_id) else {
             warn!(character = character_id, "角色存档缺失，无法进入");
-            self.menu.show_notice("CHARACTER DATA MISSING");
+            self.menu.show_notice("角色数据缺失");
             return;
         };
 
@@ -708,16 +722,16 @@ impl App {
             MenuAction::Unavailable(text) => self.menu.show_notice(text),
             MenuAction::NewCharacter => {
                 if self.library.characters().len() >= MAX_ROWS {
-                    self.menu.show_notice("CHARACTER LIMIT REACHED");
+                    self.menu.show_notice("角色数量已达上限");
                     return;
                 }
                 if let Err(err) = self.library.create_character() {
                     warn!(error = %format!("{err:#}"), "新建角色失败");
-                    self.menu.show_notice("CREATE CHARACTER FAILED");
+                    self.menu.show_notice("新建角色失败");
                     return;
                 }
                 self.open_character_select();
-                self.menu.show_notice("CHARACTER CREATED");
+                self.menu.show_notice("角色已创建");
             }
             MenuAction::SelectCharacter(id) => self.open_world_select(&id),
             MenuAction::EditCharacter(id) => {
@@ -731,11 +745,11 @@ impl App {
             MenuAction::DeleteCharacter(id) => {
                 if let Err(err) = self.library.delete_character(&id) {
                     warn!(error = %format!("{err:#}"), "删除角色失败");
-                    self.menu.show_notice("DELETE CHARACTER FAILED");
+                    self.menu.show_notice("删除角色失败");
                     return;
                 }
                 self.open_character_select();
-                self.menu.show_notice("CHARACTER DELETED");
+                self.menu.show_notice("角色已删除");
             }
             MenuAction::ConfirmRename => {
                 let id = self.menu.rename_character_id().map(str::to_owned);
@@ -748,40 +762,40 @@ impl App {
                     Ok(_) => {
                         self.menu.cancel_rename();
                         self.open_character_select();
-                        self.menu.show_notice("CHARACTER RENAMED");
+                        self.menu.show_notice("角色已重命名");
                     }
                     Err(err) => {
                         warn!(error = %format!("{err:#}"), "重命名角色失败");
-                        self.menu.show_notice("INVALID NAME");
+                        self.menu.show_notice("名称不合法");
                     }
                 }
             }
             MenuAction::CancelRename => self.menu.cancel_rename(),
             MenuAction::NewWorld => {
                 if self.library.worlds().len() >= MAX_ROWS {
-                    self.menu.show_notice("WORLD LIMIT REACHED");
+                    self.menu.show_notice("世界数量已达上限");
                     return;
                 }
                 if let Err(err) = self.library.create_world() {
                     warn!(error = %format!("{err:#}"), "新建世界失败");
-                    self.menu.show_notice("CREATE WORLD FAILED");
+                    self.menu.show_notice("新建世界失败");
                     return;
                 }
                 self.refresh_world_list();
-                self.menu.show_notice("WORLD CREATED");
+                self.menu.show_notice("世界已创建");
             }
             MenuAction::DeleteWorld(id) => {
                 if let Err(err) = self.library.delete_world(&id) {
                     warn!(error = %format!("{err:#}"), "删除世界失败");
-                    self.menu.show_notice("DELETE WORLD FAILED");
+                    self.menu.show_notice("删除世界失败");
                     return;
                 }
                 self.refresh_world_list();
-                self.menu.show_notice("WORLD DELETED");
+                self.menu.show_notice("世界已删除");
             }
             MenuAction::SelectWorld(id) => {
                 let Some(character) = self.menu.selected_character().cloned() else {
-                    self.menu.show_notice("SELECT A CHARACTER FIRST");
+                    self.menu.show_notice("请先选择角色");
                     return;
                 };
                 self.start_session(&character.id, &id);
@@ -831,6 +845,15 @@ impl App {
                 info!("鼠标已捕获，按 Esc 释放");
             }
             Err(err) => warn!(error = %err, "鼠标捕获失败"),
+        }
+    }
+
+    /// 重命名面板开关时同步系统输入法状态。
+    fn sync_ime(&self) {
+        if let Some(window) = self.window.as_ref() {
+            let allowed =
+                self.screen != AppScreen::InGame && self.menu.is_renaming();
+            window.set_ime_allowed(allowed);
         }
     }
 
@@ -937,7 +960,7 @@ impl App {
         if let Some(stack) = self.inventory.hotbar_stack(selected) {
             if crate::survival::food_registry::definition(stack.item()).is_some() {
                 if self.vitals.hunger().is_full() {
-                    self.show_message("NOT HUNGRY");
+                    self.show_message("还不饿");
                     return;
                 }
                 if self.eating.start(stack.item(), HOTBAR_OFFSET + selected) {
@@ -961,7 +984,7 @@ impl App {
                 self.eating.cancel();
                 self.vitals.set_respawn(bed);
                 self.persist_survival();
-                self.show_message("SLEPT UNTIL MORNING");
+                self.show_message("睡到了早晨");
                 info!(x = bed.x, y = bed.y, z = bed.z, "玩家已入睡并设置床复活点");
             }
             Err(error) => {
@@ -1526,7 +1549,7 @@ impl App {
                 .is_solid()
         {
             debug!(block = ?target, "功能性方块缺少地面支撑");
-            self.show_message("NEEDS SOLID GROUND");
+            self.show_message("需要坚实地面");
             return;
         }
 
@@ -2205,6 +2228,18 @@ impl ApplicationHandler for App {
                 self.flush_save();
                 event_loop.exit();
             }
+            WindowEvent::Ime(ime) => {
+                if self.screen == AppScreen::InGame {
+                    return;
+                }
+                match ime {
+                    Ime::Commit(text) => self.menu.ime_commit(&text),
+                    Ime::Preedit(text, _) => {
+                        self.menu.ime_preedit((!text.is_empty()).then_some(text.as_str()));
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
@@ -2212,10 +2247,13 @@ impl ApplicationHandler for App {
                 let pressed = event.state == ElementState::Pressed;
                 // 菜单与暂停界面独占键盘：重命名输入、Esc 返回/继续均在此处理。
                 if self.screen != AppScreen::InGame {
-                    let action = self.menu.key(code, pressed);
+                    let action =
+                        self.menu
+                            .key_with_text(code, pressed, event.text.as_deref());
                     if action != MenuAction::None {
                         self.handle_menu_action(action, event_loop);
                     }
+                    self.sync_ime();
                     return;
                 }
                 // 统一 UI 快捷键路由：一次按键最多产生一个界面意图。
@@ -2265,6 +2303,7 @@ impl ApplicationHandler for App {
                             .map_or((1280.0, 720.0), Renderer::viewport);
                         let action = self.menu.click_at(viewport, self.menu.cursor());
                         self.handle_menu_action(action, event_loop);
+                        self.sync_ime();
                     }
                     return;
                 }

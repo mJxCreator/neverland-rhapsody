@@ -10,14 +10,6 @@ pub enum WeaponType {
     Sword,
 }
 
-impl WeaponType {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Sword => "SWORD",
-        }
-    }
-}
-
 /// 一件武器的静态属性。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponDefinition {

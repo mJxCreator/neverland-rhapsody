@@ -17,12 +17,12 @@ pub enum SleepError {
 }
 
 impl SleepError {
-    /// 面向玩家的英文提示；字体仅覆盖 ASCII。
+    /// 面向玩家的提示。
     pub const fn message(self) -> &'static str {
         match self {
-            Self::Dead => "YOU CANNOT SLEEP NOW",
-            Self::NotNight => "YOU CAN ONLY SLEEP AT NIGHT",
-            Self::HostileNearby => "MONSTERS ARE NEARBY",
+            Self::Dead => "现在无法入睡",
+            Self::NotNight => "只能在夜晚入睡",
+            Self::HostileNearby => "附近有怪物",
         }
     }
 }
@@ -106,13 +106,14 @@ mod tests {
     }
 
     #[test]
-    fn messages_are_ascii() {
+    fn messages_are_localized() {
         for error in [
             SleepError::Dead,
             SleepError::NotNight,
             SleepError::HostileNearby,
         ] {
-            assert!(error.message().is_ascii());
+            assert!(!error.message().is_empty());
+            assert!(!error.message().is_ascii());
         }
     }
 }

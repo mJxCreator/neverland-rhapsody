@@ -131,8 +131,8 @@ impl DeathUi {
             );
         }
 
-        let title = "YOU DIED";
-        let title_scale = 5.0;
+        let title = "你死了";
+        let title_scale = 3.0;
         font::push_text(
             out,
             viewport,
@@ -143,7 +143,7 @@ impl DeathUi {
             title,
         );
 
-        let cause = format!("CAUSE: {}", self.cause.label());
+        let cause = format!("死因：{}", self.cause.label());
         font::push_text(
             out,
             viewport,
@@ -159,7 +159,7 @@ impl DeathUi {
             out,
             viewport,
             respawn,
-            "RESPAWN",
+            "重生",
             respawn.contains(self.cursor.0, self.cursor.1),
             &self.ui_textures,
         );
@@ -167,7 +167,7 @@ impl DeathUi {
             out,
             viewport,
             main_menu,
-            "MAIN MENU",
+            "主菜单",
             main_menu.contains(self.cursor.0, self.cursor.1),
             &self.ui_textures,
         );
@@ -220,7 +220,7 @@ fn push_death_button(
         out,
         viewport,
         rect.x + (rect.width - text_width) * 0.5,
-        rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * scale) * 0.5,
+        rect.y + (rect.height - font::line_height(scale)) * 0.5,
         scale,
         theme::TEXT,
         label,

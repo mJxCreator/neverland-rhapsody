@@ -4,7 +4,6 @@
 //! 使用同一套边框、留白、数量与耐久表现。
 
 use crate::item::item_registry::definition;
-use crate::item::tool_registry;
 use crate::item::{item_name, ItemId, ItemStack};
 use crate::texture::ItemTextureMap;
 
@@ -106,7 +105,7 @@ pub fn push_slot(
                 let text = stack.count().to_string();
                 let text_width = font::text_width(&text, SLOT_COUNT_PIXEL);
                 let text_y =
-                    rect.y + rect.height - 4.0 - font::GLYPH_HEIGHT as f32 * SLOT_COUNT_PIXEL;
+                    rect.y + rect.height - 4.0 - font::line_height(SLOT_COUNT_PIXEL);
                 let text_x = rect.x + rect.width - 4.0 - text_width;
                 font::push_text(
                     out,
@@ -276,7 +275,7 @@ pub fn push_button(
     }
     let text_width = font::text_width(label, pixel);
     let x = rect.x + (rect.width - text_width) * 0.5;
-    let y = rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * pixel) * 0.5;
+    let y = rect.y + (rect.height - font::line_height(pixel)) * 0.5;
     let color = if enabled {
         theme::TEXT
     } else {
@@ -326,7 +325,7 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
     lines.push((first, theme::TEXT));
     lines.push((type_label(stack.item()).to_string(), theme::TEXT_MUTED));
     if stack.is_broken() {
-        lines.push(("BROKEN".to_string(), theme::TOOL_BROKEN));
+        lines.push(("已损坏".to_string(), theme::TOOL_BROKEN));
     } else if crate::combat::weapon_registry::definition(stack.item()).is_some() {
         lines.push((weapon_summary(stack), tool_summary_color(stack)));
     } else if crate::equipment::equipment_registry::definition(stack.item()).is_some() {
@@ -335,7 +334,7 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
         lines.push((tool_summary(stack), tool_summary_color(stack)));
     } else if stack.max_stack_size() > 1 {
         lines.push((
-            format!("STACK {}/{}", stack.count(), stack.max_stack_size()),
+            format!("堆叠 {}/{}", stack.count(), stack.max_stack_size()),
             theme::TEXT_MUTED,
         ));
     }
@@ -344,41 +343,39 @@ pub fn item_detail_lines(stack: ItemStack) -> Vec<(String, [f32; 4])> {
 
 fn type_label(item: ItemId) -> &'static str {
     match definition(item).map(|definition| definition.item_type) {
-        Some(crate::item::item::ItemType::Block) => "BLOCK",
-        Some(crate::item::item::ItemType::Tool) => "TOOL",
-        Some(crate::item::item::ItemType::Weapon) => "WEAPON",
-        Some(crate::item::item::ItemType::Armor) => "ARMOR",
-        Some(crate::item::item::ItemType::Consumable) => "CONSUMABLE",
-        _ => "MATERIAL",
+        Some(crate::item::item::ItemType::Block) => "方块",
+        Some(crate::item::item::ItemType::Tool) => "工具",
+        Some(crate::item::item::ItemType::Weapon) => "武器",
+        Some(crate::item::item::ItemType::Armor) => "护甲",
+        Some(crate::item::item::ItemType::Consumable) => "食物",
+        _ => "材料",
     }
 }
 
 fn tool_summary(stack: ItemStack) -> String {
     let Some(max) = stack.max_durability() else {
-        return "TOOL".to_string();
+        return "工具".to_string();
     };
     let current = stack.durability().unwrap_or(max);
-    let kind = tool_registry::definition(stack.item())
-        .map(|definition| format!("{} {}", definition.tool_type.name(), definition.tier.name()))
-        .unwrap_or_else(|| "TOOL".to_string());
+    let kind = item_name(stack.item());
     if current == 0 {
-        format!("{} BROKEN", kind)
+        format!("{} 已损坏", kind)
     } else {
-        format!("{} {}/{}", kind, current, max)
+        format!("{} 耐久 {}/{}", kind, current, max)
     }
 }
 
 fn weapon_summary(stack: ItemStack) -> String {
     let Some(definition) = crate::combat::weapon_registry::definition(stack.item()) else {
-        return "WEAPON".to_string();
+        return "武器".to_string();
     };
     let current = stack.durability().unwrap_or(definition.max_durability);
-    let kind = definition.weapon_type.name();
+    let kind = item_name(stack.item());
     if current == 0 {
-        format!("{} {} DMG BROKEN", kind, definition.damage)
+        format!("{} {} 伤害 已损坏", kind, definition.damage)
     } else {
         format!(
-            "{} {} DMG {}/{}",
+            "{} {} 伤害 耐久 {}/{}",
             kind, definition.damage, current, definition.max_durability
         )
     }
@@ -386,10 +383,16 @@ fn weapon_summary(stack: ItemStack) -> String {
 
 fn armor_summary(stack: ItemStack) -> String {
     let Some(definition) = crate::equipment::equipment_registry::definition(stack.item()) else {
-        return "ARMOR".to_string();
+        return "护甲".to_string();
     };
     let current = stack.durability().unwrap_or(definition.max_durability);
-    definition.summary(current)
+    format!(
+        "{} {} 防御 耐久 {}/{}",
+        item_name(stack.item()),
+        definition.defense,
+        current,
+        definition.max_durability
+    )
 }
 
 fn tool_summary_color(stack: ItemStack) -> [f32; 4] {
@@ -423,7 +426,7 @@ pub fn push_item_tooltip(
         .iter()
         .map(|(line, _)| font::text_width(line, TOOLTIP_PIXEL))
         .fold(0.0_f32, f32::max);
-    let line_height = font::GLYPH_HEIGHT as f32 * TOOLTIP_PIXEL;
+    let line_height = font::line_height(TOOLTIP_PIXEL);
     let has_icon = icons.icon(stack.item()).is_some();
     let icon_span = if has_icon {
         TOOLTIP_ICON_SIZE + 8.0
@@ -587,13 +590,13 @@ mod tests {
     #[test]
     fn tooltip_lines_describe_tools_and_materials() {
         let tool = item_detail_lines(pickaxe(30));
-        assert!(tool.iter().any(|(line, _)| line == "WOODEN PICKAXE"));
-        assert!(tool.iter().any(|(line, _)| line == "TOOL"));
+        assert!(tool.iter().any(|(line, _)| line == "木镐"));
+        assert!(tool.iter().any(|(line, _)| line == "工具"));
         assert!(tool.iter().any(|(line, _)| line.contains("30/60")));
 
         let material = item_summary_lines(stone(5));
-        assert_eq!(material[0], "STONE X5");
-        assert_eq!(material[1], "BLOCK");
+        assert_eq!(material[0], "石头 X5");
+        assert_eq!(material[1], "方块");
     }
 
     #[test]

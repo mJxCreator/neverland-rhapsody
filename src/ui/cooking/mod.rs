@@ -178,14 +178,14 @@ impl CookingUi {
         );
         push_border(out, viewport, layout.panel, 2.0, theme::PANEL_BORDER);
 
-        let title = "CAMPFIRE";
-        let title_width = font::text_width(title, 3.0);
+        let title = "营火";
+        let title_width = font::text_width(title, 2.0);
         font::push_text(
             out,
             viewport,
             layout.panel.x + (layout.panel.width - title_width) * 0.5,
             layout.panel.y + 26.0,
-            3.0,
+            2.0,
             theme::TEXT_TITLE,
             title,
         );
@@ -252,9 +252,9 @@ impl CookingUi {
         );
 
         let (hint, color) = if cooking {
-            ("COOKING", theme::CRAFT_SUCCESS)
+            ("烹饪中", theme::CRAFT_SUCCESS)
         } else {
-            ("CLICK INPUT TO ADD RAW MEAT", theme::TEXT_MUTED)
+            ("点击输入槽放入生肉", theme::TEXT_MUTED)
         };
         let hint_width = font::text_width(hint, 2.0);
         font::push_text(
@@ -266,28 +266,28 @@ impl CookingUi {
             color,
             hint,
         );
-        let close = "PRESS E OR ESC TO CLOSE";
-        let close_width = font::text_width(close, 1.5);
+        let close = "按 E 或 ESC 关闭";
+        let close_width = font::text_width(close, 1.0);
         font::push_text(
             out,
             viewport,
             layout.panel.x + (layout.panel.width - close_width) * 0.5,
             layout.panel.y + layout.panel.height - 34.0,
-            1.5,
+            1.0,
             theme::TEXT_MUTED,
             close,
         );
 
         // 背包中的可烹饪物品数量，帮助玩家确认输入来源。
         let available = cookable_count(inventory);
-        let info = format!("RAW MEAT IN PACK: {available}");
-        let info_width = font::text_width(&info, 1.5);
+        let info = format!("背包中生肉：{available}");
+        let info_width = font::text_width(&info, 1.0);
         font::push_text(
             out,
             viewport,
             layout.panel.x + (layout.panel.width - info_width) * 0.5,
             layout.panel.y + 270.0,
-            1.5,
+            1.0,
             theme::TEXT_MUTED,
             &info,
         );

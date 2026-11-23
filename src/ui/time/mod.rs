@@ -1,4 +1,4 @@
-//! 昼夜阶段文字模块：右上角显示 `TIME <阶段>`。
+//! 昼夜阶段文字模块：右上角显示 `时间 <阶段>`。
 
 use crate::ui::core::draw::UiVertex;
 use crate::ui::core::font;
@@ -22,7 +22,7 @@ impl Default for TimePhaseConfig {
         Self {
             margin_right: 18.0,
             margin_top: 14.0,
-            pixel: 1.8,
+            pixel: 1.0,
             color: theme::TIME_TEXT,
         }
     }
@@ -40,7 +40,7 @@ pub struct TimePhase {
 impl Default for TimePhase {
     fn default() -> Self {
         Self {
-            label: "DAY",
+            label: "白天",
             config: TimePhaseConfig::default(),
         }
     }
@@ -50,7 +50,7 @@ impl TimePhase {
     /// 绘制阶段文字。
     pub fn draw(&self, out: &mut Vec<UiVertex>, width: f32, height: f32) {
         let config = &self.config;
-        let label = format!("TIME {}", self.label);
+        let label = format!("时间 {}", self.label);
         let text_width = font::text_width(&label, config.pixel);
         font::push_text(
             out,

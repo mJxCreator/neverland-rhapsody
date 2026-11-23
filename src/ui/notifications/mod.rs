@@ -200,7 +200,7 @@ impl Notifications {
                 config.toast_text,
             ),
             ToastKind::ToolBroken => (
-                format!("{} BROKEN", item_name(toast.item)),
+                format!("{} 已损坏", item_name(toast.item)),
                 config.broken_text,
             ),
         };

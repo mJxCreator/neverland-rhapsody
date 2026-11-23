@@ -25,13 +25,13 @@ pub enum DamageSource {
 }
 
 impl DamageSource {
-    /// 面向玩家的简短原因；字体仅覆盖 ASCII。
+    /// 面向玩家的简短原因。
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Fall => "FALL",
-            Self::Environmental => "ENVIRONMENT",
-            Self::Entity => "ENTITY",
-            Self::Custom => "CUSTOM",
+            Self::Fall => "坠落",
+            Self::Environmental => "环境",
+            Self::Entity => "生物",
+            Self::Custom => "未知",
         }
     }
 }

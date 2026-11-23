@@ -40,8 +40,8 @@ impl CameraMode {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::FirstPerson => "FIRST PERSON",
-            Self::ThirdPerson => "THIRD PERSON",
+            Self::FirstPerson => "第一人称",
+            Self::ThirdPerson => "第三人称",
         }
     }
 }
@@ -485,6 +485,6 @@ mod tests {
     fn camera_mode_toggles_between_two_states() {
         assert_eq!(CameraMode::FirstPerson.toggle(), CameraMode::ThirdPerson);
         assert_eq!(CameraMode::ThirdPerson.toggle(), CameraMode::FirstPerson);
-        assert_eq!(CameraMode::FirstPerson.label(), "FIRST PERSON");
+        assert_eq!(CameraMode::FirstPerson.label(), "第一人称");
     }
 }

@@ -284,16 +284,16 @@ impl InventoryUi {
             layout.panel.y + layout.padding,
             TITLE_PIXEL,
             theme::TEXT_TITLE,
-            "INVENTORY",
+            "背包",
         );
-        let hint = "E / ESC TO CLOSE";
-        let hint_width = font::text_width(hint, 1.4);
+        let hint = "E / ESC 关闭";
+        let hint_width = font::text_width(hint, 1.0);
         font::push_text(
             out,
             viewport,
             layout.panel.x + layout.panel.width - layout.padding - hint_width,
             layout.panel.y + layout.padding + 2.0,
-            1.4,
+            1.0,
             theme::TEXT_MUTED,
             hint,
         );
@@ -334,16 +334,16 @@ impl InventoryUi {
             }
         }
 
-        // 装备列：四个护甲槽，顶部标注 ARMOR，空槽显示槽位首字母。
+        // 装备列：四个护甲槽，顶部标注“护甲”，空槽显示槽位名称。
         let equipment_x = layout.equipment_column_x();
         font::push_text(
             out,
             viewport,
             equipment_x,
             layout.panel.y + layout.padding,
-            1.4,
+            1.0,
             theme::TEXT_MUTED,
-            "ARMOR",
+            "护甲",
         );
         for slot in EquipmentSlot::ALL {
             let index = EQUIPMENT_SLOT_BASE + slot.index();
@@ -369,14 +369,14 @@ impl InventoryUi {
                 theme::SLOT_BACKGROUND,
             );
             if stack.is_none() {
-                let label = &slot.label()[..1];
-                let text_width = font::text_width(label, 1.8);
+                let label = slot.label();
+                let text_width = font::text_width(label, 1.0);
                 font::push_text(
                     out,
                     viewport,
                     rect.x + (rect.width - text_width) * 0.5,
-                    rect.y + (rect.height - font::GLYPH_HEIGHT as f32 * 1.8) * 0.5,
-                    1.8,
+                    rect.y + (rect.height - font::line_height(1.0)) * 0.5,
+                    1.0,
                     theme::TEXT_MUTED,
                     label,
                 );
@@ -423,7 +423,7 @@ impl InventoryUi {
                 let text = held.count().to_string();
                 let text_width = font::text_width(&text, 2.0);
                 let text_x = rect.right() - 2.0 - text_width;
-                let text_y = rect.bottom() - 2.0 - font::GLYPH_HEIGHT as f32 * 2.0;
+                let text_y = rect.bottom() - 2.0 - font::line_height(2.0);
                 font::push_text(
                     out,
                     viewport,
@@ -457,7 +457,7 @@ fn push_info_area(
             rect.y + 11.0,
             INFO_PIXEL,
             theme::TEXT_MUTED,
-            "EMPTY HAND",
+            "空手",
         );
         return;
     };
@@ -481,7 +481,7 @@ fn push_info_area(
             line,
         );
         font::push_text(out, viewport, rect.x + 8.0, text_y, INFO_PIXEL, color, line);
-        text_y += font::GLYPH_HEIGHT as f32 * INFO_PIXEL + 4.0;
+        text_y += font::line_height(INFO_PIXEL) + 4.0;
     }
 }
 

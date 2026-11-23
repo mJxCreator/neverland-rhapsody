@@ -22,18 +22,6 @@ pub enum ToolType {
     Hoe,
 }
 
-impl ToolType {
-    /// 展示用名称（HUD 字体只支持大写）。
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Pickaxe => "PICKAXE",
-            Self::Axe => "AXE",
-            Self::Shovel => "SHOVEL",
-            Self::Hoe => "HOE",
-        }
-    }
-}
-
 /// 工具等级；决定挖掘倍率、可采集等级与最大耐久。
 // 钻石等级本版本没有对应工具，仅保留等级定义供后续扩展。
 #[allow(dead_code)]
@@ -46,16 +34,6 @@ pub enum ToolTier {
 }
 
 impl ToolTier {
-    /// 展示用名称（HUD 字体只支持大写）。
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Wood => "WOOD",
-            Self::Stone => "STONE",
-            Self::Iron => "IRON",
-            Self::Diamond => "DIAMOND",
-        }
-    }
-
     /// 采集等级；与方块 `harvest_level` 比较，低于要求时无法获得正常掉落。
     pub fn harvest_level(self) -> u8 {
         match self {
@@ -162,7 +140,6 @@ mod tests {
 
     #[test]
     fn tool_types_and_tiers_are_distinct() {
-        assert_eq!(ToolType::Pickaxe.name(), "PICKAXE");
         assert_ne!(ToolType::Pickaxe, ToolType::Hoe);
         assert_eq!(ToolTier::Wood.harvest_level(), 0);
         assert_eq!(ToolTier::Stone.harvest_level(), 1);

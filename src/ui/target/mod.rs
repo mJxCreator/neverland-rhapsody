@@ -33,7 +33,7 @@ impl Default for TargetConfig {
             bar_width: 180.0,
             bar_height: 9.0,
             gap: 34.0,
-            name_pixel: 1.3,
+            name_pixel: 1.0,
             name_color: theme::TEXT,
             background: theme::TARGET_BAR_BACKGROUND,
             fill: theme::TARGET_BAR_FILL,

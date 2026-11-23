@@ -129,7 +129,7 @@ impl HotbarUi {
             return;
         };
         let text = if stack.is_broken() {
-            format!("BROKEN {}", item_name(stack.item()))
+            format!("{} 已损坏", item_name(stack.item()))
         } else {
             item_name(stack.item()).to_string()
         };
