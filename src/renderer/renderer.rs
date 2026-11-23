@@ -514,6 +514,38 @@ impl Renderer {
         }
     }
 
+    /// 切换到另一个世界：清空旧区块缓冲并上传新世界的全部区块网格。
+    ///
+    /// 只重建区块与粒子资源，纹理、模型与管线保持不变；摄像机由调用方另行复位。
+    pub fn load_world(&mut self, world: &World) {
+        self.clear_world();
+        let (chunks, water_chunks) =
+            upload_chunk_meshes(&self.device, world, &self.textures.block_textures);
+        self.chunks = chunks;
+        self.water_chunks = water_chunks;
+        info!(
+            chunks = self.chunks.len(),
+            water_chunks = self.water_chunks.len(),
+            "渲染器已切换到新世界"
+        );
+    }
+
+    /// 清空世界绘制资源；返回菜单时调用，避免残留上一个世界的区块与粒子。
+    pub fn clear_world(&mut self) {
+        self.chunks.clear();
+        self.water_chunks.clear();
+        self.selection = None;
+        self.particles = ParticleSystem::new();
+        self.drop_vertices.clear();
+        self.entity_vertices.clear();
+        self.ui_vertices.clear();
+    }
+
+    /// 直接设置相机姿态；进入或退出世界时对齐到玩家眼睛。
+    pub fn set_camera_pose(&mut self, position: Vec3, yaw: f32, pitch: f32) {
+        self.camera.set_pose(position, yaw, pitch);
+    }
+
     /// 当前持有 GPU 网格的区块数量，用于调试统计。
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()

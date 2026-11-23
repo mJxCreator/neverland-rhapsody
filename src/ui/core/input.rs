@@ -22,8 +22,8 @@ pub enum UiIntent {
     OpenCrafting,
     CloseCrafting,
     CloseCooking,
-    ReleaseCursor,
-    Quit,
+    /// 游戏内按下 Esc：打开暂停菜单（再次按下由暂停菜单自行关闭）。
+    OpenPause,
 }
 
 /// 根据当前界面状态解析按键。
@@ -33,13 +33,13 @@ pub enum UiIntent {
 /// - `E` 只在游戏内打开背包、在背包内关闭；合成中不响应。
 /// - `C` 只在游戏内打开合成、在合成内关闭；背包中不响应。
 /// - 烹饪界面中 `E` 与 `Esc` 都只关闭烹饪界面。
-/// - `Esc` 关闭当前全屏界面；无界面时先释放鼠标，再退出游戏。
+/// - `Esc` 关闭当前全屏界面；游戏内没有界面时打开暂停菜单。
 /// - 只在按下事件产生意图，避免按键释放重复触发。
 pub fn route_key(
     state: UiState,
     code: KeyCode,
     pressed: bool,
-    cursor_grabbed: bool,
+    _cursor_grabbed: bool,
 ) -> Option<UiIntent> {
     if !pressed {
         return None;
@@ -62,11 +62,7 @@ pub fn route_key(
             _ => None,
         },
         UiState::Gameplay => match code {
-            KeyCode::Escape => Some(if cursor_grabbed {
-                UiIntent::ReleaseCursor
-            } else {
-                UiIntent::Quit
-            }),
+            KeyCode::Escape => Some(UiIntent::OpenPause),
             KeyCode::KeyE => Some(UiIntent::OpenInventory),
             KeyCode::KeyC => Some(UiIntent::OpenCrafting),
             _ => None,
@@ -90,11 +86,12 @@ mod tests {
         );
         assert_eq!(
             route_key(UiState::Gameplay, KeyCode::Escape, true, true),
-            Some(UiIntent::ReleaseCursor)
+            Some(UiIntent::OpenPause)
         );
         assert_eq!(
             route_key(UiState::Gameplay, KeyCode::Escape, true, false),
-            Some(UiIntent::Quit)
+            Some(UiIntent::OpenPause),
+            "未捕获鼠标时 Esc 仍应打开暂停菜单"
         );
     }
 

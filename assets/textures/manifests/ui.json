@@ -22,6 +22,7 @@
     { "name": "death_overlay", "image": "death_overlay.png", "draw": "stretch" },
     { "name": "death_panel", "image": "death_panel.png", "draw": "nine_slice", "slice": [8, 8, 8, 8] },
     { "name": "button", "image": "button.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
-    { "name": "button_hover", "image": "button_hover.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] }
+    { "name": "button_hover", "image": "button_hover.png", "draw": "nine_slice", "slice": [6, 6, 6, 6] },
+    { "name": "title", "image": "title.png", "draw": "stretch" }
   ]
 }

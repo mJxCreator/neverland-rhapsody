@@ -423,7 +423,10 @@ mod tests {
 
         let first = manager.update(player, &mut world, &mut no_edits, &mut always_unload);
         assert_eq!(first.loaded.len(), 2);
-        assert_eq!(manager.pending_generation(), 9 * WORLD_CHUNKS_Y as usize - 2);
+        assert_eq!(
+            manager.pending_generation(),
+            9 * WORLD_CHUNKS_Y as usize - 2
+        );
 
         let second = manager.update(player, &mut world, &mut no_edits, &mut always_unload);
         assert_eq!(second.loaded.len(), 2);

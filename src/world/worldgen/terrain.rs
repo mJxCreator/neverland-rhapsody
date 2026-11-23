@@ -367,8 +367,7 @@ mod tests {
                             let wz = pos.z * CHUNK_SIZE + lz;
                             let height = generator.height_at(wx, wz);
                             let surface_y = height - 1;
-                            if (local_origin_y..local_origin_y + CHUNK_SIZE).contains(&surface_y)
-                            {
+                            if (local_origin_y..local_origin_y + CHUNK_SIZE).contains(&surface_y) {
                                 assert_ne!(
                                     chunk.block_at(lx, surface_y - local_origin_y, lz),
                                     Block::Air,
@@ -454,11 +453,7 @@ mod tests {
                         continue;
                     }
                     for y in 0..CHUNK_SIZE {
-                        assert_ne!(
-                            chunk.block_at(x, y, z),
-                            Block::Wood,
-                            "出生点附近不应有树干"
-                        );
+                        assert_ne!(chunk.block_at(x, y, z), Block::Wood, "出生点附近不应有树干");
                         assert_ne!(
                             chunk.block_at(x, y, z),
                             Block::Leaves,

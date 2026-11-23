@@ -255,9 +255,25 @@ pub struct WorldSave {
 }
 
 impl WorldSave {
-    /// 默认存档路径。
-    pub fn default_path() -> PathBuf {
-        PathBuf::from(SAVE_PATH)
+    /// 构建内存中的空存档；不读取也不写入磁盘，供菜单等无世界场景使用。
+    pub fn empty(seed: u32) -> Self {
+        Self::fresh(PathBuf::from(SAVE_PATH), seed)
+    }
+
+    /// 预览存档文件中的世界种子；文件缺失或字段无效时返回 `None`。
+    pub fn peek_seed(path: impl AsRef<Path>) -> Option<u32> {
+        #[derive(Deserialize)]
+        struct Header {
+            #[serde(default)]
+            seed: Option<u32>,
+        }
+        let text = fs::read_to_string(path).ok()?;
+        serde_json::from_str::<Header>(&text).ok()?.seed
+    }
+
+    /// 更换存档写入路径；用于世界库按世界 ID 选择文件。
+    pub fn set_path(&mut self, path: impl Into<PathBuf>) {
+        self.path = path.into();
     }
 
     /// 读取存档；主文件不可用时回退到备份，均不可用时按空存档启动。
@@ -265,26 +281,7 @@ impl WorldSave {
     /// 旧版存档在内存中迁移为区块记录，不立即改写文件，原始存档在首次写盘时滚动为 `.bak`。
     pub fn load(path: impl Into<PathBuf>, seed: u32) -> Self {
         let path = path.into();
-        let mut save = Self {
-            path,
-            seed,
-            edits: HashMap::new(),
-            drops: HashMap::new(),
-            entities: HashMap::new(),
-            populated_chunks: HashSet::new(),
-            player: None,
-            survival: None,
-            equipment: None,
-            vitals: None,
-            world_time: None,
-            campfires: Vec::new(),
-            worldgen_version: CURRENT_WORLD_GEN_VERSION,
-            unsaved: false,
-            primary_suspect: false,
-            writer: None,
-            write_failed: Arc::new(AtomicBool::new(false)),
-            next_write: Instant::now(),
-        };
+        let mut save = Self::fresh(path, seed);
 
         for (index, candidate) in [save.path.clone(), suffixed(&save.path, ".bak")]
             .into_iter()
@@ -330,6 +327,30 @@ impl WorldSave {
             }
         }
         save
+    }
+
+    /// 构造空存档的内部状态；不触碰磁盘。
+    fn fresh(path: PathBuf, seed: u32) -> Self {
+        Self {
+            path,
+            seed,
+            edits: HashMap::new(),
+            drops: HashMap::new(),
+            entities: HashMap::new(),
+            populated_chunks: HashSet::new(),
+            player: None,
+            survival: None,
+            equipment: None,
+            vitals: None,
+            world_time: None,
+            campfires: Vec::new(),
+            worldgen_version: CURRENT_WORLD_GEN_VERSION,
+            unsaved: false,
+            primary_suspect: false,
+            writer: None,
+            write_failed: Arc::new(AtomicBool::new(false)),
+            next_write: Instant::now(),
+        }
     }
 
     /// 解析存档文本、校验版本与种子，并把改动载入内存。
@@ -517,6 +538,12 @@ impl WorldSave {
         Ok(())
     }
 
+    /// 立即同步写入当前状态；用于新建世界时物化空存档。
+    pub fn write_now(&mut self) -> Result<()> {
+        self.unsaved = true;
+        self.persist()
+    }
+
     /// 请求后台写入：主线程只构建快照，JSON 序列化与磁盘 IO 交给写盘线程。
     ///
     /// 按固定间隔合并连续变更；即使本次因间隔不足未写入，内存数据仍标记为未落盘，
@@ -659,6 +686,9 @@ impl WorldSave {
     }
 
     /// 同时更新生存数据、世界时间与营火状态并只写盘一次。
+    ///
+    /// 运行时改用 `set_world_state` 分离角色与世界；本方法保留给旧格式兼容测试。
+    #[allow(dead_code)]
     pub fn set_survival_state(
         &mut self,
         vitals: SavedVitals,
@@ -672,7 +702,24 @@ impl WorldSave {
         self.persist()
     }
 
+    /// 更新世界侧状态（昼夜时间与营火）并只写盘一次。
+    ///
+    /// 角色的饥饿、体力与复活点属于角色快照，不写入世界存档。
+    pub fn set_world_state(
+        &mut self,
+        world_time: SavedWorldTime,
+        campfires: Vec<SavedCampfire>,
+    ) -> Result<()> {
+        self.world_time = Some(world_time);
+        self.campfires = campfires;
+        self.unsaved = true;
+        self.persist()
+    }
+
     /// 同时更新背包、生存状态与装备并只写盘一次。
+    ///
+    /// 运行时改用独立角色存档；本方法保留给旧格式兼容测试。
+    #[allow(dead_code)]
     pub fn set_player_state(
         &mut self,
         player: SavedInventory,

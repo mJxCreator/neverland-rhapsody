@@ -1,6 +1,6 @@
 //! Neverland Rhapsody —— 基于 Rust 与 wgpu 的体素沙盒引擎。
 //!
-//! 当前里程碑 v0.22：角色建模、装备可视化与第一/第三人称视角。
+//! 当前里程碑 v0.23：主菜单、角色选择、世界选择与游戏内暂停菜单。
 
 mod attachment;
 mod combat;

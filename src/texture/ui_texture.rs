@@ -48,7 +48,7 @@ pub struct UiManifestEntry {
 
 /// 内置 UI 控件清单；即使 `ui.json` 缺失，放入同名 PNG 也会自动生效。
 pub fn builtin_manifest() -> UiManifest {
-    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 20] = [
+    const ENTRIES: [(&str, UiDrawMode, [u32; 4]); 21] = [
         ("hotbar_bg", UiDrawMode::NineSlice, [8, 8, 8, 8]),
         ("hotbar_slot", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("hotbar_slot_selected", UiDrawMode::Stretch, [0, 0, 0, 0]),
@@ -69,6 +69,8 @@ pub fn builtin_manifest() -> UiManifest {
         ("state_hunger_fill", UiDrawMode::Stretch, [0, 0, 0, 0]),
         ("damage_vignette", UiDrawMode::NineSlice, [16, 16, 16, 16]),
         ("death_overlay", UiDrawMode::Stretch, [0, 0, 0, 0]),
+        // 主菜单标题图：只按原图比例缩放，不参与九宫格切边。
+        ("title", UiDrawMode::Stretch, [0, 0, 0, 0]),
     ];
     // 死亡面板与按钮单独列出，保持清单可读。
     let mut entries: Vec<UiManifestEntry> = ENTRIES

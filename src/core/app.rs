@@ -45,7 +45,9 @@ use crate::player_visual::{
     player_model, third_person, CameraMode, PlayerVisual, PlayerVisualState,
 };
 use crate::renderer::{spawn_pose, RenderOutcome, Renderer};
-use crate::save::{BlockEdit, WorldSave};
+use crate::save::{
+    BlockEdit, CharacterSave, SaveEntry, SaveLibrary, WorldSave, CHARACTER_SAVE_VERSION,
+};
 use crate::survival::cooking::CookingRegistry;
 use crate::survival::food::{EatingState, EatingUpdate};
 use crate::survival::respawn;
@@ -55,8 +57,9 @@ use crate::survival::stamina::ATTACK_COST;
 use crate::survival::{Vitals, VitalsInput, WorldTime};
 use crate::texture::types::TextureImage;
 use crate::texture::{TextureAssets, TextureWatcher, DEFAULT_ASSET_ROOT};
-use crate::ui::{ClickButton, UiIntent, UiManager, UiPointerAction, UiState};
-use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World};
+use crate::ui::menu::config::MAX_ROWS;
+use crate::ui::{ClickButton, MenuAction, MenuEntry, MenuUi, UiIntent, UiManager, UiPointerAction, UiState};
+use crate::world::{Block, ChunkConfig, ChunkManager, ChunkPos, World, DEFAULT_SEED};
 
 /// 目标帧间隔，约 60 FPS。
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -73,9 +76,30 @@ const TEXTURE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 纹理资源根目录环境变量；未设置时使用 `assets`。
 const ASSET_ROOT_ENV: &str = "NEVERLAND_ASSET_ROOT";
 
+/// 应用级界面：菜单与游戏世界二选一，暂停菜单覆盖在冻结的游戏画面上。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppScreen {
+    /// 主菜单、角色选择或世界选择。
+    Menu,
+    /// 正在某个世界中游玩。
+    InGame,
+    /// 游戏内暂停菜单；世界与玩家时间冻结。
+    Paused,
+}
+
 /// 持有窗口、渲染器与主循环状态。
 pub struct App {
     config: AppConfig,
+    /// 当前应用界面；决定输入交给菜单还是世界。
+    screen: AppScreen,
+    /// 菜单状态与选择结果展示。
+    menu: MenuUi,
+    /// 多角色/多世界存档库。
+    library: SaveLibrary,
+    /// 正在游玩的角色；菜单中为 `None`。
+    active_character: Option<SaveEntry>,
+    /// 正在游玩的世界；菜单中为 `None`。
+    active_world: Option<SaveEntry>,
     world: World,
     save: WorldSave,
     chunk_manager: ChunkManager,
@@ -209,9 +233,9 @@ fn load_entity_texture(root: &str, name: &str) -> Option<TextureImage> {
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        // 先读取存档版本再重建世界：旧档继续使用旧版地形，避免已建世界外观改变。
+        // 启动先进入主菜单：世界在玩家选定角色与世界后才创建与加载。
         let default_world = World::default();
-        let save = WorldSave::load(WorldSave::default_path(), default_world.seed());
+        let save = WorldSave::empty(default_world.seed());
         let world = World::with_generation(default_world.seed(), save.worldgen_version());
         // 物理参数集中管理，玩家碰撞体尺寸也由同一处提供。
         let physics = PhysicsSystem::new(PhysicsConfig::default());
@@ -219,24 +243,19 @@ impl App {
         let mut player = Player::new(spawn, physics.config().dimensions);
         player.rotate_look(yaw, pitch);
 
-        // 旧档沿用已有背包；新世界只发放无法通过采集获得的铁锭测试材料。
-        let (inventory, selected_hotbar) = save
-            .player()
-            .map(Inventory::from_saved)
-            .unwrap_or_else(|| (Self::starter_inventory(), 0));
-        let survival = save
-            .survival()
-            .map(Survival::from_saved)
-            .unwrap_or_default();
-        let equipment = save
-            .equipment()
-            .map(Equipment::from_saved)
-            .unwrap_or_default();
-        let vitals = save.vitals().map(Vitals::from_saved).unwrap_or_default();
-        let world_time = WorldTime::from_saved(save.world_time());
-        let mut cooking = CookingRegistry::new();
-        cooking.restore(save.campfires());
+        // 菜单阶段使用新角色的默认状态；进入世界后再从角色快照恢复。
+        let (inventory, selected_hotbar) = (Self::starter_inventory(), 0);
+        let survival = crate::player::Survival::default();
+        let equipment = Equipment::default();
+        let vitals = Vitals::default();
+        let world_time = WorldTime::default();
+        let cooking = CookingRegistry::new();
         let spawn_seed = world.seed();
+        // 旧版单档在首次启动时迁移为 WORLD 1 + CHARACTER 1。
+        let library = SaveLibrary::new();
+        if let Err(err) = library.migrate_legacy() {
+            warn!(error = %format!("{err:#}"), "旧存档迁移失败，保留原文件");
+        }
         let asset_root =
             std::env::var(ASSET_ROOT_ENV).unwrap_or_else(|_| DEFAULT_ASSET_ROOT.to_string());
         let textures = Arc::new(TextureAssets::load(&asset_root));
@@ -290,6 +309,9 @@ impl App {
         let player_visual = PlayerVisual::new(&models);
         let mut ui = UiManager::new();
         ui.set_ui_textures(&textures.ui_textures);
+        let mut menu = MenuUi::new();
+        menu.set_ui_textures(&textures.ui_textures);
+        menu.open_main();
         let mut hotbar = Hotbar::new();
         hotbar.set_selected(selected_hotbar);
         debug!(
@@ -301,6 +323,11 @@ impl App {
 
         Self {
             config,
+            screen: AppScreen::Menu,
+            menu,
+            library,
+            active_character: None,
+            active_world: None,
             world,
             save,
             chunk_manager: ChunkManager::new(ChunkConfig::default()),
@@ -377,7 +404,7 @@ impl App {
         inventory
     }
 
-    /// 创建事件循环并进入主循环，窗口关闭或按下 Esc 时返回。
+    /// 创建事件循环并进入主循环，窗口关闭或主菜单选择退出时返回。
     pub fn run(config: AppConfig) -> anyhow::Result<()> {
         let event_loop = EventLoop::new()?;
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -405,40 +432,8 @@ impl App {
                 );
 
                 let window = Arc::new(window);
-                // 先按出生点填满初始加载区域，渲染器初始化时即可一次性上传网格。
-                let spawn = self.player.position();
-                let player_chunk =
-                    ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
-                let loaded =
-                    self.chunk_manager
-                        .preload(player_chunk, &mut self.world, &mut |pos, world| {
-                            self.save.apply_chunk(pos, world)
-                        });
-                let stats = self.world.generation_stats();
-                info!(
-                    chunks = self.world.chunk_count(),
-                    loaded,
-                    generation_version = self.world.generation_version(),
-                    avg_generation_ms = stats.average_ms(),
-                    terrain_ms = stats.stage_average_ms(stats.terrain_ns),
-                    cave_ms = stats.stage_average_ms(stats.cave_ns),
-                    ore_ms = stats.stage_average_ms(stats.ore_ns),
-                    decoration_ms = stats.stage_average_ms(stats.decoration_ns),
-                    biome = self
-                        .world
-                        .biome_at(spawn.x.floor() as i32, spawn.z.floor() as i32)
-                        .name(),
-                    "初始区块已加载"
-                );
-
-                // 存档中属于已加载区块的掉落物与生物恢复为运行时实体。
-                let loaded_chunks: Vec<ChunkPos> = self.world.chunk_positions().collect();
-                for pos in loaded_chunks {
-                    let records = self.save.chunk_drops(pos).to_vec();
-                    self.dropped.restore_chunk(pos, &records);
-                    let entities = self.save.chunk_entities(pos).to_vec();
-                    self.entities.restore_chunk(pos, &entities);
-                }
+                // 启动时世界为空，渲染器先建好管线；选定世界后再上传区块。
+                info!("初始区块待选择世界后加载");
 
                 match Renderer::new(
                     window.clone(),
@@ -468,6 +463,356 @@ impl App {
                 error!(error = %err, "窗口创建失败");
                 event_loop.exit();
             }
+        }
+    }
+
+    /// 把存档库条目转换为菜单条目。
+    fn menu_entries(entries: Vec<SaveEntry>) -> Vec<MenuEntry> {
+        entries
+            .into_iter()
+            .map(|entry| MenuEntry::new(entry.id, entry.name))
+            .collect()
+    }
+
+    /// 打开角色选择并刷新列表。
+    fn open_character_select(&mut self) {
+        let characters = Self::menu_entries(self.library.characters());
+        self.menu.open_characters(characters);
+    }
+
+    /// 打开世界选择；角色必须来自当前角色列表。
+    fn open_world_select(&mut self, character_id: &str) {
+        let Some(character) = self
+            .library
+            .characters()
+            .into_iter()
+            .find(|entry| entry.id == character_id)
+        else {
+            self.menu
+                .show_notice("CHARACTER NOT FOUND");
+            return;
+        };
+        let worlds = Self::menu_entries(self.library.worlds());
+        self.menu
+            .open_worlds(MenuEntry::new(character.id, character.name), worlds);
+    }
+
+    /// 进入指定世界的指定角色；角色快照与世界存档分别加载。
+    fn start_session(&mut self, character_id: &str, world_id: &str) {
+        let Some(seed) = self.library.world_seed(world_id) else {
+            warn!(world = world_id, "世界缺少种子，无法进入");
+            self.menu.show_notice("WORLD DATA MISSING");
+            return;
+        };
+        let Some(character_save) = self.library.character(character_id) else {
+            warn!(character = character_id, "角色存档缺失，无法进入");
+            self.menu.show_notice("CHARACTER DATA MISSING");
+            return;
+        };
+
+        let save = WorldSave::load(self.library.world_path(world_id), seed);
+        let world = World::with_generation(seed, save.worldgen_version());
+        let (inventory, selected_hotbar) = character_save
+            .inventory
+            .as_ref()
+            .map(Inventory::from_saved)
+            .unwrap_or_else(|| (Self::starter_inventory(), 0));
+        let survival = character_save
+            .survival
+            .map(Survival::from_saved)
+            .unwrap_or_default();
+        let equipment = character_save
+            .equipment
+            .as_ref()
+            .map(Equipment::from_saved)
+            .unwrap_or_default();
+        let vitals = character_save
+            .vitals
+            .map(Vitals::from_saved)
+            .unwrap_or_default();
+        let world_time = WorldTime::from_saved(save.world_time());
+        let mut cooking = CookingRegistry::new();
+        cooking.restore(save.campfires());
+
+        let physics = PhysicsSystem::new(PhysicsConfig::default());
+        let (spawn, yaw, pitch) = spawn_pose(&world);
+        let mut player = Player::new(spawn, physics.config().dimensions);
+        player.rotate_look(yaw, pitch);
+        let mut hotbar = Hotbar::new();
+        hotbar.set_selected(selected_hotbar);
+        let mut ui = UiManager::new();
+        ui.set_ui_textures(&self.textures.ui_textures);
+
+        // 整体替换会话状态，确保上一个世界的实体、掉落物与界面不会残留。
+        self.save = save;
+        self.world = world;
+        self.chunk_manager = ChunkManager::new(ChunkConfig::default());
+        self.inventory = inventory;
+        self.hotbar = hotbar;
+        self.survival = survival;
+        self.vitals = vitals;
+        self.world_time = world_time;
+        self.cooking = cooking;
+        self.equipment = equipment;
+        self.player = player;
+        self.physics = physics;
+        self.mining = MiningState::new();
+        self.mining_held = false;
+        self.eating = EatingState::new();
+        self.combat = AttackController::new(CombatConfig::default());
+        self.spawn_anchor = spawn;
+        self.dropped = DroppedItemStore::new();
+        self.entities = EntityManager::new();
+        self.entity_physics = EntityPhysicsSystem::new(EntityPhysicsConfig::default());
+        self.spawner = Spawner::new(SpawnConfig::default(), seed);
+        self.ai_config = AiConfig::default();
+        self.entity_models = EntityModelSet::new(&self.models, EntityModelConfig::default());
+        self.player_visual = PlayerVisual::new(&self.models);
+        self.game_rng = GameRng::new(u64::from(seed) ^ 0x5EED_2020);
+        self.ui = ui;
+        self.physics_steps = 0;
+        self.generation_ms = 0.0;
+        self.mesh_ms = 0.0;
+        self.next_survival_save = Instant::now() + Duration::from_secs(15);
+        self.next_save_retry = Instant::now();
+        self.paused = false;
+        self.active_character = Some(SaveEntry {
+            id: character_id.to_owned(),
+            name: character_save.name.clone(),
+            seed: None,
+        });
+        let world_name = self
+            .library
+            .worlds()
+            .into_iter()
+            .find(|entry| entry.id == world_id)
+            .map(|entry| entry.name)
+            .unwrap_or_else(|| world_id.to_owned());
+        self.active_world = Some(SaveEntry {
+            id: world_id.to_owned(),
+            name: world_name,
+            seed: Some(seed),
+        });
+
+        self.load_session_chunks();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.load_world(&self.world);
+            renderer.set_model_draws(Vec::new());
+            renderer.set_overlay_model_draws(Vec::new());
+            renderer.set_camera_pose(
+                self.player.eye_position(),
+                self.player.yaw(),
+                self.player.pitch(),
+            );
+        }
+        self.ui.force_close(&mut self.inventory);
+        self.screen = AppScreen::InGame;
+        self.grab_cursor();
+        info!(
+            character = character_id,
+            world = world_id,
+            seed,
+            chunks = self.world.chunk_count(),
+            "已进入世界"
+        );
+    }
+
+    /// 同步加载玩家周围区块，并恢复所属区块的掉落物与生物。
+    fn load_session_chunks(&mut self) {
+        let spawn = self.player.position();
+        let player_chunk =
+            ChunkPos::from_world(spawn.x.floor() as i32, 0, spawn.z.floor() as i32);
+        let loaded = self
+            .chunk_manager
+            .preload(player_chunk, &mut self.world, &mut |pos, world| {
+                self.save.apply_chunk(pos, world)
+            });
+        let loaded_chunks: Vec<ChunkPos> = self.world.chunk_positions().collect();
+        for pos in &loaded_chunks {
+            let records = self.save.chunk_drops(*pos).to_vec();
+            self.dropped.restore_chunk(*pos, &records);
+            let entities = self.save.chunk_entities(*pos).to_vec();
+            self.entities.restore_chunk(*pos, &entities);
+        }
+        let stats = self.world.generation_stats();
+        info!(
+            chunks = self.world.chunk_count(),
+            loaded,
+            generation_version = self.world.generation_version(),
+            avg_generation_ms = stats.average_ms(),
+            terrain_ms = stats.stage_average_ms(stats.terrain_ns),
+            cave_ms = stats.stage_average_ms(stats.cave_ns),
+            ore_ms = stats.stage_average_ms(stats.ore_ns),
+            decoration_ms = stats.stage_average_ms(stats.decoration_ns),
+            biome = self
+                .world
+                .biome_at(spawn.x.floor() as i32, spawn.z.floor() as i32)
+                .name(),
+            "世界初始区块已加载"
+        );
+    }
+
+    /// 打开暂停菜单：世界与玩家时间冻结，鼠标释放用于点击按钮。
+    fn open_pause(&mut self) {
+        if self.screen != AppScreen::InGame {
+            return;
+        }
+        self.release_cursor();
+        self.eating.cancel();
+        self.menu.open_pause();
+        self.screen = AppScreen::Paused;
+        info!("暂停菜单已打开");
+    }
+
+    /// 关闭暂停菜单并恢复游戏。
+    fn resume_game(&mut self) {
+        if self.screen != AppScreen::Paused || !self.menu.close_pause() {
+            return;
+        }
+        self.screen = AppScreen::InGame;
+        self.grab_cursor();
+        info!("暂停菜单已关闭");
+    }
+
+    /// 保存并返回开始界面；角色快照与世界存档都已写入。
+    fn leave_to_main_menu(&mut self) {
+        self.flush_save();
+        self.ui.force_close(&mut self.inventory);
+        self.release_cursor();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.clear_world();
+            renderer.set_model_draws(Vec::new());
+            renderer.set_overlay_model_draws(Vec::new());
+        }
+        self.world = World::with_generation(DEFAULT_SEED, self.world.generation_version());
+        self.save = WorldSave::empty(DEFAULT_SEED);
+        self.chunk_manager = ChunkManager::new(ChunkConfig::default());
+        self.dropped = DroppedItemStore::new();
+        self.entities = EntityManager::new();
+        self.active_character = None;
+        self.active_world = None;
+        self.screen = AppScreen::Menu;
+        self.menu.open_main();
+        info!("已保存并返回开始界面");
+    }
+
+    /// 执行菜单动作；所有磁盘操作都在这里落地。
+    fn handle_menu_action(&mut self, action: MenuAction, event_loop: &ActiveEventLoop) {
+        match action {
+            MenuAction::None => {}
+            MenuAction::SinglePlayer => self.open_character_select(),
+            MenuAction::Quit => {
+                info!("主菜单选择退出游戏");
+                event_loop.exit();
+            }
+            MenuAction::Unavailable(text) => self.menu.show_notice(text),
+            MenuAction::NewCharacter => {
+                if self.library.characters().len() >= MAX_ROWS {
+                    self.menu.show_notice("CHARACTER LIMIT REACHED");
+                    return;
+                }
+                if let Err(err) = self.library.create_character() {
+                    warn!(error = %format!("{err:#}"), "新建角色失败");
+                    self.menu.show_notice("CREATE CHARACTER FAILED");
+                    return;
+                }
+                self.open_character_select();
+                self.menu.show_notice("CHARACTER CREATED");
+            }
+            MenuAction::SelectCharacter(id) => self.open_world_select(&id),
+            MenuAction::EditCharacter(id) => {
+                let name = self
+                    .library
+                    .character(&id)
+                    .map(|save| save.name)
+                    .unwrap_or_default();
+                self.menu.begin_rename(id, &name);
+            }
+            MenuAction::DeleteCharacter(id) => {
+                if let Err(err) = self.library.delete_character(&id) {
+                    warn!(error = %format!("{err:#}"), "删除角色失败");
+                    self.menu.show_notice("DELETE CHARACTER FAILED");
+                    return;
+                }
+                self.open_character_select();
+                self.menu.show_notice("CHARACTER DELETED");
+            }
+            MenuAction::ConfirmRename => {
+                let id = self.menu.rename_character_id().map(str::to_owned);
+                let text = self.menu.rename_text().map(str::to_owned).unwrap_or_default();
+                let Some(id) = id else {
+                    self.menu.cancel_rename();
+                    return;
+                };
+                match self.library.rename_character(&id, &text) {
+                    Ok(_) => {
+                        self.menu.cancel_rename();
+                        self.open_character_select();
+                        self.menu.show_notice("CHARACTER RENAMED");
+                    }
+                    Err(err) => {
+                        warn!(error = %format!("{err:#}"), "重命名角色失败");
+                        self.menu.show_notice("INVALID NAME");
+                    }
+                }
+            }
+            MenuAction::CancelRename => self.menu.cancel_rename(),
+            MenuAction::NewWorld => {
+                if self.library.worlds().len() >= MAX_ROWS {
+                    self.menu.show_notice("WORLD LIMIT REACHED");
+                    return;
+                }
+                if let Err(err) = self.library.create_world() {
+                    warn!(error = %format!("{err:#}"), "新建世界失败");
+                    self.menu.show_notice("CREATE WORLD FAILED");
+                    return;
+                }
+                self.refresh_world_list();
+                self.menu.show_notice("WORLD CREATED");
+            }
+            MenuAction::DeleteWorld(id) => {
+                if let Err(err) = self.library.delete_world(&id) {
+                    warn!(error = %format!("{err:#}"), "删除世界失败");
+                    self.menu.show_notice("DELETE WORLD FAILED");
+                    return;
+                }
+                self.refresh_world_list();
+                self.menu.show_notice("WORLD DELETED");
+            }
+            MenuAction::SelectWorld(id) => {
+                let Some(character) = self.menu.selected_character().cloned() else {
+                    self.menu.show_notice("SELECT A CHARACTER FIRST");
+                    return;
+                };
+                self.start_session(&character.id, &id);
+            }
+            MenuAction::BackToMain => self.menu.open_main(),
+            MenuAction::BackToCharacters => self.open_character_select(),
+            MenuAction::Resume => self.resume_game(),
+            MenuAction::SaveAndQuit => self.leave_to_main_menu(),
+        }
+    }
+
+    /// 原地刷新世界列表，保留当前角色标题。
+    fn refresh_world_list(&mut self) {
+        self.menu.set_worlds(Self::menu_entries(self.library.worlds()));
+    }
+
+    /// 把当前角色快照写入独立角色文件，并从世界存档得到当前生存状态。
+    fn write_character_snapshot(&mut self) {
+        let Some(character) = self.active_character.as_ref() else {
+            return;
+        };
+        let save = CharacterSave {
+            version: CHARACTER_SAVE_VERSION,
+            name: character.name.clone(),
+            inventory: Some(self.inventory.to_saved(self.hotbar.selected_index())),
+            survival: Some(self.survival.to_saved()),
+            equipment: Some(self.equipment.to_saved()),
+            vitals: Some(self.vitals.to_saved()),
+        };
+        if let Err(err) = self.library.save_character(&character.id, &save) {
+            warn!(error = %format!("{err:#}"), "角色快照写入失败");
         }
     }
 
@@ -659,19 +1004,14 @@ impl App {
     }
 
     /// 执行键盘路由得到的界面意图；每个意图只对应一个界面动作。
-    fn handle_ui_intent(&mut self, intent: UiIntent, event_loop: &ActiveEventLoop) {
+    fn handle_ui_intent(&mut self, intent: UiIntent) {
         match intent {
             UiIntent::OpenInventory => self.open_inventory(),
             UiIntent::CloseInventory => self.close_inventory(),
             UiIntent::OpenCrafting => self.open_crafting(),
             UiIntent::CloseCrafting => self.close_crafting(),
             UiIntent::CloseCooking => self.close_cooking(),
-            UiIntent::ReleaseCursor => self.release_cursor(),
-            UiIntent::Quit => {
-                info!("按下 Esc，退出");
-                self.flush_save();
-                event_loop.exit();
-            }
+            UiIntent::OpenPause => self.open_pause(),
         }
     }
 
@@ -1325,25 +1665,21 @@ impl App {
         }
     }
 
-    /// 把当前背包、快捷栏选择与生存状态写入存档；失败只记录日志，不中断游戏。
+    /// 把当前背包、快捷栏选择、生命、装备、饥饿与体力写入角色快照。
     fn persist_player(&mut self) {
-        let saved = self.inventory.to_saved(self.hotbar.selected_index());
-        if let Err(err) =
-            self.save
-                .set_player_state(saved, self.survival.to_saved(), self.equipment.to_saved())
-        {
-            warn!(error = %format!("{err:#}"), "玩家状态写入存档失败");
-        }
+        self.write_character_snapshot();
     }
 
-    /// 把饥饿、体力、复活点、世界时间与营火状态写入存档。
+    /// 把角色快照与世界侧状态（昼夜时间、营火）分别写入各自存档。
     fn persist_survival(&mut self) {
-        if let Err(err) = self.save.set_survival_state(
-            self.vitals.to_saved(),
-            self.world_time.to_saved(),
-            self.cooking.to_saved(),
-        ) {
-            warn!(error = %format!("{err:#}"), "生存状态写入存档失败");
+        self.write_character_snapshot();
+        if self.active_world.is_some() {
+            if let Err(err) = self
+                .save
+                .set_world_state(self.world_time.to_saved(), self.cooking.to_saved())
+            {
+                warn!(error = %format!("{err:#}"), "世界状态写入存档失败");
+            }
         }
     }
 
@@ -1399,6 +1735,12 @@ impl App {
     }
 
     fn draw_frame(&mut self, delta: Duration, event_loop: &ActiveEventLoop) {
+        // 菜单与暂停界面冻结世界：不推进物理、时间、区块与实体，只重绘界面。
+        if self.screen != AppScreen::InGame {
+            self.draw_menu_frame();
+            self.present(event_loop);
+            return;
+        }
         let delta_secs = delta.as_secs_f32();
         // 周期性保存生存状态，避免异常退出丢失饥饿、体力、时间与烹饪进度。
         let now = Instant::now();
@@ -1781,6 +2123,32 @@ impl App {
             renderer.set_ui_vertices(ui_vertices);
         }
 
+        self.present(event_loop);
+    }
+
+    /// 绘制菜单或暂停界面；暂停时保留上一帧的世界与实体画面作为冻结背景。
+    fn draw_menu_frame(&mut self) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let viewport = renderer.viewport();
+        renderer
+            .hud_mut()
+            .set(0, [None; crate::item::HOTBAR_SLOTS], None, true);
+        let mut ui_vertices = Vec::new();
+        self.menu.build(&mut ui_vertices, viewport);
+        renderer.set_ui_vertices(ui_vertices);
+        if self.screen == AppScreen::Menu {
+            // 主菜单/选择界面不显示上个世界的模型、生物与掉落物。
+            renderer.set_model_draws(Vec::new());
+            renderer.set_overlay_model_draws(Vec::new());
+            renderer.entity_vertices_mut().clear();
+            renderer.drop_vertices_mut().clear();
+        }
+    }
+
+    /// 提交并呈现当前帧，处理 surface 失效与致命错误。
+    fn present(&mut self, event_loop: &ActiveEventLoop) {
         let outcome = match self.renderer.as_mut() {
             Some(renderer) => renderer.render(),
             None => return,
@@ -1842,12 +2210,20 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
+                // 菜单与暂停界面独占键盘：重命名输入、Esc 返回/继续均在此处理。
+                if self.screen != AppScreen::InGame {
+                    let action = self.menu.key(code, pressed);
+                    if action != MenuAction::None {
+                        self.handle_menu_action(action, event_loop);
+                    }
+                    return;
+                }
                 // 统一 UI 快捷键路由：一次按键最多产生一个界面意图。
                 // 死亡界面不响应任何 UI 快捷键，避免误操作绕过死亡流程。
                 if let Some(intent) =
                     crate::ui::input::route_key(self.ui.state(), code, pressed, self.cursor_grabbed)
                 {
-                    self.handle_ui_intent(intent, event_loop);
+                    self.handle_ui_intent(intent);
                     return;
                 }
                 // 界面打开时只响应开关界面，暂停移动与视角输入。
@@ -1874,9 +2250,24 @@ impl ApplicationHandler for App {
                 self.controller.handle_key(code, pressed);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.ui.set_cursor(position.x as f32, position.y as f32);
+                let x = position.x as f32;
+                let y = position.y as f32;
+                self.ui.set_cursor(x, y);
+                self.menu.set_cursor(x, y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // 菜单与暂停界面独占鼠标；只在按下时解析一次点击。
+                if self.screen != AppScreen::InGame {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let viewport = self
+                            .renderer
+                            .as_ref()
+                            .map_or((1280.0, 720.0), Renderer::viewport);
+                        let action = self.menu.click_at(viewport, self.menu.cursor());
+                        self.handle_menu_action(action, event_loop);
+                    }
+                    return;
+                }
                 // 任意全屏界面打开时，鼠标只交给当前界面处理；
                 // 死亡界面优先级由 UiManager 的状态机保证。
                 if self.ui.blocks_world_input() {
@@ -1913,8 +2304,7 @@ impl ApplicationHandler for App {
                             UiPointerAction::Respawn => self.respawn(),
                             UiPointerAction::MainMenu => {
                                 info!("死亡界面选择返回主菜单");
-                                self.flush_save();
-                                event_loop.exit();
+                                self.leave_to_main_menu();
                             }
                         }
                     }
@@ -1952,6 +2342,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.screen != AppScreen::InGame {
+                    return;
+                }
                 // 死亡或合成界面打开时滚轮不切换快捷栏；背包内仍可预览选中格。
                 match self.ui.state() {
                     UiState::Death | UiState::Crafting | UiState::Cooking => return,
