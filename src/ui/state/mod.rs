@@ -18,10 +18,14 @@ pub struct StateBars {
     pub health: u32,
     /// 最大生命值（默认 100）。
     pub max_health: u32,
-    /// 当前饥饿值（0–100）。
+    /// 当前饥饿值（0 到 `hunger_max`）。
     pub hunger: f32,
-    /// 当前体力值（0–100）。
+    /// 当前饥饿上限（默认 100，可被加成抬升）。
+    pub hunger_max: f32,
+    /// 当前体力值（0 到 `stamina_max`）。
     pub stamina: f32,
+    /// 当前体力上限（默认 100，跟随饥饿变化）。
+    pub stamina_max: f32,
     /// 可调参数。
     pub config: StateBarConfig,
 }
@@ -32,7 +36,9 @@ impl Default for StateBars {
             health: 100,
             max_health: 100,
             hunger: 100.0,
+            hunger_max: 100.0,
             stamina: 100.0,
+            stamina_max: 100.0,
             config: StateBarConfig::default(),
         }
     }
@@ -45,18 +51,18 @@ impl StateBars {
         self.health = health.min(self.max_health);
     }
 
-    /// 写入饥饿与体力；越界值裁剪到 0–100。
-    pub fn set_survival(&mut self, hunger: f32, stamina: f32) {
-        self.hunger = if hunger.is_finite() {
-            hunger.clamp(0.0, 100.0)
-        } else {
-            100.0
-        };
-        self.stamina = if stamina.is_finite() {
-            stamina.clamp(0.0, 100.0)
-        } else {
-            100.0
-        };
+    /// 写入饥饿与体力及其当前上限；数值裁剪到 `0..=上限`。
+    pub fn set_survival(
+        &mut self,
+        hunger: f32,
+        hunger_max: f32,
+        stamina: f32,
+        stamina_max: f32,
+    ) {
+        self.hunger_max = valid_max(hunger_max);
+        self.stamina_max = valid_max(stamina_max);
+        self.hunger = clamp_to_max(hunger, self.hunger_max);
+        self.stamina = clamp_to_max(stamina, self.stamina_max);
     }
 
     /// 面板顶边坐标；`bottom_anchor` 为快捷栏顶边。
@@ -94,8 +100,16 @@ impl StateBars {
         };
         let rows = [
             ("state_heart_fill", health_ratio, config.heart),
-            ("state_stamina_fill", self.stamina / 100.0, config.stamina),
-            ("state_hunger_fill", self.hunger / 100.0, config.hunger),
+            (
+                "state_stamina_fill",
+                ratio_to_max(self.stamina, self.stamina_max),
+                config.stamina,
+            ),
+            (
+                "state_hunger_fill",
+                ratio_to_max(self.hunger, self.hunger_max),
+                config.hunger,
+            ),
         ];
         let fill_x = panel.x + config.padding * config.scale;
         for (index, (name, ratio, fallback)) in rows.into_iter().enumerate() {
@@ -110,6 +124,33 @@ impl StateBars {
                 config,
             );
         }
+    }
+}
+
+/// 把上限清洗为有限正数；非法值回落到默认 100。
+fn valid_max(max: f32) -> f32 {
+    if max.is_finite() && max > 0.0 {
+        max
+    } else {
+        100.0
+    }
+}
+
+/// 把当前值裁剪到 `0..=上限`；非有限值按满值处理。
+fn clamp_to_max(value: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, max)
+    } else {
+        max
+    }
+}
+
+/// 按当前上限归一，得到 0–1 的填充比例。
+fn ratio_to_max(value: f32, max: f32) -> f32 {
+    if max > 0.0 && value.is_finite() {
+        (value / max).clamp(0.0, 1.0)
+    } else {
+        0.0
     }
 }
 
@@ -185,9 +226,34 @@ mod tests {
         bars.set_health(5, 0);
         assert_eq!(bars.max_health, 100);
         assert_eq!(bars.health, 5);
-        bars.set_survival(120.0, -3.0);
+        bars.set_survival(120.0, 100.0, -3.0, 100.0);
         assert_eq!(bars.hunger, 100.0);
         assert_eq!(bars.stamina, 0.0);
+        bars.set_survival(30.0, f32::NAN, 10.0, 0.0);
+        assert_eq!(bars.hunger_max, 100.0);
+        assert_eq!(bars.stamina_max, 100.0);
+        assert_eq!(bars.hunger, 30.0);
+        assert_eq!(bars.stamina, 10.0);
+    }
+
+    #[test]
+    fn fill_ratio_normalizes_by_current_max() {
+        let mut bars = StateBars::default();
+        bars.set_survival(150.0, 150.0, 75.0, 150.0);
+        assert_eq!(ratio_to_max(bars.hunger, bars.hunger_max), 1.0);
+        assert_eq!(ratio_to_max(bars.stamina, bars.stamina_max), 0.5);
+        // 上限回落后当前值被裁到新上限，比例保持满条。
+        bars.set_survival(150.0, 100.0, 75.0, 100.0);
+        assert_eq!(bars.hunger, 100.0);
+        assert_eq!(ratio_to_max(bars.hunger, bars.hunger_max), 1.0);
+        assert_eq!(ratio_to_max(bars.stamina, bars.stamina_max), 0.75);
+    }
+
+    #[test]
+    fn ratio_to_max_guards_zero_and_non_finite() {
+        assert_eq!(ratio_to_max(10.0, 0.0), 0.0);
+        assert_eq!(ratio_to_max(f32::NAN, 100.0), 0.0);
+        assert_eq!(ratio_to_max(50.0, 200.0), 0.25);
     }
 
     #[test]

@@ -83,9 +83,17 @@ impl HudModel {
         self.state.set_health(health, max_health);
     }
 
-    /// 写入饥饿、体力与昼夜阶段；数值越界时自动裁剪到 0–100。
-    pub fn set_survival(&mut self, hunger: f32, stamina: f32, time_label: &'static str) {
-        self.state.set_survival(hunger, stamina);
+    /// 写入饥饿、体力及各自当前上限与昼夜阶段；数值裁剪到 `0..=上限`。
+    pub fn set_survival(
+        &mut self,
+        hunger: f32,
+        hunger_max: f32,
+        stamina: f32,
+        stamina_max: f32,
+        time_label: &'static str,
+    ) {
+        self.state
+            .set_survival(hunger, hunger_max, stamina, stamina_max);
         self.time_phase.label = time_label;
     }
 

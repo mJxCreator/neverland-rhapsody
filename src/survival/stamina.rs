@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 体力绝对上限（饥饿满值时）。
-pub const MAX_STAMINA: f32 = 100.0;
+/// 默认体力上限；实际上限始终跟随当前饥饿值，可突破 100。
+pub const DEFAULT_MAX_STAMINA: f32 = 100.0;
 /// 行走每秒消耗。
 pub const WALK_DRAIN_PER_SECOND: f32 = 1.0;
 /// 奔跑每秒消耗。
@@ -29,13 +29,13 @@ pub struct SavedStamina {
 }
 
 fn default_stamina() -> f32 {
-    MAX_STAMINA
+    DEFAULT_MAX_STAMINA
 }
 
 impl Default for SavedStamina {
     fn default() -> Self {
         Self {
-            stamina: MAX_STAMINA,
+            stamina: DEFAULT_MAX_STAMINA,
         }
     }
 }
@@ -63,8 +63,8 @@ pub struct Stamina {
 impl Default for Stamina {
     fn default() -> Self {
         Self {
-            value: MAX_STAMINA,
-            max: MAX_STAMINA,
+            value: DEFAULT_MAX_STAMINA,
+            max: DEFAULT_MAX_STAMINA,
         }
     }
 }
@@ -74,11 +74,11 @@ impl Stamina {
         Self::default()
     }
 
-    pub fn from_saved(saved: SavedStamina) -> Self {
-        let saved = saved.sanitized(MAX_STAMINA);
+    pub fn from_saved(saved: SavedStamina, max: f32) -> Self {
+        let max = finite_max(max);
         Self {
-            value: saved.stamina,
-            max: MAX_STAMINA,
+            value: saved.sanitized(max).stamina,
+            max,
         }
     }
 
@@ -150,9 +150,9 @@ impl Stamina {
 
 fn finite_max(value: f32) -> f32 {
     if value.is_finite() {
-        value.clamp(0.0, MAX_STAMINA)
+        value.max(0.0)
     } else {
-        MAX_STAMINA
+        DEFAULT_MAX_STAMINA
     }
 }
 
@@ -186,7 +186,7 @@ mod tests {
     fn idle_drains_one_per_two_minutes() {
         let mut stamina = Stamina::new();
         stamina.update(120.0, false, false, 1.0);
-        assert!(stamina.value() < MAX_STAMINA);
+        assert!(stamina.value() < DEFAULT_MAX_STAMINA);
         assert!((stamina.value() - 99.0).abs() < 1e-4);
     }
 
@@ -240,9 +240,12 @@ mod tests {
 
     #[test]
     fn saved_value_is_sanitized() {
-        let stamina = Stamina::from_saved(SavedStamina { stamina: 999.0 });
-        assert_eq!(stamina.value(), MAX_STAMINA);
-        let stamina = Stamina::from_saved(SavedStamina { stamina: f32::NAN });
-        assert_eq!(stamina.value(), MAX_STAMINA);
+        let stamina = Stamina::from_saved(SavedStamina { stamina: 999.0 }, DEFAULT_MAX_STAMINA);
+        assert_eq!(stamina.value(), DEFAULT_MAX_STAMINA);
+        let stamina = Stamina::from_saved(SavedStamina { stamina: f32::NAN }, DEFAULT_MAX_STAMINA);
+        assert_eq!(stamina.value(), DEFAULT_MAX_STAMINA);
+        let stamina = Stamina::from_saved(SavedStamina { stamina: 140.0 }, 150.0);
+        assert_eq!(stamina.value(), 140.0);
+        assert_eq!(stamina.max(), 150.0);
     }
 }

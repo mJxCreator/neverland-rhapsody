@@ -1705,7 +1705,9 @@ impl App {
                 .set_health(self.survival.health(), self.survival.max_health());
             renderer.hud_mut().set_survival(
                 self.vitals.hunger().value(),
+                self.vitals.hunger().max(),
                 self.vitals.stamina().value(),
+                self.vitals.stamina().max(),
                 self.world_time.phase().label(),
             );
             renderer

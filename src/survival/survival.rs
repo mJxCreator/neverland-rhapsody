@@ -40,10 +40,11 @@ impl SavedVitals {
         }
     }
 
-    /// 把 v9 及更早存档的 0–20 饥饿换算为 0–100，并同步裁剪体力。
+    /// 把 v9 及更早存档的 0–20 饥饿换算为默认 0–100 量程，并同步裁剪体力。
     pub fn migrated_to_v10(self) -> Self {
         let hunger = SavedHunger {
-            hunger: (self.hunger.hunger * 5.0).clamp(0.0, super::hunger::MAX_HUNGER),
+            hunger: (self.hunger.hunger * 5.0).clamp(0.0, super::hunger::DEFAULT_MAX_HUNGER),
+            max: super::hunger::DEFAULT_MAX_HUNGER,
         };
         let stamina = self.stamina.sanitized(hunger.hunger);
         Self {
@@ -99,8 +100,8 @@ impl Vitals {
     pub fn from_saved(saved: SavedVitals) -> Self {
         let saved = saved.sanitized();
         let hunger = Hunger::from_saved(saved.hunger);
-        let mut stamina = Stamina::from_saved(saved.stamina);
-        stamina.set_max(hunger.value());
+        // 体力上限始终等于当前饥饿值，保存值按该上限裁剪。
+        let stamina = Stamina::from_saved(saved.stamina, hunger.value());
         Self {
             hunger,
             stamina,
@@ -440,7 +441,10 @@ mod tests {
     #[test]
     fn legacy_hunger_is_scaled_to_the_new_range() {
         let saved = SavedVitals {
-            hunger: SavedHunger { hunger: 12.0 },
+            hunger: SavedHunger {
+                hunger: 12.0,
+                max: crate::survival::hunger::DEFAULT_MAX_HUNGER,
+            },
             stamina: SavedStamina { stamina: 42.0 },
             respawn: None,
         }

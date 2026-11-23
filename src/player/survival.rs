@@ -7,10 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::damage::Damage;
 
-/// 默认最大生命值：100 点。
+/// 默认最大生命值：100 点；实际上限是运行时状态，可被装备或效果改变。
 pub const DEFAULT_MAX_HEALTH: u32 = 100;
-/// 允许通过配置设置的最大生命值上限，防止异常存档造成不可控数值。
-pub const MAX_HEALTH_LIMIT: u32 = 200;
 /// 常规伤害后的无敌帧时长（秒）。
 const INVULNERABILITY_SECONDS: f32 = 0.5;
 
@@ -87,7 +85,7 @@ impl SavedSurvival {
 }
 
 fn normalize_max_health(value: u32) -> u32 {
-    if value == 0 || value > MAX_HEALTH_LIMIT {
+    if value == 0 {
         DEFAULT_MAX_HEALTH
     } else {
         value
@@ -232,10 +230,7 @@ mod tests {
     #[test]
     fn invalid_max_health_falls_back_to_default() {
         assert_eq!(Survival::new(0).max_health(), DEFAULT_MAX_HEALTH);
-        assert_eq!(
-            Survival::new(MAX_HEALTH_LIMIT + 1).max_health(),
-            DEFAULT_MAX_HEALTH
-        );
+        assert_eq!(Survival::new(500).max_health(), 500);
         assert_eq!(Survival::new(12).health(), 12);
     }
 

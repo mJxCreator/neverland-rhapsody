@@ -13,7 +13,7 @@ pub const HEAL_STAMINA_COST: f32 = 20.0;
 /// 按当前饥饿值计算恢复 1 点生命所需的秒数；饥饿为 0 时视为无穷大。
 pub fn interval_for(hunger: f32) -> f32 {
     if hunger.is_finite() && hunger > 0.0 {
-        REGEN_SECONDS_NUMERATOR / hunger.min(crate::survival::hunger::MAX_HUNGER)
+        REGEN_SECONDS_NUMERATOR / hunger
     } else {
         f32::INFINITY
     }
