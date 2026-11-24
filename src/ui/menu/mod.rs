@@ -12,7 +12,7 @@ use crate::ui::core::draw::{push_border, push_quad, push_ui_view, UiVertex};
 use crate::ui::core::font;
 use crate::ui::core::layout::{centered_panel, valid_viewport, UiRect};
 use crate::ui::core::theme;
-use crate::ui::core::widget::{push_button, push_panel};
+use crate::ui::core::widget::{push_button, push_button_skinned, push_panel};
 
 pub mod config;
 
@@ -432,17 +432,12 @@ impl MenuUi {
         let (width, height) = viewport;
         match self.screen {
             MenuScreen::Main => {
-                push_quad(
-                    out,
-                    viewport,
-                    UiRect::new(0.0, 0.0, width, height),
-                    MENU_BACKGROUND,
-                );
+                self.draw_background(out, viewport);
                 self.draw_title(out, viewport);
                 let labels = text::MAIN_BUTTONS;
                 for (index, rect) in main_buttons(viewport).iter().enumerate() {
                     let hovered = rect.contains(self.cursor.0, self.cursor.1);
-                    push_button(
+                    push_button_skinned(
                         out,
                         viewport,
                         *rect,
@@ -451,6 +446,8 @@ impl MenuUi {
                         true,
                         BUTTON_TEXT_PIXEL,
                         &self.ui_textures,
+                        "begin_button",
+                        "begin_button_hover",
                     );
                 }
                 if let Some(notice) = self.notice {
@@ -467,12 +464,7 @@ impl MenuUi {
                 }
             }
             MenuScreen::CharacterSelect => {
-                push_quad(
-                    out,
-                    viewport,
-                    UiRect::new(0.0, 0.0, width, height),
-                    MENU_BACKGROUND,
-                );
+                self.draw_background(out, viewport);
                 let panel = list_panel(viewport);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
                 push_header(out, viewport, panel, text::CHARACTER_SELECT_TITLE, None);
@@ -492,12 +484,7 @@ impl MenuUi {
                 self.draw_notice(out, viewport, panel);
             }
             MenuScreen::WorldSelect => {
-                push_quad(
-                    out,
-                    viewport,
-                    UiRect::new(0.0, 0.0, width, height),
-                    MENU_BACKGROUND,
-                );
+                self.draw_background(out, viewport);
                 let panel = list_panel(viewport);
                 push_panel(out, viewport, panel, &self.ui_textures, "inventory_panel");
                 let subtitle = self.selected_character.as_ref().map(|entry| {
@@ -580,6 +567,16 @@ impl MenuUi {
 
         if self.rename.is_some() {
             self.draw_rename_modal(out, viewport);
+        }
+    }
+
+    fn draw_background(&self, out: &mut Vec<UiVertex>, viewport: (f32, f32)) {
+        let (width, height) = viewport;
+        let rect = UiRect::new(0.0, 0.0, width, height);
+        if let Some(view) = self.ui_textures.get("begin_bg") {
+            push_ui_view(out, viewport, rect, view, [1.0; 4]);
+        } else {
+            push_quad(out, viewport, rect, MENU_BACKGROUND);
         }
     }
 

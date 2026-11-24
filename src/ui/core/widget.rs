@@ -254,10 +254,38 @@ pub fn push_button(
     pixel: f32,
     ui: &UiTextureMap,
 ) {
+    push_button_skinned(
+        out,
+        viewport,
+        rect,
+        label,
+        hovered,
+        enabled,
+        pixel,
+        ui,
+        "button",
+        "button_hover",
+    );
+}
+
+/// 使用指定控件名作为普通/悬停贴图的按钮；缺图时回退纯色。
+#[allow(clippy::too_many_arguments)]
+pub fn push_button_skinned(
+    out: &mut Vec<UiVertex>,
+    viewport: (f32, f32),
+    rect: UiRect,
+    label: &str,
+    hovered: bool,
+    enabled: bool,
+    pixel: f32,
+    ui: &UiTextureMap,
+    normal_texture: &str,
+    hover_texture: &str,
+) {
     let texture = if hovered && enabled {
-        "button_hover"
+        hover_texture
     } else {
-        "button"
+        normal_texture
     };
     let textured = ui
         .get(texture)

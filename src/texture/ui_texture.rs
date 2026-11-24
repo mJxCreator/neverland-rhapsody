@@ -86,6 +86,9 @@ pub fn builtin_manifest() -> UiManifest {
         ("death_panel", UiDrawMode::NineSlice, [8, 8, 8, 8]),
         ("button", UiDrawMode::NineSlice, [6, 6, 6, 6]),
         ("button_hover", UiDrawMode::NineSlice, [6, 6, 6, 6]),
+        // 主菜单专用按钮皮肤：16×16 / 18×18，与通用按钮同一套九宫格切边。
+        ("begin_button", UiDrawMode::NineSlice, [6, 6, 6, 6]),
+        ("begin_button_hover", UiDrawMode::NineSlice, [6, 6, 6, 6]),
     ] {
         entries.push(UiManifestEntry {
             name: name.to_string(),
